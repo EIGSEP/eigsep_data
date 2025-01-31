@@ -21,7 +21,7 @@ classifiers = [
 dependencies = [
     "numpy",
     "matplotlib",
-    "eigsep_corr @ git+git@github.com:EIGSEP/eigsep_corr.git",
+    "eigsep_corr @ git+https://github.com/EIGSEP/eigsep_corr.git",
 ]
 
 [project.optional-dependencies]
@@ -35,7 +35,7 @@ dev = [
     "black",
     "flake8",
 ]
-all = vis + dev
+all = ["eigsep_data[vis, dev]"]
 
 [project.urls]
 Repository = "https://github.com/EIGSEP/data-analysis"
