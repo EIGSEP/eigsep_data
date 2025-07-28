@@ -1,4 +1,5 @@
 import numpy as np
+from scipy.spatial.transform import Rotation as R
 
 
 def get_rotation_matrix(v1, v2):
@@ -78,8 +79,6 @@ class Imu:
         self.data = imu_data
         # rotation matrix for coordinate system conversion
         self._coord_Rmat = np.eye(3)
-        # XXX need way to set coordinate system
-        # ie initial coord conversion (this vector is z-axis, etc.)
 
     @property
     def coord_Rmat(self):
@@ -136,20 +135,22 @@ class Imu:
     @property
     def acceleration(self):
         """Return the acceleration vector in m/s^2."""
-        return np.array(
+        v = np.array(
             [self.data["accel_x"], self.data["accel_y"], self.data["accel_z"]]
         )
+        return self.rot_vector(v)
 
     @property
     def linear_acceleration(self):
         """Return the linear acceleration vector in m/s^2."""
-        return np.array(
+        v = np.array(
             [
                 self.data["lin_accel_x"],
                 self.data["lin_accel_y"],
                 self.data["lin_accel_z"],
             ]
         )
+        return self.rot_vector(v)
 
     @property
     def gravity(self):
@@ -159,3 +160,17 @@ class Imu:
     def get_tilt_from_gravity(self):
         g_norm = self.gravity / np.linalg.norm(self.gravity)
         return np.arccos(-g_norm[2])  # angle with respect to z-axis
+
+    def get_tilt_from_quat(self):
+        q = np.array(
+            [
+                self.data["quat_real"],
+                self.data["quat_i"],
+                self.data["quat_j"],
+                self.data["quat_k"],
+            ]
+        )
+        Rmat = R.from_quat(q).as_matrix()
+        z_axis = np.array([0, 0, 1])
+        g_norm = Rmat @ z_axis
+        return np.arccos(-g_norm[2])
