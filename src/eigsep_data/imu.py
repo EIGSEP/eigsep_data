@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 
@@ -216,7 +217,8 @@ class ImuSnapshot:
     def get_tilt_from_gravity(self):
         g_norm = self.gravity / np.linalg.norm(self.gravity)
         g_norm = self.calibrator.apply(g_norm)
-        th = np.arccos(-g_norm[2])  # angle with respect to z-axis
+        gz = np.clip(g_norm[2], -1.0, 1.0)  # avoid NaN from acos
+        th = np.arccos(-gz)  # angle with respect to z-axis
         return th
 
     def get_tilt_from_quat(self):
@@ -225,7 +227,9 @@ class ImuSnapshot:
         g_norm = Rmat @ z_axis
         g_norm /= np.linalg.norm(g_norm)
         g_norm = self.calibrator.apply(g_norm)
-        return np.arccos(-g_norm[2])
+        gz = np.clip(g_norm[2], -1.0, 1.0)
+        th = np.arccos(-gz)
+        return th
 
 
 @dataclass
@@ -243,13 +247,32 @@ class ImuDataset:
 
     """
 
-    snapshots: list[ImuSnapshot]
-    calibrator: ImuCalibrator = ImuCalibrator(Rmat=np.eye(3))
+    snapshots: list[ImuSnapshot] = None
+    calibrator: ImuCalibrator = None
 
     def __post_init__(self):
         if not self.snapshots:
-            raise ValueError("The dataset must contain at least one snapshot.")
-        self.calibrator = self.snapshots[0].calibrator
+            self.snapshots = []
+        if not self.calibrator:
+            try:
+                self.calibrator = self.snapshots[0].calibrator
+            except (IndexError, AttributeError):
+                self.calibrator = ImuCalibrator(Rmat=np.eye(3))
+        for snap in self.snapshots:
+            snap.calibrator = self.calibrator
+
+    def add_snapshot(self, snapshot: ImuSnapshot):
+        """
+        Add a snapshot to the dataset.
+
+        Parameters
+        ----------
+        snapshot : ImuSnapshot
+            The snapshot to add.
+
+        """
+        snapshot.calibrator = self.calibrator
+        self.snapshots.append(snapshot)
 
     @classmethod
     def from_imu_data(
@@ -296,6 +319,10 @@ class ImuDataset:
 
         """
         if from_gravity:
-            return [snap.get_tilt_from_gravity() for snap in self.snapshots]
+            return np.array(
+                [snap.get_tilt_from_gravity() for snap in self.snapshots]
+            )
         else:
-            return [snap.get_tilt_from_quat() for snap in self.snapshots]
+            return np.array(
+                [snap.get_tilt_from_quat() for snap in self.snapshots]
+            )
