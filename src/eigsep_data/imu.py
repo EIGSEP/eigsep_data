@@ -164,9 +164,14 @@ class ImuSnapshot:
     accel : np.ndarray
     lin_accel : np.ndarray
     quat : np.ndarray
+    calibrator : ImuCalibrator = ImuCalibrator(Rmat=np.eye(3))
 
     @classmethod
-    def from_imu_data(cls, imu_data: dict):
+    def from_imu_data(
+        cls,
+        imu_data: dict,
+        calibrator: ImuCalibrator = ImuCalibrator(Rmat=np.eye(3))
+    ) -> "ImuSnapshot":
         """
         Create an ImuSnapshot instance from IMU data.
 
@@ -199,33 +204,24 @@ class ImuSnapshot:
                     imu_data["quat_k"],
                 ]
             ),
+            calibrator=calibrator,
         )
 
     @property
     def gravity(self):
         """Return the gravity vector in m/s^2."""
-        return self.accel - self.linear_accel
+        return self.accel - self.lin_accel
 
-    def get_tilt_from_gravity(self, calibrator: ImuCalibrator = None):
+    def get_tilt_from_gravity(self): 
         g_norm = self.gravity / np.linalg.norm(self.gravity)
-        if calibrator is not None:
-            g_norm = calibrator.apply(g_norm)
+        g_norm = self.calibrator.apply(g_norm)
         th = np.arccos(-g_norm[2])  # angle with respect to z-axis
         return th
         
-    def get_tilt_from_quat(self, calibrator: ImuCalibrator = None):
-        q = np.array(
-            [
-                self.data["quat_real"],
-                self.data["quat_i"],
-                self.data["quat_j"],
-                self.data["quat_k"],
-            ]
-        )
-        Rmat = R.from_quat(q).as_matrix()
+    def get_tilt_from_quat(self):
+        Rmat = R.from_quat(self.quat).as_matrix()
         z_axis = np.array([0, 0, 1])
         g_norm = Rmat @ z_axis
         g_norm /= np.linalg.norm(g_norm)
-        if calibrator is not None:
-            g_norm = calibrator.apply(g_norm)
+        g_norm = self.calibrator.apply(g_norm)
         return np.arccos(-g_norm[2])
