@@ -68,6 +68,7 @@ class ImuCalibrator:
     the desired coordinate system.
 
     """
+
     Rmat: np.ndarray
 
     @classmethod
@@ -105,7 +106,7 @@ class ImuCalibrator:
         return cls(R2 @ R1)
 
     @classmethod
-    def from_imu_data(cls, imu_data : dict):
+    def from_imu_data(cls, imu_data: dict):
         """
         Create an ImuCalibrator instance from an IMU reading at the
         ``home`` position, i.e., the position where the IMU is aligned
@@ -120,7 +121,7 @@ class ImuCalibrator:
         -------
         ImuCalibrator
 
-        """ 
+        """
         grav_ref = np.array(
             [
                 imu_data["accel_x"] - imu_data["lin_accel_x"],
@@ -156,21 +157,21 @@ class ImuSnapshot:
     """
     Class for handling IMU data. Input data are raw readings from the
     IMU (see EIGSEP/pico-firmware for the expected format). The class
-    allows using ImuCalibrator to define the coordinate system and 
+    allows using ImuCalibrator to define the coordinate system and
     provides methods to get orientation in this coordinate system based
     on different IMU sensor readings (gravity, magnetic field, etc.).
     """
 
-    accel : np.ndarray
-    lin_accel : np.ndarray
-    quat : np.ndarray
-    calibrator : ImuCalibrator = ImuCalibrator(Rmat=np.eye(3))
+    accel: np.ndarray
+    lin_accel: np.ndarray
+    quat: np.ndarray
+    calibrator: ImuCalibrator = ImuCalibrator(Rmat=np.eye(3))
 
     @classmethod
     def from_imu_data(
         cls,
         imu_data: dict,
-        calibrator: ImuCalibrator = ImuCalibrator(Rmat=np.eye(3))
+        calibrator: ImuCalibrator = ImuCalibrator(Rmat=np.eye(3)),
     ) -> "ImuSnapshot":
         """
         Create an ImuSnapshot instance from IMU data.
@@ -212,12 +213,12 @@ class ImuSnapshot:
         """Return the gravity vector in m/s^2."""
         return self.accel - self.lin_accel
 
-    def get_tilt_from_gravity(self): 
+    def get_tilt_from_gravity(self):
         g_norm = self.gravity / np.linalg.norm(self.gravity)
         g_norm = self.calibrator.apply(g_norm)
         th = np.arccos(-g_norm[2])  # angle with respect to z-axis
         return th
-        
+
     def get_tilt_from_quat(self):
         Rmat = R.from_quat(self.quat).as_matrix()
         z_axis = np.array([0, 0, 1])
@@ -225,3 +226,76 @@ class ImuSnapshot:
         g_norm /= np.linalg.norm(g_norm)
         g_norm = self.calibrator.apply(g_norm)
         return np.arccos(-g_norm[2])
+
+
+@dataclass
+class ImuDataset:
+    """
+    Class for handling a dataset of IMU snapshots. It allows for
+    calibration and provides methods to analyze the dataset.
+
+    Attributes
+    ----------
+    snapshots : list[ImuSnapshot]
+        List of ImuSnapshot instances.
+    calibrator : ImuCalibrator
+        The calibrator used for the dataset.
+
+    """
+
+    snapshots: list[ImuSnapshot]
+    calibrator: ImuCalibrator = ImuCalibrator(Rmat=np.eye(3))
+
+    def __post_init__(self):
+        if not self.snapshots:
+            raise ValueError("The dataset must contain at least one snapshot.")
+        self.calibrator = self.snapshots[0].calibrator
+
+    @classmethod
+    def from_imu_data(
+        cls,
+        imu_data_list: list[dict],
+        calibrator: ImuCalibrator = ImuCalibrator(Rmat=np.eye(3)),
+    ) -> "ImuDataset":
+        """
+        Create an ImuDataset instance from a list of IMU data.
+
+        Parameters
+        ----------
+        imu_data_list : list[dict]
+            List of IMU data dictionaries (see EIGSEP/pico-firmware for
+            the expected format).
+        calibrator : ImuCalibrator
+            The calibrator to use for the dataset.
+
+        Returns
+        -------
+        ImuDataset
+
+        """
+        snapshots = [
+            ImuSnapshot.from_imu_data(data, calibrator)
+            for data in imu_data_list
+        ]
+        return cls(snapshots=snapshots, calibrator=calibrator)
+
+    def get_tilt_angles(self, from_gravity: bool = True):
+        """
+        Get the tilt angles for all snapshots in the dataset.
+
+        Parameters
+        ----------
+        from_gravity : bool
+            If True, use the gravity vector to compute the tilt angle.
+            If False, use the quaternion to compute the tilt angle.
+
+        Returns
+        -------
+        list[float]
+            List of tilt angles in radians for each snapshot.
+
+        """
+        if from_gravity:
+            return [snap.get_tilt_from_gravity() for snap in self.snapshots]
+        else:
+            return [snap.get_tilt_from_quat() for snap in self.snapshots]
