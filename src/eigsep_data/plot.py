@@ -97,17 +97,15 @@ def color_str2tup(s):
     return tuple(map(lambda x: int(x, base=16) / 255, (r, g, b)))
 
 
-def terrain_plot(data, ax=None, res=1.0, xlabel=True, ylabel=True,
-             colorbar=False, cmap='terrain', erng=None, nrng=None, **kw):
+def terrain_plot(dem, ax=None, xlabel=True, ylabel=True,
+             colorbar=False, cmap='terrain', erng_m=None, nrng_m=None,
+             decimate=1, **kw):
     '''Generate standard terrain plot.'''
-    if nrng is None:
-        nrng = (0, data.shape[0] * res)
-    if erng is None:
-        erng = (0, data.shape[1] * res)
-    extent = erng + nrng
+    E, N, U = dem.get_tile(erng_m=erng_m, nrng_m=nrng_m, mesh=False, decimate=decimate)
+    extent = (E[0], E[-1], N[0], N[-1])
     if ax is None:
         ax = plt.gca()
-    im = ax.imshow(data, extent=extent, cmap=cmap, origin='lower',
+    im = ax.imshow(U, extent=extent, cmap=cmap, origin='lower',
                    interpolation='nearest', **kw)
     if colorbar:
         plt.colorbar(im)
