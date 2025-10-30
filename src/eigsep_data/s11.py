@@ -6,14 +6,16 @@ from cmt_vna import calkit as cal
 import os
 from eigsep_observing import io
 
+def lin2dB(data):
+    return 20*np.log10(np.abs(data))
 
 class S11:
 
-    def __init__(self, fpath, standards_dir='./cal_data/'):
+    def __init__(self, fpath, standards_dir=None):
         """
         INPUT:
             filename : EIGSEP hdf5 S11 file.
-            standards_dir : should contain 'fieldOSL_characterizations.npz' and 'system_sparameters.npz'.
+            standards_dir : The directory should contain 'fieldOSL_characterizations.npz' and 'system_sparameters.npz'.
 
         PROPERTIES:
             gamma_primes : uncalibrated S11s.
@@ -34,7 +36,7 @@ class S11:
         """
         self.gamma_primes, self.cal_data, self.hdr, self.meta = io.read_s11_file(fpath)
         self.mode=list(self.gamma_primes.keys())[0]
-        self.time = datetime.fromisoformat(fpath.name[-18:-3])
+        self.time = datetime.fromisoformat(fpath[-18:-3])
         self.timestamp = self.time.timestamp()
         self.freqs = np.array(self.hdr["freqs"]) / 1e6  # in MHz
         self.cal_data = np.array([self.cal_data['VNAO'], self.cal_data['VNAS'], self.cal_data['VNAL']])
@@ -46,19 +48,20 @@ class S11:
             np.fft.fftfreq(self.freqs.size, d=self.freqs[1] - self.freqs[0])* 1e3
         )  # in ns
         #read osl model, and retrieve vna sparameters from them
-        standards_filename = os.path.join(self.standards_dir, 'fieldOSL_characterization.npz')
-        vna_sprms = self._get_vna_sparams()
-        self.sparams['vna'] = vna_sprms
-        
-        modes = {
-                'ant': ['feed_cables', 'ns_cables'],
-                'rec': ['rf_cables']
-                }
+        if self.standards_dir is not None:
+            standards_filename = os.path.join(self.standards_dir, 'fieldOSL_characterization.npz')
+            vna_sprms = self._get_vna_sparams()
+            self.sparams['vna'] = vna_sprms
+            
+            modes = {
+                    'ant': ['feed_cables', 'ns_cables'],
+                    'rec': ['rf_cables']
+                    }
 
-        sys_sprms = {i: np.load(os.path.join(self.standards_dir, 'system_sparameters.npz'))[i] for i in modes[self.mode]}
-        self.sparams = self.sparams | sys_sprms
-        self._calibrate()
-        self._ref_plane_to_rec()
+            sys_sprms = {i: np.load(os.path.join(self.standards_dir, 'system_sparameters.npz'))[i] for i in modes[self.mode]}
+            self.sparams = self.sparams | sys_sprms
+            self._calibrate()
+            self._ref_plane_to_rec()
 
     def _get_vna_sparams(self):
         "loads characterized standards and returns the vna sparameters."
@@ -104,3 +107,53 @@ class S11:
                 k: np.abs(np.fft.ifft(self.calibrated_gammas[k] * bh)) for k in self.calibrated_gammas.keys()
                 }
         return self._s11_dly
+
+    def plot_S11s(self, ref_plane=None, dut=None):
+        '''
+            plots S11s at specified reference planes. ref_plane takes a string composed of combinations of 'VFR', which stand for VNA, Feed, and Receiver respectively, the possible reference planes to see. If it's None, then all are plotted. dut takes a string composed of a combination of 'FLNR', which stand for Feed, Load, Noise source, and Receiver respectively, the possible DUTs to plot. Plots all if None. None that recs11 files will only be able to plot 'R' dut at  'VR' reference planes.
+        '''
+
+        import matplotlib.pyplot as plt
+        
+        duts = {
+                'F': 'ant',
+                'L': 'load',
+                'N': 'noise',
+                'R': 'rec'
+                }
+        ref_plane_labels = {
+                    'V':'VNA',
+                }
+        calibrated = {
+                'V': self.gamma_primes,
+                    }
+              
+        try: 
+            calibrated['F'] = self.isolated_gammas
+            calibrated['R'] = self.calibrated_gammas
+            ref_plane_labels['R']: 'receiver'
+            ref_plane_labels['F'] = 'DUT port'
+        except AttributeError:
+            print('Some reference planes not available.')
+
+        colordict = {
+                'V': 'olivedrab',
+                'R': 'black',
+                'F': 'mediumpurple'
+                }
+
+        if ref_plane is not None:
+            calibrated = {key: val for key,val in calibrated.items() if key in ref_plane}
+        
+        fig = plt.figure()
+        if dut is not None:
+            _ = [plt.plot(self.freqs, lin2dB(gamma[duts[d]]), label=f'{duts[d]} @ {ref_plane_labels[key]}') for key,gamma in calibrated.items() for d in dut]
+        
+        else:
+            _ = [plt.plot(self.freqs, lin2dB(gamma), label=f'{dut} @ {ref_plane_labels[key]}') for key, gammas in calibrated.items() for dut, gamma in gammas.items()]
+        plt.grid()
+        plt.legend()
+        plt.ylabel('|S11| dB')
+        plt.xlabel('Freqs MHz')
+        plt.show()
+
