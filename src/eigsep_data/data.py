@@ -63,6 +63,7 @@ class EigsepData:
             if start_time:
                 start_dt = datetime.strptime(start_time, "%Y%m%d_%H%M%S")
                 files = [f for f, t in zip(files, times) if t >= start_dt]
+                times = [_parse_time_from_name(f.name) for f in files]
             if end_time:
                 end_dt = datetime.strptime(end_time, "%Y%m%d_%H%M%S")
                 files = [f for f, t in zip(files, times) if t <= end_dt]
