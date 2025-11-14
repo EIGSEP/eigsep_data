@@ -1,4 +1,3 @@
-from hpm import HPM, float_dtype
 import numpy as np
 import jax.numpy as jnp
 from scipy.interpolate import interp1d
@@ -14,6 +13,8 @@ from pygdsm import GlobalSkyModel16 as GSM16
 import eigsep_terrain.utils as etu
 import aipy
 import tqdm
+
+from .hpm import HPM, float_dtype
 
 PRECISION = 1
 
