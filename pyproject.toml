@@ -19,11 +19,18 @@ classifiers = [
     "Programming Language :: Python :: 3",
 ]
 dependencies = [
+    "aipy",
+    "astropy",
+    "fftvis",
+    "matplotlib",
+    "matvis",
     "numpy",
     "scipy",
-    "matplotlib",
     "eigsep_corr @ git+https://github.com/EIGSEP/eigsep_corr.git@main",
     "eigsep_observing @ git+https://github.com/EIGSEP/eigsep_observing.git@main",
+    "healjax @ git+https://github.com/AaronParsons/healjax.git@master",
+    "hera_sim @ git+https://github.com/HERA-Team/hera_sim.git@main",
+    "pygdsm @ git+https://github.com/telegraphic/pygdsm.git@master",
 ]
 
 [project.optional-dependencies]
