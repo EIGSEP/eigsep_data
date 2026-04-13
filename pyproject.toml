@@ -27,7 +27,7 @@ dependencies = [
     "matvis",
     "numpy",
     "scipy",
-    "eigsep_corr @ git+https://github.com/EIGSEP/eigsep_corr.git@main",
+    "eigsep_corr",
     "eigsep_observing @ git+https://github.com/EIGSEP/eigsep_observing.git@main",
     "eigsep_terrain @ git+https://github.com/AaronParsons/eigsep_terrain.git@main",
     "healjax @ git+https://github.com/AaronParsons/healjax.git@master",
