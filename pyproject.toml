@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "eigsep_data"
 dynamic = ["version"]
-requires-python = ">=3.8"
+requires-python = ">=3.11"
 authors = [
     {name = "Christian Hellum Bye", email = "chbye@berkeley.edu"},
 ]
@@ -30,10 +30,10 @@ dependencies = [
     "eigsep_corr",
     "eigsep_observing @ git+https://github.com/EIGSEP/eigsep_observing.git@main",
     "eigsep_terrain @ git+https://github.com/AaronParsons/eigsep_terrain.git@main",
-    "healjax @ git+https://github.com/AaronParsons/healjax.git@master",
+    "healjax @ git+https://github.com/AaronParsons/healjax.git@main",
     "hera_filters @ git+https://github.com/HERA-Team/hera_filters.git@main",
     "hera_sim @ git+https://github.com/HERA-Team/hera_sim.git@main",
-    "pygdsm @ git+https://github.com/telegraphic/pygdsm.git@master",
+    "pygdsm",
 ]
 
 [project.optional-dependencies]
