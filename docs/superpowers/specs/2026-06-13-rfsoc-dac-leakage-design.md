@@ -115,3 +115,28 @@ The notebook runs top-to-bottom and produces: the dynamic-range table, the stack
 leakage profile with error bars, the leakage-vs-dynamic-range plot, and a written
 conclusion that addresses every clause of the reviewer's question (phase-noise level,
 spillover magnitude, spectral scale vs the 21cm feature, and flagging/down-weighting).
+
+## Outcome (as built)
+
+The ~−80 dB / "confined to ±1, measurement-or-3σ-limit" figures above were the
+pre-analysis design estimate; the final result, after a proper paired per-tone contrast
+and a check of how the excess scales across the dynamic-range ladder, is:
+
+- The comb is on-bin: each tone is a single channel with neighbours at the floor.
+- A +/-1-channel excess over the in-gap far wing (offsets 2–8) is detected at ~7–9σ at
+  every setting, measured with a **paired per-tone contrast** (`adjacent_excess`) so the
+  common tone-to-tone noise-level variation cancels.
+- The excess shrinks with dynamic range (≈2×10⁻⁷ of the tone at 10 dB → ≈5×10⁻⁹ at
+  15 dB). It is **not** proportional to the noise floor (a pure-noise model fits poorly,
+  χ²≈69/3; power-law slope ≈0.65), so the wording is kept mechanism-agnostic: part of the
+  high-noise excess is the injected noise's channelizer response, with a small residual at
+  the deepest setting. We do **not** claim "scales with noise" or a "still-falling
+  conservative limit."
+- Headline (deepest, lowest-noise 15 dB setting ≈ 80 dB DR): +/-1 spillover
+  **4.96×10⁻⁹ ± 0.60×10⁻⁹ of the tone (≈ −83 dB)**, confined to ±1 channel (±2 and beyond
+  show no significant excess). This total bounds the comb's phase-noise contribution.
+- Conclusion to the reviewer: spillover ≲ 5×10⁻⁹ (≈ −83 dB), one channel wide — negligible
+  and trivially flagged on the broad (~10–20 MHz) 21cm-feature scale.
+
+Deliverables: `notebooks/christian/rfsoc_lab_test/dac_leakage_lib.py` (8 passing tests),
+`test_dac_leakage_lib.py`, `dac_leakage.ipynb`.
