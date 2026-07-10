@@ -35,8 +35,10 @@ def robust_divide(num, den):
 
     """
     thresh = np.finfo(den.dtype).eps
-    out = np.true_divide(num, den, where=(np.abs(den) > thresh))
-    out = np.where(np.abs(den) > thresh, out, np.inf)
+    good = np.abs(den) > thresh
+    shape = np.broadcast_shapes(np.shape(num), np.shape(den))
+    out = np.full(shape, np.inf)
+    np.true_divide(num, den, where=good, out=out)
     return out
 
 
@@ -203,11 +205,19 @@ def median_flagger(data, nsig=8, kernel_half_width=5, return_z=False):
     model = median_filter(data, footprint=kernel, mode="mirror")
     residuals = data - model
 
-    # estimate noise from data
-    mad = np.median(np.abs(residuals))  # median abs deviation
+    # estimate noise from data; exact-zero residuals (window median
+    # equal to the sample, common in quantized or mostly-zero data)
+    # would deflate the MAD to the degenerate all-flagged limit
+    nonzero = residuals[residuals != 0]
+    if nonzero.size:
+        mad = np.median(np.abs(nonzero))
+    else:
+        mad = np.float64(0.0)
     sigma = 1.4826 * mad
 
     z_score = robust_divide(residuals, sigma)
+    # a sample equal to its model is never an outlier, even if sigma=0
+    z_score = np.where(residuals == 0, 0.0, z_score)
 
     flags = np.where(np.isnan(z_score), True, np.abs(z_score) > nsig)
 

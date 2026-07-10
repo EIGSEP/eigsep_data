@@ -58,6 +58,9 @@ eigsep_redis = { path = "../eigsep_redis", editable = true }
 eigsep-vna = { path = "../cmt_vna", editable = true }
 picohost = { path = "../pico-firmware/picohost", editable = true }
 
+[project.scripts]
+eigsep-quicklook = "eigsep_data.quicklook:main"
+
 [project.optional-dependencies]
 vis = [
     "jupyterlab",
