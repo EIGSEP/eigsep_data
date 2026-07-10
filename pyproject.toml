@@ -21,20 +21,42 @@ classifiers = [
 dependencies = [
     "aipy",
     "astropy",
+    "croissant-sim",
+    # croissant-sim imports spiceypy but doesn't declare it
+    "spiceypy",
     "fftvis",
+    "h5py",
+    "hdf5plugin",
+    "healpy",
     "jax",
+    "jax-healpy",
     "matplotlib",
     "matvis",
     "numpy",
+    "optax",
+    "pandas<3",
     "scipy",
+    "tqdm",
     "eigsep_corr",
-    "eigsep_observing @ git+https://github.com/EIGSEP/eigsep_observing.git@main",
+    "eigsep_observing",
+    "eigsep_redis",
+    "eigsep-vna",
+    "picohost",
     "eigsep_terrain @ git+https://github.com/AaronParsons/eigsep_terrain.git@main",
     "healjax @ git+https://github.com/AaronParsons/healjax.git@main",
     "hera_filters @ git+https://github.com/HERA-Team/hera_filters.git@main",
+    "hera_qm @ git+https://github.com/HERA-Team/hera_qm.git@main",
     "hera_sim @ git+https://github.com/HERA-Team/hera_sim.git@main",
     "pygdsm",
 ]
+
+# Field setup: eigsep stack comes from local editable checkouts so code
+# can be updated on-site without network access.
+[tool.uv.sources]
+eigsep_observing = { path = "../eigsep_observing", editable = true }
+eigsep_redis = { path = "../eigsep_redis", editable = true }
+eigsep-vna = { path = "../cmt_vna", editable = true }
+picohost = { path = "../pico-firmware/picohost", editable = true }
 
 [project.optional-dependencies]
 vis = [
