@@ -2,49 +2,48 @@ from datetime import datetime
 import numpy as np
 from scipy import signal
 
-from cmt_vna import calkit
+from cmt_vna import calkit as cal
+import os
 from eigsep_observing import io
 
-# +
 """Write / read per-DUT HDF5 files for calibrated field VNA data.
-
-Takes the in-memory ``caled_s11s`` structure produced by an
-after-the-fact field-calibration pipeline --
-
-    caled_s11s[dut][timestamp][cal_plane] -> complex S11 array, (Nfreq,)
-
-(e.g. dut in {"ant", "rec", "amb", "load", "noise", "sp1_open",
-"sp1_short", "sp1"}; timestamp a unix float; cal_plane a string
-naming which calibration reference plane that trace is expressed at,
-e.g. "raw" / "vna_port_corrected" / "final") -- and writes one HDF5
-file per DUT, instead of one file per capture sorted by timestamp.
-Each file holds every timestamp recorded for that DUT and every
-calibration plane recorded at each timestamp, so nothing is thrown
-away, while still keeping the common case ("give me the final
-calibrated trace") a one-line lookup.
-
-Layout of one ``<dut>_calibrated.h5`` file::
-
-    /                       .attrs: dut, n_timestamps
-    /timestamps             (n_timestamps,) float64 -- sorted, unix seconds
-    /freqs                  (Nfreq,) float64 -- shared freq axis, if given
-    /t0/                    .attrs: timestamp (float), cal_planes (list[str])
-        /t0/<cal_plane>     (Nfreq,) complex128, one per plane recorded
-        /t0/default         soft link -> <cal_plane> named by final_plane,
-                             if that plane was recorded at this timestamp
-    /t1/ ...
-    ...
-
-``timestamps`` is the single source of truth for "what times exist for
-this DUT" -- read it once rather than listing group names. The
-``t<i>`` group names are positional (index into the sorted
-``timestamps`` array), not the timestamp value itself, so there's no
-float-to-string encoding to get wrong or round-trip.
-
-Assumes numeric (unix-float) timestamps, matching the ``*_unix``
-convention used throughout the rest of this codebase's metadata /
-provenance fields. If your timestamps are ``datetime`` objects,
-convert with ``.timestamp()`` before calling.
+    Takes the in-memory ``caled_s11s`` structure produced by an
+    after-the-fact field-calibration pipeline --
+    
+        caled_s11s[dut][timestamp][cal_plane] -> complex S11 array, (Nfreq,)
+    
+    (e.g. dut in {"ant", "rec", "amb", "load", "noise", "sp1_open",
+    "sp1_short", "sp1"}; timestamp a unix float; cal_plane a string
+    naming which calibration reference plane that trace is expressed at,
+    e.g. "raw" / "vna_port_corrected" / "final") -- and writes one HDF5
+    file per DUT, instead of one file per capture sorted by timestamp.
+    Each file holds every timestamp recorded for that DUT and every
+    calibration plane recorded at each timestamp, so nothing is thrown
+    away, while still keeping the common case ("give me the final
+    calibrated trace") a one-line lookup.
+    
+    Layout of one ``<dut>_calibrated.h5`` file::
+    
+        /                       .attrs: dut, n_timestamps
+        /timestamps             (n_timestamps,) float64 -- sorted, unix seconds
+        /freqs                  (Nfreq,) float64 -- shared freq axis, if given
+        /t0/                    .attrs: timestamp (float), cal_planes (list[str])
+            /t0/<cal_plane>     (Nfreq,) complex128, one per plane recorded
+            /t0/default         soft link -> <cal_plane> named by final_plane,
+                                 if that plane was recorded at this timestamp
+        /t1/ ...
+        ...
+    
+    ``timestamps`` is the single source of truth for "what times exist for
+    this DUT" -- read it once rather than listing group names. The
+    ``t<i>`` group names are positional (index into the sorted
+    ``timestamps`` array), not the timestamp value itself, so there's no
+    float-to-string encoding to get wrong or round-trip.
+    
+    Assumes numeric (unix-float) timestamps, matching the ``*_unix``
+    convention used throughout the rest of this codebase's metadata /
+    provenance fields. If your timestamps are ``datetime`` objects,
+    convert with ``.timestamp()`` before calling.
 """
 
 from pathlib import Path
@@ -200,102 +199,4 @@ def read_final_plane(path, final_plane_name="default"):
             if final_plane_name in grp:
                 out[float(ts)] = grp[final_plane_name][:]
     return out
-
-
-if __name__ == "__main__":
-    # Self-test with synthetic data shaped like the real input, run
-    # via `python field_calibration_io.py`. Not pytest -- this module
-    # lives outside eigsep_observing's own test suite since it's a
-    # standalone field-analysis helper, not part of the package.
-    import shutil
-    import tempfile
-
-    rng = np.random.default_rng(0)
-    duts = [
-        "ant",
-        "rec",
-        "amb",
-        "load",
-        "noise",
-        "sp1_open",
-        "sp1_short",
-        "sp1",
-    ]
-    nfreq = 16
-    freqs = np.linspace(1e6, 250e6, nfreq)
-    planes = ["raw", "vna_port_corrected", "final"]
-
-    caled_s11s = {}
-    for i, dut in enumerate(duts):
-        n_times = (i % 3) + 1  # variable number of timestamps per DUT
-        by_time = {}
-        base_ts = 1_700_000_000.0
-        for j in range(n_times):
-            ts = base_ts + j * 3600.0
-            # Not every timestamp has every plane -- exercise the
-            # partial-set path too.
-            these_planes = planes if j % 2 == 0 else planes[:2]
-            by_time[ts] = {
-                p: rng.standard_normal(nfreq) + 1j * rng.standard_normal(nfreq)
-                for p in these_planes
-            }
-        caled_s11s[dut] = by_time
-    # One DUT present in the dict but with no captures -- must be
-    # skipped cleanly (no empty file).
-    caled_s11s["sp1_never_measured"] = {}
-
-    tmpdir = Path(tempfile.mkdtemp())
-    try:
-        written = write_dut_calibration_h5(
-            caled_s11s,
-            save_dir=tmpdir,
-            freqs=freqs,
-            final_plane="final",
-        )
-        assert set(written) == set(duts), (set(written), set(duts))
-        assert "sp1_never_measured" not in written
-
-        for dut in duts:
-            path = written[dut]
-            r_dut, r_ts, r_freqs, r_by_time = read_dut_calibration_h5(path)
-            assert r_dut == dut
-            np.testing.assert_allclose(r_freqs, freqs)
-            expected_ts = sorted(caled_s11s[dut])
-            np.testing.assert_allclose(sorted(r_ts), expected_ts)
-            assert set(r_by_time) == set(expected_ts)
-            for ts, orig_planes in caled_s11s[dut].items():
-                got_planes = r_by_time[ts]
-                # every recorded plane round-trips exactly
-                for p, arr in orig_planes.items():
-                    np.testing.assert_allclose(got_planes[p], arr)
-                # "final" plane, when present, is also reachable via
-                # the "default" alias
-                if "final" in orig_planes:
-                    np.testing.assert_allclose(
-                        got_planes["default"], orig_planes["final"]
-                    )
-                else:
-                    assert "default" not in got_planes
-
-            final_only = read_final_plane(path)
-            expected_final_ts = {
-                ts for ts, p in caled_s11s[dut].items() if "final" in p
-            }
-            assert set(final_only) == expected_final_ts, (
-                dut,
-                set(final_only),
-                expected_final_ts,
-            )
-            for ts in expected_final_ts:
-                np.testing.assert_allclose(
-                    final_only[ts], caled_s11s[dut][ts]["final"]
-                )
-
-        print(f"ALL SELF-TESTS PASSED ({len(written)} DUT files)")
-    finally:
-        shutil.rmtree(tmpdir)
-
-
-# -
-
 
