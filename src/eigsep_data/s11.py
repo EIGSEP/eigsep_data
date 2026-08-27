@@ -5,51 +5,18 @@ from scipy import signal
 from cmt_vna import calkit as cal
 import os
 from eigsep_observing import io
+from pathlib import Path
+import h5py
+import numpy as np
+
+from dataclasses import dataclass
 
 """Write / read per-DUT HDF5 files for calibrated field VNA data.
     Takes the in-memory ``caled_s11s`` structure produced by an
     after-the-fact field-calibration pipeline --
-    
+
         caled_s11s[dut][timestamp][cal_plane] -> complex S11 array, (Nfreq,)
-    
-    (e.g. dut in {"ant", "rec", "amb", "load", "noise", "sp1_open",
-    "sp1_short", "sp1"}; timestamp a unix float; cal_plane a string
-    naming which calibration reference plane that trace is expressed at,
-    e.g. "raw" / "vna_port_corrected" / "final") -- and writes one HDF5
-    file per DUT, instead of one file per capture sorted by timestamp.
-    Each file holds every timestamp recorded for that DUT and every
-    calibration plane recorded at each timestamp, so nothing is thrown
-    away, while still keeping the common case ("give me the final
-    calibrated trace") a one-line lookup.
-    
-    Layout of one ``<dut>_calibrated.h5`` file::
-    
-        /                       .attrs: dut, n_timestamps
-        /timestamps             (n_timestamps,) float64 -- sorted, unix seconds
-        /freqs                  (Nfreq,) float64 -- shared freq axis, if given
-        /t0/                    .attrs: timestamp (float), cal_planes (list[str])
-            /t0/<cal_plane>     (Nfreq,) complex128, one per plane recorded
-            /t0/default         soft link -> <cal_plane> named by final_plane,
-                                 if that plane was recorded at this timestamp
-        /t1/ ...
-        ...
-    
-    ``timestamps`` is the single source of truth for "what times exist for
-    this DUT" -- read it once rather than listing group names. The
-    ``t<i>`` group names are positional (index into the sorted
-    ``timestamps`` array), not the timestamp value itself, so there's no
-    float-to-string encoding to get wrong or round-trip.
-    
-    Assumes numeric (unix-float) timestamps, matching the ``*_unix``
-    convention used throughout the rest of this codebase's metadata /
-    provenance fields. If your timestamps are ``datetime`` objects,
-    convert with ``.timestamp()`` before calling.
 """
-
-from pathlib import Path
-
-import h5py
-import numpy as np
 
 
 def write_dut_calibration_h5(
@@ -60,47 +27,8 @@ def write_dut_calibration_h5(
     final_plane=None,
     fname_template="{dut}_calibrated.h5",
 ):
-    """Write one HDF5 file per DUT from a nested calibration dict.
-
-    Parameters
-    ----------
-    caled_s11s : dict
-        ``{dut: {timestamp: {cal_plane: s11_array}}}``. Not every
-        timestamp needs the same set of calibration planes, and not
-        every DUT needs the same number of timestamps.
-    save_dir : str or Path
-        Directory the per-DUT files are written into. Must already
-        exist.
-    freqs : array-like, optional
-        Shared frequency axis (Hz), written into every file if given.
-        Omit if your S11 arrays don't share one common frequency axis
-        (e.g. different npoints/fstart/fstop between captures) -- in
-        that case attach a per-timestamp freq axis yourself, or pass a
-        per-DUT dict of freqs and call this once per DUT instead.
-    final_plane : str, optional
-        Name of the calibration plane most callers want (e.g.
-        ``"final"``). If given and present at a given timestamp, a
-        soft link named ``"default"`` is added inside that
-        timestamp's group, pointing at it -- so ``f["t0/default"]``
-        (or :func:`read_final_plane`) works without knowing the plane
-        name, while every plane -- including the aliased one -- stays
-        reachable by its own name too.
-    fname_template : str, optional
-        Output filename per DUT; formatted with ``dut=<dut name>``.
-        Default ``"{dut}_calibrated.h5"``.
-
-    Returns
-    -------
-    dict[str, Path]
-        ``{dut: written_file_path}`` -- DUTs with zero timestamps
-        recorded are skipped (no empty file written) and absent from
-        this dict.
-
-    Raises
-    ------
-    ValueError
-        If ``save_dir`` doesn't exist / isn't a directory, or if
-        ``caled_s11s`` is empty.
+    """
+    Write one HDF5 file per DUT from a nested calibration dict.
     """
     save_dir = Path(save_dir)
     if not save_dir.is_dir():
@@ -140,25 +68,8 @@ def write_dut_calibration_h5(
 
 
 def read_dut_calibration_h5(path):
-    """Read one file written by :func:`write_dut_calibration_h5`.
-
-    Parameters
-    ----------
-    path : str or Path
-
-    Returns
-    -------
-    dut : str
-    timestamps : np.ndarray
-        Sorted timestamps recorded in this file (float, unix seconds).
-    freqs : np.ndarray or None
-        Shared frequency axis, if one was written.
-    by_time : dict[float, dict[str, np.ndarray]]
-        ``{timestamp: {cal_plane: s11_array}}`` -- the same shape as
-        one DUT's slice of the original ``caled_s11s`` input. Every
-        plane that was written is included under its own name; if a
-        ``final_plane`` alias was written it's also present under the
-        key ``"default"``.
+    """
+    Read one file written by :func:`write_dut_calibration_h5`.
     """
     with h5py.File(path, "r") as f:
         dut = f.attrs["dut"]
@@ -172,24 +83,8 @@ def read_dut_calibration_h5(path):
 
 
 def read_final_plane(path, final_plane_name="default"):
-    """Convenience reader: just the commonly-used plane, per timestamp.
-
-    The one-line lookup most callers want -- skips every other
-    calibration plane in the file.
-
-    Parameters
-    ----------
-    path : str or Path
-    final_plane_name : str, optional
-        The alias written by ``final_plane=`` in
-        :func:`write_dut_calibration_h5` (default ``"default"``). A
-        timestamp where that plane wasn't recorded is simply absent
-        from the result rather than raising.
-
-    Returns
-    -------
-    dict[float, np.ndarray]
-        ``{timestamp: s11_array}``.
+    """
+    Convenience reader: just the commonly-used plane, per timestamp.
     """
     with h5py.File(path, "r") as f:
         timestamps = f["timestamps"][:]
@@ -199,4 +94,122 @@ def read_final_plane(path, final_plane_name="default"):
             if final_plane_name in grp:
                 out[float(ts)] = grp[final_plane_name][:]
     return out
+
+
+@dataclass
+class S11Sample:
+    """One paired (dut, receiver) lookup from :meth:`S11.get_s11`.
+
+    ``dut_time``/``rec_time`` are the actual timestamps matched --
+    each DUT (including "rec") has its own set of capture times, so
+    these can differ from each other and from the timestamp that was
+    requested.
+    """
+
+    dut: str
+    dut_time: float
+    dut_s11: np.ndarray
+    rec_time: float
+    rec_s11: np.ndarray
+
+
+class S11:
+    """Calibrated field S11 data, loaded from the per-DUT HDF5 files
+    written by ``scripts/calibrate_field_s11.py`` (via
+    :func:`write_dut_calibration_h5`).
+
+    Parameters
+    ----------
+    caldir : str or Path
+        Directory containing the ``<dut>_calibrated.h5`` files.
+    pattern : str, optional
+        Glob pattern (relative to ``caldir``) selecting which files
+        to load. Default ``"*_calibrated.h5"``.
+
+    Attributes
+    ----------
+    freqs : np.ndarray or None
+        Shared frequency axis (Hz), read off whichever file has one.
+    duts : list of str
+        Names of the DUTs actually loaded. Each is also available as
+        an instance attribute of the same name, e.g. ``self.ant``,
+        ``self.rec`` -- ``{timestamp: {cal_plane: s11_array}}``, the
+        same shape as :func:`read_dut_calibration_h5`'s ``by_time``.
+    """
+
+    def __init__(self, caldir, pattern="*_calibrated.h5"):
+        caldir = Path(caldir)
+        paths = sorted(caldir.glob(pattern))
+        if not paths:
+            raise ValueError(f"no files matching {pattern!r} in {caldir}")
+
+        self.duts = []
+        self.freqs = None
+        for path in paths:
+            dut, _timestamps, freqs, by_time = read_dut_calibration_h5(path)
+            setattr(self, dut, by_time)
+            self.duts.append(dut)
+            if freqs is not None:
+                if self.freqs is None:
+                    self.freqs = freqs
+                elif not np.array_equal(self.freqs, freqs):
+                    raise ValueError(
+                        f"freqs mismatch: {dut!r} does not share the "
+                        "same frequency axis as an earlier file in "
+                        f"{caldir}"
+                    )
+
+    def _nearest(self, dut, timestamp, plane):
+        by_time = getattr(self, dut, None)
+        if by_time is None:
+            raise ValueError(
+                f"no data loaded for dut={dut!r}; loaded duts are "
+                f"{self.duts}"
+            )
+        if not by_time:
+            raise ValueError(f"{dut!r} has no timestamps recorded")
+        times = np.array(list(by_time.keys()))
+        nearest_time = float(times[np.argmin(np.abs(times - timestamp))])
+        planes = by_time[nearest_time]
+        if plane not in planes:
+            raise KeyError(
+                f"{dut!r} at t={nearest_time} has no {plane!r} plane "
+                f"(has: {sorted(planes)})"
+            )
+        return nearest_time, planes[plane]
+
+    def get_s11(self, dut, timestamp, plane="default"):
+        """The calibrated S11 for ``dut``, paired with the receiver
+        S11, both closest in time to ``timestamp``.
+
+        Parameters
+        ----------
+        dut : str
+            Which DUT to look up (e.g. "ant", "amb", "sp1_open").
+        timestamp : float
+            Unix timestamp to match against.
+        plane : str, optional
+            Calibration plane to read. Default ``"default"`` -- the
+            deepest plane written for that DUT (see
+            ``scripts/calibrate_field_s11.py``).
+
+        Returns
+        -------
+        S11Sample
+            ``dut``, the matched ``dut_time``/``dut_s11``, and the
+            matched ``rec_time``/``rec_s11``.
+        """
+        dut_time, dut_s11 = self._nearest(dut, timestamp, plane)
+        rec_time, rec_s11 = self._nearest("rec", timestamp, plane)
+        return S11Sample(dut, dut_time, dut_s11, rec_time, rec_s11)
+    
+    def get_all_s11s(self, dut, plane):
+        """
+                Get all the s11s of a plane for a dut. 
+        """
+        
+        s11s = {timestamp: value[plane] for timestamp,value in getattr(self, dut).items()}
+        return np.array(list(s11s.keys())), np.array(list(s11s.values()))
+        
+
 
