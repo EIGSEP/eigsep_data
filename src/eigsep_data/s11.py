@@ -211,5 +211,13 @@ class S11:
         s11s = {timestamp: value[plane] for timestamp,value in getattr(self, dut).items()}
         return np.array(list(s11s.keys())), np.array(list(s11s.values()))
         
+    @property
+    def s11_dly(self):
+        if not self._s11_dly:
+            bh = signal.windows.blackmanharris(self.freqs.size, sym=False)
+            self._s11_dly = {
+                k: np.abs(np.fft.fft(self.s11_cal[k] * bh)) for k in self.data
+            }
+        return self._s11_dly
 
 
