@@ -35,7 +35,8 @@ dependencies = [
     "numpy",
     "optax",
     "pandas<3",
-    "scipy",
+    # hpm.py uses scipy.special.sph_harm_y, added in 1.15
+    "scipy>=1.15",
     "tqdm",
     "eigsep_corr",
     "eigsep_observing",

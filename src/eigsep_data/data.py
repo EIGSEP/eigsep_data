@@ -1,8 +1,10 @@
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+import re
 import warnings
 
+import h5py
 import numpy as np
 from scipy.optimize import curve_fit
 
@@ -50,11 +52,23 @@ def to_unix_time(value):
 
 def _parse_time_from_name(fname: str) -> datetime:
     """
-    Parse datetime from filename of form 'corr_YYYYMMDD_HHMMSS.h5'
+    Parse datetime from a correlator filename.
+
+    Handles the naming variants seen across deployments, e.g.
+    'corr_20250922_160500.h5', 'corr_20260715_172825Z.h5' (UTC marker)
+    and 'corr_20260712_235712Z-1.h5' (disambiguating suffix for files
+    closed within the same second).
+
+    Note this is the file *close* time, which lags the integrations
+    inside it -- by up to ~17 min on deployment-5 data, and by far more
+    on the ~10% of files written before the clock synced. Use
+    header["times"] whenever the actual integration time matters.
     """
-    stem = Path(fname).stem  # 'corr_20250922_160500'
-    _, datestr, timestr = stem.split("_")  # ['corr', '20250922', '160500']
-    return datetime.strptime(datestr + timestr, "%Y%m%d%H%M%S")
+    stem = Path(fname).stem
+    match = re.search(r"(\d{8})_(\d{6})", stem)
+    if match is None:
+        raise ValueError(f"Could not parse a timestamp from {fname!r}.")
+    return datetime.strptime(match.group(1) + match.group(2), "%Y%m%d%H%M%S")
 
 
 @dataclass
@@ -210,17 +224,31 @@ def _select_h5_in_range(data_dir, start_unix, end_unix, file_patterns):
     freqs = None
 
     for filename in h5_files:
+        # Read header["times"] alone before deciding whether to load the
+        # file. io.read_hdf5 pulls the full payload at ~36 ms/file, which
+        # is ~77x the cost of this peek and is wasted on every file
+        # outside the window -- and in a deployment directory of several
+        # thousand files, that is nearly all of them. Selection still
+        # uses header times, so this changes speed only, not results.
         try:
-            data_file, header_file, metadata_file = io.read_hdf5(filename)
-            if "times" not in header_file:
-                raise KeyError(f"{filename.name} does not contain header['times'].")
+            with h5py.File(filename, "r") as h5:
+                if "header" not in h5 or "times" not in h5["header"]:
+                    raise KeyError(
+                        f"{filename.name} does not contain header['times']."
+                    )
+                times_file = np.asarray(h5["header"]["times"])
         except (OSError, KeyError) as e:
             warnings.warn(f"Skipping {filename.name}: {e}")
             continue
 
-        times_file = np.asarray(header_file["times"])
         time_mask = (times_file >= start_unix) & (times_file < end_unix)
         if not np.any(time_mask):
+            continue
+
+        try:
+            data_file, header_file, metadata_file = io.read_hdf5(filename)
+        except (OSError, KeyError) as e:
+            warnings.warn(f"Skipping {filename.name}: {e}")
             continue
 
         if selected_times and set(data_file) != set(selected_data):
@@ -233,10 +261,12 @@ def _select_h5_in_range(data_dir, start_unix, end_unix, file_patterns):
             )
 
         selected_times.append(times_file[time_mask])
-        headers.append({
-            "selected_indices": np.flatnonzero(time_mask),
-            "times": times_file[time_mask],
-        })
+        headers.append(
+            {
+                "selected_indices": np.flatnonzero(time_mask),
+                "times": times_file[time_mask],
+            }
+        )
         metadata.append(metadata_file)
         if freqs is None:
             freqs = header_file.get("freqs")
@@ -251,13 +281,16 @@ def _select_h5_in_range(data_dir, start_unix, end_unix, file_patterns):
             selected_data.setdefault(key, []).append(values[time_mask])
 
     if not selected_times:
-        raise ValueError("No integrations found inside the requested time range.")
+        raise ValueError(
+            "No integrations found inside the requested time range."
+        )
 
     times = np.concatenate(selected_times)
     sort_index = np.argsort(times)
     times = times[sort_index]
     data_range = {
-        k: np.concatenate(v, axis=0)[sort_index] for k, v in selected_data.items()
+        k: np.concatenate(v, axis=0)[sort_index]
+        for k, v in selected_data.items()
     }
 
     return times, freqs, data_range, headers, metadata, sort_index
@@ -272,6 +305,7 @@ def extract_beam_mapping_data(
     ground_key="0",
     cross_key="04",
     sweep_slice=None,
+    counts_per_deg=62.77777777777778,
 ):
     """
     Extract raw beam-mapping arrays from correlator HDF5 files.
@@ -297,6 +331,11 @@ def extract_beam_mapping_data(
     sweep_slice : slice, optional
         If given, applied to every returned per-sample array (e.g. to
         drop a calibration sweep at the start of a run).
+    counts_per_deg : float
+        Stepper counts per degree, used to convert *el_pos* to degrees
+        when anchoring the IMU elevation angle. The default follows
+        picohost.motor.PicoMotor (step_angle_deg=1.8, gear_teeth=113,
+        microstep=1), i.e. +-11300 counts = +-180 deg.
 
     Returns
     -------
@@ -306,7 +345,8 @@ def extract_beam_mapping_data(
         sky, ground, cross : np.ndarray, shape (nsamples, nchan)
         el_pos, az_pos : np.ndarray -- commanded motor positions
         pot_az_angle : np.ndarray -- raw potentiometer azimuth reading
-        imu_el_deg : np.ndarray -- IMU-derived elevation angle
+        imu_el_deg : np.ndarray -- IMU-derived elevation angle, in
+            degrees, with sign and zero point anchored to el_pos
         imu_accel : np.ndarray, shape (nsamples, 3) -- raw accelerometer
             (x, y, z)
     """
@@ -315,8 +355,8 @@ def extract_beam_mapping_data(
     if end_unix <= start_unix:
         raise ValueError("end_time must be later than start_time.")
 
-    times, freqs, data_range, headers, metadata, sort_index = _select_h5_in_range(
-        data_dir, start_unix, end_unix, file_patterns
+    times, freqs, data_range, headers, metadata, sort_index = (
+        _select_h5_in_range(data_dir, start_unix, end_unix, file_patterns)
     )
 
     for key in (sky_key, ground_key, cross_key):
@@ -347,7 +387,9 @@ def extract_beam_mapping_data(
         file_pot = []
         for idx in indices:
             entry = potmon[idx]
-            file_pot.append(np.nan if entry is None else entry.get("pot_az_angle", np.nan))
+            file_pot.append(
+                np.nan if entry is None else entry.get("pot_az_angle", np.nan)
+            )
         pot_list.append(np.asarray(file_pot, dtype=float))
 
         imu_el = meta["imu_el"]
@@ -358,7 +400,11 @@ def extract_beam_mapping_data(
                 file_accel.append((np.nan, np.nan, np.nan))
             else:
                 file_accel.append(
-                    (entry.get("accel_x", np.nan), entry.get("accel_y", np.nan), entry.get("accel_z", np.nan))
+                    (
+                        entry.get("accel_x", np.nan),
+                        entry.get("accel_y", np.nan),
+                        entry.get("accel_z", np.nan),
+                    )
                 )
         accel_list.append(np.asarray(file_accel, dtype=float))
 
@@ -367,20 +413,7 @@ def extract_beam_mapping_data(
     pot_az_angle = np.concatenate(pot_list)[sort_index]
     accel = np.concatenate(accel_list)[sort_index]
 
-    # IMU elevation angle: SVD of the accelerometer axes finds the plane
-    # of rotation; the angle within that plane tracks elevation. NaN rows
-    # (dropped IMU readings) are excluded from the SVD and left NaN in the
-    # output, since np.linalg.svd raises on NaN input.
-    valid_accel = ~np.any(np.isnan(accel), axis=1)
-    imu_el_deg = np.full(accel.shape[0], np.nan)
-    if np.any(valid_accel):
-        _, _, Vt = np.linalg.svd(accel[valid_accel], full_matrices=False)
-        u, v = Vt[0, :], Vt[1, :]
-        proj_x = accel[valid_accel] @ u
-        proj_y = accel[valid_accel] @ v
-        imu_el_deg[valid_accel] = (
-            np.unwrap(np.degrees(np.arctan2(proj_y, proj_x)), period=360) - 180
-        )
+    imu_el_deg = imu_el_from_accel(accel, el_pos, counts_per_deg)
 
     out = {
         "times": times,
@@ -395,11 +428,80 @@ def extract_beam_mapping_data(
         "imu_accel": accel,
     }
     if sweep_slice is not None:
-        out = {k: (v if k == "freqs" else v[sweep_slice]) for k, v in out.items()}
+        out = {
+            k: (v if k == "freqs" else v[sweep_slice]) for k, v in out.items()
+        }
     return out
 
 
-def extract_clean_pot_data_v2(az_pot, az_step, min_stable_samples=10, settle_samples=3):
+def imu_el_from_accel(accel, el_pos, counts_per_deg=62.77777777777778):
+    """
+    Derive elevation in degrees from accelerometer readings.
+
+    An SVD of the accelerometer vectors finds the plane gravity sweeps
+    out as the antenna tilts; the angle within that plane tracks
+    elevation.
+
+    Finding the plane is well posed, but the basis (u, v) spanning it is
+    arbitrary up to a rotation within the plane and a reflection, and
+    LAPACK's choice depends on the rows it is given. Two calls over
+    different time windows of one scan therefore disagree on both the
+    sign and the origin of the angle. Both are anchored to the commanded
+    motor position: the IMU still supplies the precise angle, *el_pos*
+    only resolves the two-fold sign and pins the constant offset.
+
+    Parameters
+    ----------
+    accel : np.ndarray, shape (nsamples, 3)
+        Accelerometer (x, y, z). Rows containing NaN (dropped IMU
+        readings) are excluded from the SVD and left NaN in the output,
+        since np.linalg.svd raises on NaN input.
+    el_pos : np.ndarray, shape (nsamples,)
+        Commanded motor elevation, in stepper counts.
+    counts_per_deg : float
+        Stepper counts per degree, used to convert *el_pos* to degrees.
+
+    Returns
+    -------
+    imu_el_deg : np.ndarray, shape (nsamples,)
+        Elevation in degrees, NaN where the IMU reading was dropped.
+    """
+    accel = np.asarray(accel, dtype=float)
+    el_pos = np.asarray(el_pos, dtype=float)
+    valid = ~np.any(np.isnan(accel), axis=1)
+    imu_el_deg = np.full(accel.shape[0], np.nan)
+    if not np.any(valid):
+        return imu_el_deg
+
+    _, _, Vt = np.linalg.svd(accel[valid], full_matrices=False)
+    u, v = Vt[0, :], Vt[1, :]
+    proj_x = accel[valid] @ u
+    proj_y = accel[valid] @ v
+    raw_deg = np.unwrap(np.degrees(np.arctan2(proj_y, proj_x)), period=360)
+
+    el_motor_deg = el_pos[valid] / counts_per_deg
+    anchor = np.isfinite(el_motor_deg)
+    if np.count_nonzero(anchor) < 2:
+        warnings.warn(
+            "No usable motor el_pos to anchor the IMU elevation angle; "
+            "its sign and zero point are arbitrary and may differ between "
+            "calls over different time windows."
+        )
+        imu_el_deg[valid] = raw_deg - 180
+        return imu_el_deg
+
+    cov = np.cov(raw_deg[anchor], el_motor_deg[anchor])[0, 1]
+    # cov == 0 means the scan holds one elevation, where the sign is
+    # unobservable and immaterial: the offset below absorbs it.
+    sign = -1.0 if cov < 0 else 1.0
+    offset = np.median(el_motor_deg[anchor] - sign * raw_deg[anchor])
+    imu_el_deg[valid] = sign * raw_deg + offset
+    return imu_el_deg
+
+
+def extract_clean_pot_data_v2(
+    az_pot, az_step, min_stable_samples=10, settle_samples=3
+):
     """
     Clean noisy potentiometer data by isolating stable plateaus, computing
     their medians, and linearly interpolating across motor transitions.
@@ -429,12 +531,24 @@ def extract_clean_pot_data_v2(az_pot, az_step, min_stable_samples=10, settle_sam
     boundaries = np.concatenate(([0], change_indices, [len(az_step)]))
 
     plateaus = []
+    dropped = []
     for i in range(len(boundaries) - 1):
         start = boundaries[i]
         end = boundaries[i + 1]
         if (end - start) >= min_stable_samples:
             safe_start = min(start + settle_samples, end - 1)
-            plateau_median = np.median(az_pot[safe_start:end])
+            window = az_pot[safe_start:end]
+            if not np.any(np.isfinite(window)):
+                # A dropout run can cover an entire plateau. Keep it out
+                # of `plateaus` so a NaN median cannot poison the
+                # neighbouring ramps, and record it so it stays NaN
+                # below: there is no measurement here, and interpolating
+                # would assign azimuths the motor never visited.
+                dropped.append((start, end))
+                continue
+            # nanmedian, not median: a single missing sample would
+            # otherwise turn the whole plateau NaN.
+            plateau_median = np.nanmedian(window)
             clean_az_pot[start:end] = plateau_median
             plateaus.append((start, end, plateau_median))
 
@@ -450,6 +564,11 @@ def extract_clean_pot_data_v2(az_pot, az_step, min_stable_samples=10, settle_sam
             clean_az_pot[: plateaus[0][0]] = plateaus[0][2]
         if plateaus[-1][1] < len(clean_az_pot):
             clean_az_pot[plateaus[-1][1] :] = plateaus[-1][2]
+
+    # Applied last: the ramp and edge fills above write across these
+    # spans, and a plateau with no data must stay flagged as missing.
+    for start, end in dropped:
+        clean_az_pot[start:end] = np.nan
 
     return clean_az_pot
 
@@ -488,6 +607,17 @@ def calibrate_weak_arm(el_deg, az_deg, dpss_red):
     crossings = np.where(np.diff(np.sign(el_deg)))[0]
     valid_crossings = [i for i in crossings if abs(el_deg[i]) < 10]
 
+    num_freqs = dpss_red.shape[1]
+    if not valid_crossings:
+        # e.g. a fixed-elevation azimuth raster. Without this, power_at_0
+        # is shape (0,) rather than (0, nfreq) and the per-frequency loop
+        # below raises IndexError before its own validity check runs.
+        warnings.warn(
+            "No el=0 crossings within +-10 deg; cannot fit the weak-arm "
+            "calibration. Returning NaN scale factors."
+        )
+        return np.full(num_freqs // 2, np.nan), np.full(num_freqs, np.nan)
+
     az_at_0 = []
     power_at_0 = []
     for i in valid_crossings:
@@ -504,9 +634,11 @@ def calibrate_weak_arm(el_deg, az_deg, dpss_red):
     def _malus_law(az, peak_power, min_power, phase_offset):
         az_rad = np.deg2rad(az)
         phase_rad = np.deg2rad(phase_offset)
-        return min_power + (peak_power - min_power) * np.cos(az_rad - phase_rad) ** 2
+        return (
+            min_power
+            + (peak_power - min_power) * np.cos(az_rad - phase_rad) ** 2
+        )
 
-    num_freqs = dpss_red.shape[1]
     peak_powers = np.full(num_freqs, np.nan)
     for f_idx in range(num_freqs):
         p_freq = power_at_0[:, f_idx]
@@ -516,7 +648,9 @@ def calibrate_weak_arm(el_deg, az_deg, dpss_red):
         p_v, az_v = p_freq[valid], az_at_0[valid]
         try:
             popt, _ = curve_fit(
-                _malus_law, az_v, p_v,
+                _malus_law,
+                az_v,
+                p_v,
                 p0=[np.max(p_v), np.min(p_v), az_v[np.argmax(p_v)]],
             )
             peak_powers[f_idx] = popt[0]

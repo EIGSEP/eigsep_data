@@ -93,6 +93,23 @@ def fit_multi_freq_joint(
         the unit disk are set to np.inf.
     extent : list of float
         [x_min, x_max, y_min, y_max] for imshow/pcolormesh.
+
+    Notes
+    -----
+    This fit assumes the RX gimbal's true mechanical el/az axes exactly
+    match RotatingAntennaCartesian's el_axis/az_axis (ideal [1,0,0] and
+    [0,0,1] by default) -- there is no parameter here for a mounting
+    misalignment between them. A quick numerical check (3 deg synthetic
+    axis tilts against an alpha-only refit, on the committed bowtie beam)
+    found this is *not* an exact degeneracy: 2-3% relative RMS power
+    residual remained unexplained by any alpha, and best_alpha stayed
+    within about 1 deg of truth rather than absorbing the tilt. So a
+    joint fit of alpha and an axis tilt should be identifiable in
+    principle, given enough scan coverage and SNR -- but that residual is
+    small enough that on real (noisier, RFI-flagged) data the two could
+    still be poorly conditioned in practice. This was a rough check, not
+    a Fisher-information/condition-number analysis; treat it as a
+    starting point, not a proof either way.
     """
     az_rad = jnp.deg2rad(jnp.asarray(az_deg))
     el_rad = jnp.deg2rad(jnp.asarray(el_deg))

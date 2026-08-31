@@ -433,6 +433,7 @@ def dpss2d(data, At, Af, flags=None):
 # Beam-mapping DPSS pipeline
 # -----------------------------------------------------------------------
 
+
 def flag_rfi_time(data, window=21, sigma=6.0, floor_fraction=0.05):
     """
     Flag short-duration positive RFI independently for each frequency.
@@ -464,7 +465,9 @@ def flag_rfi_time(data, window=21, sigma=6.0, floor_fraction=0.05):
     baseline = median_filter(data, size=(window, 1), mode="nearest")
     residual = data - baseline
 
-    local_mad = median_filter(np.abs(residual), size=(window, 1), mode="nearest")
+    local_mad = median_filter(
+        np.abs(residual), size=(window, 1), mode="nearest"
+    )
     local_sigma = 1.4826 * local_mad
 
     freq_scale = 1.4826 * np.nanmedian(
@@ -477,7 +480,9 @@ def flag_rfi_time(data, window=21, sigma=6.0, floor_fraction=0.05):
     return rfi_mask, baseline, residual
 
 
-def build_dpss_basis(nchan, nw=4.0, nterms=16, include_poly=True, poly_order=2):
+def build_dpss_basis(
+    nchan, nw=4.0, nterms=16, include_poly=True, poly_order=2
+):
     """
     Build a smooth spectral basis using DPSS tapers plus optional polynomials.
 
@@ -503,7 +508,7 @@ def build_dpss_basis(nchan, nw=4.0, nterms=16, include_poly=True, poly_order=2):
     if include_poly:
         x = np.linspace(-1, 1, nchan)
         for p in range(poly_order + 1):
-            basis.append(x ** p)
+            basis.append(x**p)
     A = np.vstack(basis).T
     A = A / np.maximum(np.linalg.norm(A, axis=0, keepdims=True), 1e-30)
     return A
@@ -540,7 +545,9 @@ def normalize_each_freq(x, valid=None, eps=1e-30):
     return out
 
 
-def build_frequency_trust_mask(freqs, min_freq=50.0, fm_low=87.0, fm_high=108.0):
+def build_frequency_trust_mask(
+    freqs, min_freq=50.0, fm_low=87.0, fm_high=108.0
+):
     """
     Return a boolean mask of trusted frequency channels.
 
@@ -604,8 +611,14 @@ def make_dpss_fit_mask(
     fit_mask : np.ndarray of bool, shape (nchan,)
     """
     chs = np.asarray(chs, dtype=int)
-    fit_min_chan = max(0, int(fit_min_chan or 0))
-    fit_max_chan = min(nchan, int(fit_max_chan or nchan))
+    # `is None`, not `or`: fit_max_chan=0 is a real (if degenerate)
+    # bound, and the falsy-or idiom silently widened it to the full band.
+    if fit_min_chan is None:
+        fit_min_chan = 0
+    if fit_max_chan is None:
+        fit_max_chan = nchan
+    fit_min_chan = max(0, int(fit_min_chan))
+    fit_max_chan = min(nchan, int(fit_max_chan))
 
     fit_mask = np.zeros(nchan, dtype=bool)
     fit_mask[fit_min_chan:fit_max_chan] = True
@@ -613,8 +626,12 @@ def make_dpss_fit_mask(
     if freqs is not None:
         freqs = np.asarray(freqs, dtype=float)
         if freqs.shape != (nchan,):
-            raise ValueError(f"freqs must have shape ({nchan},), got {freqs.shape}")
-        fit_mask &= build_frequency_trust_mask(freqs, min_freq, fm_low, fm_high)
+            raise ValueError(
+                f"freqs must have shape ({nchan},), got {freqs.shape}"
+            )
+        fit_mask &= build_frequency_trust_mask(
+            freqs, min_freq, fm_low, fm_high
+        )
 
     for c in chs:
         lo = max(0, c - guard_bins)
@@ -682,8 +699,12 @@ def fit_smooth_model_one_spectrum(
         good &= y > 0
 
     def _fail(msg):
-        info = {"success": False, "message": msg,
-                "constraint_active": False, "max_constraint_violation": np.nan}
+        info = {
+            "success": False,
+            "message": msg,
+            "constraint_active": False,
+            "max_constraint_violation": np.nan,
+        }
         m = np.full(nchan, np.nan)
         return (m, info) if return_info else m
 
@@ -712,6 +733,12 @@ def fit_smooth_model_one_spectrum(
     rfi_mask = residuals > (med_res + 3.0 * (std_robust + 1e-8))
     Ag_fit, yy_fit = Ag[~rfi_mask], yy[~rfi_mask]
 
+    # Re-check after clipping: the ridge term makes lhs2 positive definite
+    # for any ridge > 0, so np.linalg.solve succeeds even when Ag_fit has
+    # fewer rows than nbasis and the fit is underdetermined.
+    if Ag_fit.shape[0] < nbasis + min_good_extra:
+        return _fail("Not enough valid fit channels after RFI clipping")
+
     lhs2 = Ag_fit.T @ Ag_fit + ridge * np.eye(nbasis)
     rhs2 = Ag_fit.T @ yy_fit
     try:
@@ -724,30 +751,60 @@ def fit_smooth_model_one_spectrum(
         return np.exp(m) if use_log else m
 
     # No constraints
-    if not enforce_comb_upper or constraint_chs is None or len(constraint_chs) == 0:
-        info = {"success": True, "message": "Unconstrained ridge fit",
-                "constraint_active": False, "max_constraint_violation": 0.0}
-        return (_build_model(coeff0), info) if return_info else _build_model(coeff0)
+    if (
+        not enforce_comb_upper
+        or constraint_chs is None
+        or len(constraint_chs) == 0
+    ):
+        info = {
+            "success": True,
+            "message": "Unconstrained ridge fit",
+            "constraint_active": False,
+            "max_constraint_violation": 0.0,
+        }
+        return (
+            (_build_model(coeff0), info)
+            if return_info
+            else _build_model(coeff0)
+        )
 
     # Check which constraint channels are valid
     constraint_chs = np.asarray(constraint_chs, dtype=int)
     yc = y[constraint_chs]
-    ok = np.isfinite(yc) & (yc > 0 if use_log else np.ones_like(yc, dtype=bool))
+    ok = np.isfinite(yc) & (
+        yc > 0 if use_log else np.ones_like(yc, dtype=bool)
+    )
     chs_ok = constraint_chs[ok]
 
     if len(chs_ok) == 0:
-        info = {"success": True, "message": "No valid constraint channels",
-                "constraint_active": False, "max_constraint_violation": np.nan}
-        return (_build_model(coeff0), info) if return_info else _build_model(coeff0)
+        info = {
+            "success": True,
+            "message": "No valid constraint channels",
+            "constraint_active": False,
+            "max_constraint_violation": np.nan,
+        }
+        return (
+            (_build_model(coeff0), info)
+            if return_info
+            else _build_model(coeff0)
+        )
 
     Ac = basis[chs_ok]
     upper = np.log(y[chs_ok]) if use_log else y[chs_ok]
 
     if np.max(Ac @ coeff0 - upper) <= constraint_tol:
         viol = float(max(0.0, np.max(Ac @ coeff0 - upper)))
-        info = {"success": True, "message": "Unconstrained solution already feasible",
-                "constraint_active": False, "max_constraint_violation": viol}
-        return (_build_model(coeff0), info) if return_info else _build_model(coeff0)
+        info = {
+            "success": True,
+            "message": "Unconstrained solution already feasible",
+            "constraint_active": False,
+            "max_constraint_violation": viol,
+        }
+        return (
+            (_build_model(coeff0), info)
+            if return_info
+            else _build_model(coeff0)
+        )
 
     # Constrained SLSQP
     def objective(c):
@@ -758,8 +815,14 @@ def fit_smooth_model_one_spectrum(
         return Ag_fit.T @ (Ag_fit @ c - yy_fit) + ridge * c
 
     result = minimize(
-        objective, coeff0, jac=gradient,
-        constraints={"type": "ineq", "fun": lambda c: upper - Ac @ c, "jac": lambda c: -Ac},
+        objective,
+        coeff0,
+        jac=gradient,
+        constraints={
+            "type": "ineq",
+            "fun": lambda c: upper - Ac @ c,
+            "jac": lambda c: -Ac,
+        },
         method="SLSQP",
         options={"maxiter": maxiter, "ftol": ftol, "disp": False},
     )
@@ -769,8 +832,12 @@ def fit_smooth_model_one_spectrum(
     if not success:
         return _fail(result.message)
 
-    info = {"success": True, "message": result.message,
-            "constraint_active": True, "max_constraint_violation": viol}
+    info = {
+        "success": True,
+        "message": result.message,
+        "constraint_active": True,
+        "max_constraint_violation": viol,
+    }
     m = _build_model(result.x)
     return (m, info) if return_info else m
 
@@ -842,20 +909,38 @@ def fit_dpss_model_per_time(
     ntime, nchan = raw.shape
 
     if freqs.shape != (nchan,):
-        raise ValueError(f"freqs must have shape ({nchan},), got {freqs.shape}")
+        raise ValueError(
+            f"freqs must have shape ({nchan},), got {freqs.shape}"
+        )
     if np.any(chs < 0) or np.any(chs >= nchan):
-        raise ValueError("Some entries of chs are outside the raw spectral axis.")
+        raise ValueError(
+            "Some entries of chs are outside the raw spectral axis."
+        )
 
-    trusted_freq_mask = build_frequency_trust_mask(freqs, min_freq, fm_low, fm_high)
+    trusted_freq_mask = build_frequency_trust_mask(
+        freqs, min_freq, fm_low, fm_high
+    )
     trusted_comb_mask = trusted_freq_mask[chs]
     trusted_constraint_chs = chs[trusted_comb_mask]
 
-    basis = build_dpss_basis(nchan, nw=nw, nterms=nterms,
-                             include_poly=include_poly, poly_order=poly_order)
-    fit_mask = make_dpss_fit_mask(nchan, chs, guard_bins=guard_bins,
-                                  fit_min_chan=fit_min_chan, fit_max_chan=fit_max_chan,
-                                  freqs=freqs, min_freq=min_freq,
-                                  fm_low=fm_low, fm_high=fm_high)
+    basis = build_dpss_basis(
+        nchan,
+        nw=nw,
+        nterms=nterms,
+        include_poly=include_poly,
+        poly_order=poly_order,
+    )
+    fit_mask = make_dpss_fit_mask(
+        nchan,
+        chs,
+        guard_bins=guard_bins,
+        fit_min_chan=fit_min_chan,
+        fit_max_chan=fit_max_chan,
+        freqs=freqs,
+        min_freq=min_freq,
+        fm_low=fm_low,
+        fm_high=fm_high,
+    )
     if verbose:
         print("number of fit channels:", np.sum(fit_mask))
 
@@ -866,10 +951,17 @@ def fit_dpss_model_per_time(
 
     for ti in range(ntime):
         model_t, info = fit_smooth_model_one_spectrum(
-            spectrum=raw[ti], basis=basis, fit_mask=fit_mask,
-            constraint_chs=trusted_constraint_chs, use_log=use_log, ridge=ridge,
-            enforce_comb_upper=enforce_comb_upper, maxiter=optimizer_maxiter,
-            ftol=optimizer_ftol, constraint_tol=constraint_tol, return_info=True,
+            spectrum=raw[ti],
+            basis=basis,
+            fit_mask=fit_mask,
+            constraint_chs=trusted_constraint_chs,
+            use_log=use_log,
+            ridge=ridge,
+            enforce_comb_upper=enforce_comb_upper,
+            maxiter=optimizer_maxiter,
+            ftol=optimizer_ftol,
+            constraint_tol=constraint_tol,
+            return_info=True,
         )
         model_raw[ti] = model_t
         fit_success[ti] = info["success"]
@@ -877,8 +969,10 @@ def fit_dpss_model_per_time(
         max_violation[ti] = info["max_constraint_violation"]
 
         if verbose and ti % 500 == 0:
-            print(f"fit {ti}/{ntime} (success={fit_success[ti]}, "
-                  f"constraint={constraint_active[ti]})")
+            print(
+                f"fit {ti}/{ntime} (success={fit_success[ti]}, "
+                f"constraint={constraint_active[ti]})"
+            )
 
     reduced = raw[:, chs] - model_raw[:, chs]
     if mask_untrusted_output:
@@ -887,7 +981,7 @@ def fit_dpss_model_per_time(
     test_data = normalize_each_freq(reduced, valid=np.isfinite(reduced))
 
     if verbose:
-        print(f"\nDPSS fit diagnostics")
+        print("\nDPSS fit diagnostics")
         print(f"successful fits: {np.sum(fit_success)}/{ntime}")
         print(f"fraction successful: {np.mean(fit_success):.3f}")
 
@@ -936,8 +1030,9 @@ def robust_dpss_fit(y, B, sigma=4.0, max_iter=4, min_points=None):
         return np.full_like(y, np.nan), good
 
     coeff0 = np.linalg.lstsq(B[good], y[good], rcond=None)[0]
-    result = least_squares(lambda c: B[good] @ c - y[good], coeff0,
-                           loss="soft_l1", f_scale=1.0)
+    result = least_squares(
+        lambda c: B[good] @ c - y[good], coeff0, loss="soft_l1", f_scale=1.0
+    )
     coeff = result.x
 
     for _ in range(max_iter):
@@ -951,7 +1046,9 @@ def robust_dpss_fit(y, B, sigma=4.0, max_iter=4, min_points=None):
         if not np.isfinite(robust_sigma) or robust_sigma <= 0:
             break
 
-        new_good = np.isfinite(y) & (np.abs(residual - center) <= sigma * robust_sigma)
+        new_good = np.isfinite(y) & (
+            np.abs(residual - center) <= sigma * robust_sigma
+        )
         if np.sum(new_good) < min_points:
             break
         if np.array_equal(new_good, good):
@@ -1031,7 +1128,7 @@ def fit_dpss_interleaved_fix(
     rfi_occupancy : np.ndarray, shape (nsample,)
     """
     P_meas = np.asarray(P_meas, dtype=float)
-    freqs  = np.asarray(freqs, dtype=float)
+    freqs = np.asarray(freqs, dtype=float)
     nsample, nfreq = P_meas.shape
 
     if rfi_mask is None:
@@ -1067,8 +1164,13 @@ def fit_dpss_interleaved_fix(
                 continue
             coeff, *_ = np.linalg.lstsq(B_sub[good], y_sub[good], rcond=None)
             smooth = B_sub @ coeff
-            P_hat[si, :] = interp1d(f_sub, smooth, kind="linear",
-                                    bounds_error=False, fill_value="extrapolate")(freqs)
+            P_hat[si, :] = interp1d(
+                f_sub,
+                smooth,
+                kind="linear",
+                bounds_error=False,
+                fill_value="extrapolate",
+            )(freqs)
             P_hat[si, idx_sub[good]] = y_sub[good]
 
     return P1_hat, P6_hat, P1_hat + P6_hat, bad_time, rfi_occupancy
@@ -1096,11 +1198,13 @@ def fit_dpss_interleaved_log(P_meas, freqs, nmodes=4, NW=4.0, eps=1e-12):
     G_hat  : np.ndarray, shape (nsample, nfreq)  — P1_hat + P6_hat
     """
     P_meas = np.asarray(P_meas, dtype=float)
-    freqs  = np.asarray(freqs, dtype=float)
+    freqs = np.asarray(freqs, dtype=float)
     nsample, nfreq = P_meas.shape
 
     if freqs.ndim != 1 or len(freqs) != nfreq:
-        raise ValueError(f"freqs must be 1D with length {nfreq}, got {freqs.shape}")
+        raise ValueError(
+            f"freqs must be 1D with length {nfreq}, got {freqs.shape}"
+        )
 
     idx1, idx6 = np.arange(0, nfreq, 2), np.arange(1, nfreq, 2)
     f1, f6 = freqs[idx1], freqs[idx6]
@@ -1120,8 +1224,13 @@ def fit_dpss_interleaved_log(P_meas, freqs, nmodes=4, NW=4.0, eps=1e-12):
             smooth = dpss_fit_logspace(y_sub, B_sub, eps=eps)
             if not np.any(np.isfinite(smooth)):
                 continue
-            P_hat[si, :] = interp1d(f_sub, smooth, kind="linear",
-                                    bounds_error=False, fill_value="extrapolate")(freqs)
+            P_hat[si, :] = interp1d(
+                f_sub,
+                smooth,
+                kind="linear",
+                bounds_error=False,
+                fill_value="extrapolate",
+            )(freqs)
             good = np.isfinite(y_sub) & (y_sub > 0)
             P_hat[si, idx_sub[good]] = y_sub[good]
 

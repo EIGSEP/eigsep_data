@@ -16,6 +16,8 @@ simulate_all_frequencies
 simulate_both_arms_interleaved
 """
 
+from pathlib import Path
+
 import healpy
 import numpy as np
 import jax
@@ -33,28 +35,42 @@ dtype_r = jnp.float64
 # HFSS beam I/O
 # -----------------------------------------------------------------------
 
-def read_beam(cart_path, th_path, ph_path, drop_last=True):
+# The HFSS bowtie beam map ships with the repo (hfss_beam_maps/) rather
+# than being fetched from external storage, so read_beam can default to
+# it directly. Single compressed npz with named keys -- freqs, bm-style
+# Cartesian/spherical arrays, nside -- matching the convention used for
+# other simulation inputs (see sim.py's load_beam).
+DEFAULT_BEAM_PATH = (
+    Path(__file__).resolve().parents[2] / "hfss_beam_maps" / "bowtie_beam.npz"
+)
+
+
+def read_beam(path=DEFAULT_BEAM_PATH, drop_last=True):
     """
     Load HFSS beam maps from disk.
 
-    Reads two representations of the same simulated beam:
-      - a complex Cartesian E-field beam (npz, single array stored under
-        key 'arr_0'), shape (nfreq, 3, npix); consumed by
-        RotatingAntennaCartesian for forward simulation and fitting.
-      - spherical theta/phi gain components (two .npy files), summed and
-        peak-normalized per frequency to serve as HFSS "truth" maps for
-        comparison against reduced data.
+    Reads a single npz holding two representations of the same simulated
+    beam, plus the frequency each slice corresponds to:
+      - beam_cart : complex Cartesian E-field beam, shape (nfreq, 3, npix);
+        consumed by RotatingAntennaCartesian for forward simulation and
+        fitting.
+      - gain_th, gain_ph : spherical theta/phi gain components, shape
+        (nfreq, npix); summed and peak-normalized per frequency to serve
+        as HFSS "truth" maps for comparison against reduced data.
+      - freqs : frequency of each slice, in MHz, on the same grid as
+        eigsep_observing's correlator freqs (freqs[::16][12:]).
+      - nside : HEALPix nside of the pixelization (npix = 12*nside**2).
 
     Parameters
     ----------
-    cart_path : str or Path
-        Path to the Cartesian E-field beam .npz file.
-    th_path, ph_path : str or Path
-        Paths to the theta- and phi-polarized gain .npy files.
+    path : str or Path
+        Path to the beam npz file. Defaults to the bowtie beam committed
+        at hfss_beam_maps/bowtie_beam.npz.
     drop_last : bool
-        If True (default), drop the last frequency slice from all three
-        arrays before combining -- matches the convention used elsewhere
-        in this pipeline where the final HFSS entry is unused.
+        If True (default), drop the last frequency slice from beam_cart,
+        gain_th, gain_ph, and freqs before combining -- matches the
+        convention used elsewhere in this pipeline where the final HFSS
+        entry is unused.
 
     Returns
     -------
@@ -63,21 +79,25 @@ def read_beam(cart_path, th_path, ph_path, drop_last=True):
     gain_sph : np.ndarray, shape (nfreq, npix)
         Peak-normalized total-gain maps (theta + phi power), one per
         frequency.
+    freqs : np.ndarray, shape (nfreq,)
+        Frequency of each slice, in MHz.
     """
-    with np.load(cart_path) as npz:
-        beam_cart = npz["arr_0"]
-    beam_th = np.load(th_path)
-    beam_ph = np.load(ph_path)
+    with np.load(path) as npz:
+        beam_cart = npz["beam_cart"]
+        beam_th = npz["gain_th"]
+        beam_ph = npz["gain_ph"]
+        freqs = npz["freqs"]
 
     if drop_last:
         beam_cart = beam_cart[:-1]
         beam_th = beam_th[:-1, :]
         beam_ph = beam_ph[:-1, :]
+        freqs = freqs[:-1]
 
     gain_sph = beam_th + beam_ph
     gain_sph = gain_sph / np.max(gain_sph, axis=1, keepdims=True)
 
-    return beam_cart, gain_sph
+    return beam_cart, gain_sph, freqs
 
 
 def tot_g(beam_cart):
@@ -96,7 +116,11 @@ def tot_g(beam_cart):
     Returns
     -------
     gain : jnp.ndarray, shape (..., npix)
-        Total gain at each pixel.
+        Total gain at each pixel, in absolute (not peak-normalized)
+        units. Note this differs from read_beam's *gain_sph*, which is
+        divided by its per-frequency peak: the two describe the same
+        beam but are not directly comparable without normalizing one of
+        them.
     """
     mu0, eps0 = 12.566e-7, 8.854e-12
     eta0 = jnp.sqrt(mu0 / eps0)
@@ -258,20 +282,33 @@ class RotatingAntennaCartesian:
     conjugate_beam : bool
         If True, compute V = conj(E_beam) · E_inc (standard receiving
         convention). Set False if the HFSS phase convention appears flipped.
+    el_axis, az_axis : array-like, shape (3,)
+        Unit vectors, in the beam's own Cartesian frame, that the gimbal
+        physically rotates the antenna about for elevation and azimuth.
+        Default to [1, 0, 0] and [0, 0, 1] -- the assumed-ideal mount.
+        Override to test a suspected mounting misalignment (the true
+        mechanical axes not matching the beam's coordinate frame); there
+        is no fit that recovers these from data (see fit_multi_freq_joint
+        notes on the alpha/axis-tilt degeneracy).
     """
 
-    def __init__(self, beam_cart, conjugate_beam=True):
+    def __init__(
+        self,
+        beam_cart,
+        conjugate_beam=True,
+        el_axis=(1, 0, 0),
+        az_axis=(0, 0, 1),
+    ):
         self.beam_cart = jnp.asarray(beam_cart)
         if self.beam_cart.shape[0] != 3:
             raise ValueError(
                 "beam_cart must have shape (3, npix) with axes [Ex, Ey, Ez]."
             )
         self.nside = healpy.npix2nside(int(self.beam_cart.shape[-1]))
-        self.el_axis = jnp.array([1, 0, 0], dtype=dtype_r)
-        self.az_axis = jnp.array([0, 0, 1], dtype=dtype_r)
+        self.el_axis = jnp.asarray(el_axis, dtype=dtype_r)
+        self.az_axis = jnp.asarray(az_axis, dtype=dtype_r)
         self._theta_flip_to_data = False
         self.conjugate_beam = bool(conjugate_beam)
-        self.pvec = jnp.array([1, 0, 0], dtype=dtype_r)
 
     def tree_flatten(self):
         leaves = (self.beam_cart, self.el_axis, self.az_axis)
@@ -401,7 +438,10 @@ def power_sim(rx, tx, az, el, K=1.0, C0=0.0, normalize=True,
     pinc_xyz = Es   / En[:, None]
     prx_xyz  = Wxyz / Wn[:, None]
 
-    inner = jnp.einsum("ij,ij->i", jnp.conj(prx_xyz), pinc_xyz)
+    # conjugate_beam lives in the pytree aux data, so it is static under
+    # jit and a plain Python branch is fine here.
+    prx_use = jnp.conj(prx_xyz) if rx.conjugate_beam else prx_xyz
+    inner = jnp.einsum("ij,ij->i", prx_use, pinc_xyz)
     PLF   = (inner.conj() * inner).real
 
     P_shape = C0 + K * (Wpow * PLF * Epow)
