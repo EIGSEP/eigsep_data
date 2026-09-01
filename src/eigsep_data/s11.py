@@ -135,6 +135,24 @@ class S11:
         an instance attribute of the same name, e.g. ``self.ant``,
         ``self.rec`` -- ``{timestamp: {cal_plane: s11_array}}``, the
         same shape as :func:`read_dut_calibration_h5`'s ``by_time``.
+    rec_planes : list of str or None
+        The largest set of calibration planes actually reached, at
+        one loaded timestamp, by the ``"rec"`` DUT -- the
+        receiver-mode measurement. ``None`` if no ``"rec"`` file was
+        loaded.
+    ant_planes : list of str or None
+        The largest set of calibration planes actually reached, at
+        one loaded timestamp of one DUT, among every DUT *other than*
+        ``"rec"`` -- the antenna-mode measurements (``"ant"``,
+        ``"amb"``, ``"load"``, ``"noise"``,
+        ``"sp1"``/``"sp1_open"``/``"sp1_short"``, ...). ``None`` if no
+        such DUT was loaded. This is the plane list of whichever
+        single DUT/timestamp goes deepest (e.g. "ant"/"amb" reach
+        "lna", "load"/"noise" stop at "vna" -- see
+        ``scripts/calibrate_field_s11.py`` -- so this is "ant"'s/
+        "amb"'s 4-plane set), *not* a set-union across DUTs -- a union
+        could report plane names that no single DUT/timestamp actually
+        has together.
     """
 
     def __init__(self, caldir, pattern="*_calibrated.h5"):
@@ -158,6 +176,43 @@ class S11:
                         "same frequency axis as an earlier file in "
                         f"{caldir}"
                     )
+
+        self.rec_planes = self._planes_for(["rec"])
+        self.ant_planes = self._planes_for(
+            [dut for dut in self.duts if dut != "rec"]
+        )
+
+    def _planes_for(self, duts):
+        """The largest plane set actually reached by any one loaded
+        (dut, timestamp) pair among ``duts`` -- e.g. across "ant"'s
+        and "load"'s timestamps, whichever single one has the most
+        planes.
+
+        Deliberately *not* a set-union across duts/timestamps: planes
+        are a nested chain per capture (raw -> vna -> dut -> lna, see
+        ``scripts/calibrate_field_s11.py``), but a union would still
+        merge in anything oddly present at just one timestamp and
+        report it as if the whole group had it. Returning one real,
+        actually-achieved plane set avoids that.
+
+        ``duts`` not present in ``self.duts`` are silently ignored
+        (not an error -- callers pass a fixed candidate list, e.g.
+        every non-"rec" DUT, regardless of what actually loaded).
+        Returns ``None`` if none of ``duts`` were loaded, or none of
+        the ones that were have any timestamps recorded. Ties (more
+        than one (dut, timestamp) reaching the same max plane count)
+        resolve to whichever is encountered first, in ``duts`` order.
+        """
+        best = None
+        for dut in duts:
+            by_time = getattr(self, dut, None)
+            if not by_time:
+                continue
+            for plane_dict in by_time.values():
+                planes = sorted(plane_dict.keys())
+                if best is None or len(planes) > len(best):
+                    best = planes
+        return best
 
     def _nearest(self, dut, timestamp, plane):
         by_time = getattr(self, dut, None)
