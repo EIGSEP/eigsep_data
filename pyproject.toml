@@ -35,9 +35,9 @@ dependencies = [
     "numpy",
     "optax",
     "pandas<3",
-    "scipy",
+    # hpm.py uses scipy.special.sph_harm_y, added in 1.15
+    "scipy>=1.15",
     "tqdm",
-    "eigsep_corr",
     "eigsep_observing",
     "eigsep_redis",
     "eigsep-vna",
@@ -72,6 +72,14 @@ dev = [
     "pytest-cov",
     "black",
     "flake8",
+]
+# Archived upstream (github.com/EIGSEP/eigsep_corr). Nothing in src/
+# imports it — only the deployment-1/2/3 notebooks, which predate
+# eigsep_observing.io and still do `from eigsep_corr import io, gain_cal`.
+# Install .[legacy] only to re-run those. Deliberately NOT in `all`, so a
+# routine dev setup doesn't pull an archived package.
+legacy = [
+    "eigsep_corr",
 ]
 all = ["eigsep_data[vis, dev]"]
 

@@ -821,7 +821,6 @@ dependencies = [
     { name = "aipy" },
     { name = "astropy" },
     { name = "croissant-sim" },
-    { name = "eigsep-corr" },
     { name = "eigsep-observing" },
     { name = "eigsep-redis" },
     { name = "eigsep-terrain" },
@@ -864,6 +863,9 @@ dev = [
     { name = "pytest" },
     { name = "pytest-cov" },
 ]
+legacy = [
+    { name = "eigsep-corr" },
+]
 vis = [
     { name = "ipympl" },
     { name = "jupyterlab" },
@@ -876,7 +878,7 @@ requires-dist = [
     { name = "astropy" },
     { name = "black", marker = "extra == 'dev'" },
     { name = "croissant-sim" },
-    { name = "eigsep-corr" },
+    { name = "eigsep-corr", marker = "extra == 'legacy'" },
     { name = "eigsep-data", extras = ["dev", "vis"], marker = "extra == 'all'" },
     { name = "eigsep-observing", editable = "../eigsep_observing" },
     { name = "eigsep-redis", editable = "../eigsep_redis" },
@@ -905,15 +907,15 @@ requires-dist = [
     { name = "pygdsm" },
     { name = "pytest", marker = "extra == 'dev'" },
     { name = "pytest-cov", marker = "extra == 'dev'" },
-    { name = "scipy" },
+    { name = "scipy", specifier = ">=1.15" },
     { name = "spiceypy" },
     { name = "tqdm" },
 ]
-provides-extras = ["vis", "dev", "all"]
+provides-extras = ["vis", "dev", "legacy", "all"]
 
 [[package]]
 name = "eigsep-observing"
-version = "2.13.0"
+version = "2.14.0"
 source = { editable = "../eigsep_observing" }
 dependencies = [
     { name = "eigsep-redis" },

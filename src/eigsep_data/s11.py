@@ -1,22 +1,32 @@
-from datetime import datetime
-import numpy as np
-from scipy import signal
+"""Read and calibrate EIGSEP VNA S11 measurements.
 
-from cmt_vna import calkit as cal
-import os
-from eigsep_observing import io
-from pathlib import Path
-import h5py
-import numpy as np
+Two entry points, for two different data products:
 
-from dataclasses import dataclass
+``RawS11``
+    Wraps a single raw S11 capture (as written by
+    ``eigsep_observing.io.write_s11_file``) and calibrates it in-process
+    against an ideal open/short/load model. Quick-look path -- needs no
+    lab-characterized switch-path or OSL files.
 
-"""Write / read per-DUT HDF5 files for calibrated field VNA data.
-    Takes the in-memory ``caled_s11s`` structure produced by an
-    after-the-fact field-calibration pipeline --
+``S11``
+    Reads the per-DUT HDF5 products written by
+    ``scripts/calibrate_field_s11.py`` (via
+    :func:`write_dut_calibration_h5`), which carry the full
+    vna -> dut -> lna calibration chain::
 
         caled_s11s[dut][timestamp][cal_plane] -> complex S11 array, (Nfreq,)
 """
+
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+
+import h5py
+import numpy as np
+from scipy import signal
+
+from cmt_vna import calkit
+from eigsep_observing import io
 
 
 def write_dut_calibration_h5(
@@ -265,7 +275,76 @@ class S11:
         
         s11s = {timestamp: value[plane] for timestamp,value in getattr(self, dut).items()}
         return np.array(list(s11s.keys())), np.array(list(s11s.values()))
-        
+
+
+class RawS11:
+    """A single raw S11 capture, calibrated to the VNA's internal
+    reference plane against an ideal open/short/load model.
+
+    Quick-look counterpart to :class:`S11`: it reads one raw file
+    directly and needs no lab-characterized switch-path or OSL inputs,
+    so it stays usable for datasets that have not been run through
+    ``scripts/calibrate_field_s11.py``. It calibrates only as deep as
+    the VNA reference plane -- use :class:`S11` when the switch-path
+    de-embedding to the DUT/LNA planes is needed.
+    """
+
+    def __init__(self, fpath):
+        """
+        Parameters
+        ----------
+        fpath : pathlib.Path
+            File path of S11 measurement.
+
+        """
+        self.data, self.cal_data, self.hdr, self.meta = io.read_s11_file(
+            fpath
+        )
+        self.time = datetime.fromisoformat(fpath.name[-18:-3])
+        self.timestamp = self.time.timestamp()
+        self.freqs = np.array(self.hdr["freqs"]) / 1e6  # in MHz
+        self.dlys = (
+            np.fft.fftfreq(self.freqs.size, d=self.freqs[1] - self.freqs[0])
+            * 1e3
+        )  # in ns
+
+        osl_model = np.array([1, -1, 0])  # open, short, load
+        osl_model.shape = (3, 1)  # second axis is freq
+        self.osl_model = np.repeat(osl_model, self.freqs.size, axis=1)
+
+        self._s11_cal = {}
+        self._s11_dly = {}
+
+    def calibrate_s11(self, key):
+        """
+        First stage calibration at internal reference plane.
+        S-parameters of internal network must also be de-embedded.
+
+        Parameters
+        ----------
+        key : str
+            Which measurment to calibrate; `ant`, `noise`, or `load`
+            for `ants11` files or `rec` for `recs11` files.
+
+        Returns
+        -------
+        np.ndarray
+            Calibrated S11 data for the given key.
+
+        """
+        o = self.cal_data["VNAO"]
+        s = self.cal_data["VNAS"]
+        load = self.cal_data["VNAL"]
+        osl = np.array([o, s, load])
+        network_sparams = calkit.network_sparams(self.osl_model, osl)
+        return calkit.de_embed_sparams(network_sparams, self.data[key])
+
+    @property
+    def s11_cal(self):
+        if not self._s11_cal:
+            self._s11_cal = {k: self.calibrate_s11(k) for k in self.data}
+        return self._s11_cal
+
     @property
     def s11_dly(self):
         if not self._s11_dly:
@@ -274,5 +353,3 @@ class S11:
                 k: np.abs(np.fft.fft(self.s11_cal[k] * bh)) for k in self.data
             }
         return self._s11_dly
-
-
