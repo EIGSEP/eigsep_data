@@ -127,6 +127,29 @@ def write_corr_file(
     return path
 
 
+def stale_pair(tmp_path):
+    """
+    One good file, then one whose ``sync_time`` is 54 days stale.
+
+    Both names are stamped ~30 s after the last integration they hold,
+    the way the writer stamps them; only the second file's header times
+    are poisoned, so it is the pair that separates ``time`` from
+    ``time_best``.
+    """
+    write_corr_file(
+        tmp_path / "corr_20260717_150041Z.h5",
+        ntimes=60,
+        sync_time=1784300441.0 - 30,
+    )
+    write_corr_file(
+        tmp_path / "corr_20260717_151041Z.h5",
+        ntimes=60,
+        sync_time=1784301041.0 - 30 - 54 * 86400,
+        seed=1,
+    )
+    return tmp_path
+
+
 @pytest.fixture
 def corr_dir(tmp_path):
     """Three phase-C files: full ladder, no rfswitch stream, fast cadence.
