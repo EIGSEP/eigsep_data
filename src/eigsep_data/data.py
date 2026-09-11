@@ -1,7 +1,6 @@
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
-import re
 import warnings
 
 import h5py
@@ -10,65 +9,15 @@ from scipy.optimize import curve_fit
 
 from eigsep_observing import io
 
-
-def to_unix_time(value):
-    """
-    Convert a datetime string, datetime object, or Unix timestamp to Unix
-    seconds (float).
-
-    Strings without a timezone are interpreted as UTC.
-
-    Accepted formats:
-        "2026-07-17 06:00:00"
-        "2026-7-17 6:00:00"
-        "2026-07-17T06:00:00Z"
-    """
-    if isinstance(value, (int, float, np.integer, np.floating)):
-        return float(value)
-
-    if isinstance(value, datetime):
-        dt = value
-    else:
-        text = str(value).strip()
-        try:
-            dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        except ValueError:
-            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
-                try:
-                    dt = datetime.strptime(text, fmt)
-                    break
-                except ValueError:
-                    continue
-            else:
-                raise ValueError(
-                    f"Could not interpret time {value!r}. "
-                    "Use a format such as '2026-07-17 06:00:00'."
-                )
-
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.timestamp()
+from .clock import (  # noqa: F401  -- to_unix_time is re-exported
+    parse_filename_time,
+    to_unix_time,
+)
 
 
-def _parse_time_from_name(fname: str) -> datetime:
-    """
-    Parse datetime from a correlator filename.
-
-    Handles the naming variants seen across deployments, e.g.
-    'corr_20250922_160500.h5', 'corr_20260715_172825Z.h5' (UTC marker)
-    and 'corr_20260712_235712Z-1.h5' (disambiguating suffix for files
-    closed within the same second).
-
-    Note this is the file *close* time, which lags the integrations
-    inside it -- by up to ~17 min on deployment-5 data, and by far more
-    on the ~10% of files written before the clock synced. Use
-    header["times"] whenever the actual integration time matters.
-    """
-    stem = Path(fname).stem
-    match = re.search(r"(\d{8})_(\d{6})", stem)
-    if match is None:
-        raise ValueError(f"Could not parse a timestamp from {fname!r}.")
-    return datetime.strptime(match.group(1) + match.group(2), "%Y%m%d%H%M%S")
+def _parse_time_from_name(fname: str, tz=None) -> datetime:
+    """Alias for :func:`eigsep_data.clock.parse_filename_time`."""
+    return parse_filename_time(fname, tz=tz)
 
 
 @dataclass
@@ -113,11 +62,17 @@ class EigsepData:
         """
         if path.is_dir():
             files = sorted(path.glob("corr*.h5"))
-            times = [_parse_time_from_name(f.name) for f in files]
+            times = [
+                _parse_time_from_name(f.name).replace(tzinfo=None)
+                for f in files
+            ]
             if start_time:
                 start_dt = datetime.strptime(start_time, "%Y%m%d_%H%M%S")
                 files = [f for f, t in zip(files, times) if t >= start_dt]
-                times = [_parse_time_from_name(f.name) for f in files]
+                times = [
+                    _parse_time_from_name(f.name).replace(tzinfo=None)
+                    for f in files
+                ]
             if end_time:
                 end_dt = datetime.strptime(end_time, "%Y%m%d_%H%M%S")
                 files = [f for f, t in zip(files, times) if t <= end_dt]
