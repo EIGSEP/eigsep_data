@@ -119,6 +119,38 @@ class TestMetadataIndexScan:
         assert (idx.table.rfswitch == MISSING).all()
         assert not idx.table.motor_ok.any()
 
+    def test_boolean_root_attr_survives_a_file_that_lacks_it(self, tmp_path):
+        # filter_corr_keys.py writes mux_copy_* per file, so a directory
+        # mixing filtered and unfiltered files gives a bool column with
+        # gaps. Stringifying it would make select(mux_copy_0to1=True)
+        # return nothing and look like an honest empty result.
+        write_corr_file(
+            tmp_path / "corr_20260717_150041Z.h5",
+            ntimes=4,
+            root_attrs={"mux_copy_0to1": True},
+        )
+        write_corr_file(
+            tmp_path / "corr_20260717_151041Z.h5",
+            ntimes=4,
+            sync_time=1.7843e9 + 600,
+        )
+        col = MetadataIndex(tmp_path, cache=False).table.mux_copy_0to1
+        assert col.eq(True).sum() == 4
+        assert col.eq(MISSING).sum() == 4
+
+    def test_array_valued_root_attr_does_not_cost_the_file(self, tmp_path):
+        # np.repeat on a non-scalar mis-lengths the column, and the
+        # DataFrame it breaks would take every integration in the file
+        # down with it.
+        path = write_corr_file(tmp_path / "corr_20260717_150041Z.h5", ntimes=4)
+        with h5py.File(path, "a") as h5:
+            h5.attrs["filtered_keys"] = ["0", "4"]
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            idx = MetadataIndex(tmp_path, cache=False)
+        assert len(idx.table) == 4
+        assert idx.table.filtered_keys.map(type).eq(str).all()
+
     def test_string_columns_never_hold_none_or_nan(self, corr_dir):
         # The cache encodes object columns as bytes; None or NaN would
         # come back as the strings "None"/"nan". The table must already
@@ -150,6 +182,38 @@ class TestMetadataIndexScan:
         with pytest.warns(UserWarning, match="corr_20260717_153041Z.h5"):
             idx = MetadataIndex(corr_dir, cache=False)
         assert len(idx.table) == 180
+
+    def test_skipped_files_are_recorded(self, corr_dir):
+        # A warning scrolls past; the table just comes back shorter.
+        # Without this list a caller cannot tell a partial index from a
+        # complete one without re-globbing and re-applying the
+        # exclusion rules.
+        (corr_dir / "corr_20260717_153041Z.h5").write_bytes(b"truncated")
+        with pytest.warns(UserWarning):
+            idx = MetadataIndex(corr_dir, cache=False)
+        assert [name for name, _ in idx.skipped] == [
+            "corr_20260717_153041Z.h5"
+        ]
+        assert idx.skipped[0][1]  # a reason, not an empty string
+
+    def test_skipped_is_empty_on_a_clean_directory(self, corr_dir):
+        assert MetadataIndex(corr_dir, cache=False).skipped == []
+
+    def test_a_type_error_skips_one_file_not_the_whole_scan(self, corr_dir):
+        # float() on a header attr that is not a number raises
+        # TypeError, and a custom scanner may raise it for reasons of
+        # its own. Either way the stated policy is skip-and-continue.
+        bad = "corr_20260717_151041Z.h5"
+
+        def scanner(path, streams=None, filename_tz=None):
+            if path.name == bad:
+                raise TypeError("float() argument must be a number")
+            return scan_corr_file(path, streams, filename_tz)
+
+        with pytest.warns(UserWarning, match=bad):
+            idx = MetadataIndex(corr_dir, cache=False, scanner=scanner)
+        assert len(idx.table) == 120
+        assert [name for name, _ in idx.skipped] == [bad]
 
     def test_empty_directory_raises(self, tmp_path):
         with pytest.raises(FileNotFoundError):
@@ -197,9 +261,11 @@ class TestSyncConsistent:
     def test_pacific_named_deployment4_file_is_consistent(self, tmp_path):
         # Deployment 1-4 filenames are Pacific wall clock with no Z
         # suffix. Parsing them as UTC would put every file 7 h off and
-        # flag a whole deployment as inconsistent.
+        # flag a whole deployment as inconsistent. The stamp is pinned
+        # to its epoch here rather than read back through clock, so a
+        # change to the default zone moves only one side of the test.
         name = "corr_20250922_160500.h5"
-        t_close = clock.filename_unix(name)
+        t_close = 1758582300.0  # 2025-09-22 16:05:00 PDT
         write_corr_file(tmp_path / name, ntimes=10, sync_time=t_close - 60)
         idx = MetadataIndex(tmp_path, cache=False)
         assert idx.table.sync_consistent.all()

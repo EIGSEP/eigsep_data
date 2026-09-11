@@ -43,12 +43,22 @@ HEADER_ATTRS = {
 
 
 def _attr_value(value):
-    """An h5py attribute as a plain Python scalar."""
+    """
+    An h5py attribute as a plain Python scalar.
+
+    Anything that is not a scalar -- an array- or list-valued attr --
+    is stringified. Broadcasting a non-scalar with ``np.repeat`` would
+    give a column of the wrong length, and the resulting ``ValueError``
+    costs *every* integration in the file (see :meth:`MetadataIndex._scan`),
+    which is far worse than one awkwardly rendered column.
+    """
     if isinstance(value, bytes):
         return value.decode()
     if isinstance(value, np.generic):
         return value.item()
-    return value
+    if value is None or isinstance(value, (str, bool, int, float)):
+        return value
+    return str(value)
 
 
 def scan_corr_file(path, streams=None, filename_tz=None):
@@ -160,17 +170,31 @@ def scan_corr_file(path, streams=None, filename_tz=None):
 
 def _finalise(table):
     """
-    Normalise dtypes and sort.
+    Fill gaps in object columns, normalise string dtypes, and sort.
 
-    Object columns become pure ``str`` with ``MISSING`` for gaps, so a
-    column that is a string in one file and absent in another (a root
-    attr, say) is identical whether the table came from a scan or from
-    the cache. Sorting is on ``time_best``; ties (the ``-1`` suffix
-    twins closed in the same second) break on filename then row.
+    An attr present in one file and absent in another concatenates to an
+    object column with NaN in the gaps; every such gap becomes
+    ``MISSING``, so the column reads the same whether the table came
+    from a scan or from the cache.
+
+    Only columns whose values are *all* strings are then cast to ``str``.
+    A boolean root attr (``mux_copy_0to1``) is left holding real
+    ``True``/``False`` alongside ``MISSING``, because casting it would
+    turn the flag into the strings ``"True"``/``"False"`` and make
+    ``table.mux_copy_0to1 == True`` match nothing -- an empty result
+    indistinguishable from an honest one. An attr present in every file
+    keeps its native dtype and never reaches this branch at all.
+
+    Sorting is on ``time_best``; ties (the ``-1`` suffix twins closed in
+    the same second) break on filename then row.
     """
     for col in table.columns:
-        if table[col].dtype == object:
-            table[col] = table[col].fillna(MISSING).astype(str)
+        if table[col].dtype != object:
+            continue
+        filled = table[col].fillna(MISSING)
+        if filled.map(lambda v: isinstance(v, str)).all():
+            filled = filled.astype(str)
+        table[col] = filled
     return table.sort_values(
         ["time_best", "file", "row"], kind="stable"
     ).reset_index(drop=True)
@@ -209,6 +233,11 @@ class MetadataIndex:
         file set changes.
     from_cache : bool
         Whether the last :meth:`rebuild` was served from the sidecar.
+    skipped : list of (str, str)
+        ``(basename, reason)`` for every file the last :meth:`rebuild`
+        could not index. Scanning warns and moves on, so this is the
+        only way to tell a short table from a complete one without
+        re-globbing the directory.
     """
 
     def __init__(
@@ -228,6 +257,7 @@ class MetadataIndex:
         self.scanner = scanner or scan_corr_file
         self.table = None
         self.from_cache = False
+        self.skipped = []
         self.rebuild()
 
     @property
@@ -248,6 +278,7 @@ class MetadataIndex:
 
     def _scan(self, streams):
         frames = []
+        skipped = []
         for path in self._files():
             try:
                 frames.append(
@@ -255,8 +286,13 @@ class MetadataIndex:
                         path, streams=streams, filename_tz=self.filename_tz
                     )
                 )
-            except (OSError, KeyError, ValueError) as exc:
-                warnings.warn(f"Skipping {path.name}: {exc}")
+            except (OSError, KeyError, TypeError, ValueError) as exc:
+                # One truncated or contract-violating file must not kill
+                # a 5120-file scan, but the omission has to stay
+                # answerable afterwards -- the table is simply shorter.
+                skipped.append((path.name, str(exc)))
+                warnings.warn(f"Skipping {path.name}: {exc}", stacklevel=2)
+        self.skipped = skipped
         if not frames:
             raise FileNotFoundError(
                 f"No indexable files matching {self.patterns} in "
