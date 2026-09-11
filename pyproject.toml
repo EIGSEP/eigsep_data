@@ -72,6 +72,8 @@ dev = [
     "pytest-cov",
     "black",
     "flake8",
+    "pre-commit",
+    "nbstripout",
 ]
 # Archived upstream (github.com/EIGSEP/eigsep_corr). Nothing in src/
 # imports it — only the deployment-1/2/3 notebooks, which predate
