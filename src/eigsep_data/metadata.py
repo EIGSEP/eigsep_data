@@ -62,6 +62,21 @@ SCALAR_STREAMS = ("rfswitch",)
 #: Bookkeeping keys every sensor dict carries; never a column.
 _HOUSEKEEPING = ("status", "sensor_name", "app_id")
 
+#: Curated ``(stream, field)`` pairs whose value is a string, verified
+#: against the real producer (``potmon``'s ``sp1_term_name`` is the only
+#: one; ``boot_id`` is int, ``pot_az_near_rail`` is bool, everything
+#: else numeric). Declared statically rather than sniffed from a file's
+#: values, because sniffing cannot tell "string field, no string seen
+#: this file" apart from "numeric field" when the field is absent or
+#: ``None`` in every row -- and Task 4's concatenation plus Task 6's
+#: cache round-trip both require a curated column's dtype to be the
+#: same in every file, never a function of that file's content.
+_STRING_FIELDS = frozenset(
+    {
+        ("potmon", "sp1_term_name"),
+    }
+)
+
 
 def _as_float(value):
     if isinstance(value, bool):
@@ -95,9 +110,10 @@ def flatten_metadata(metadata, ntimes, streams=None):
     -------
     cols : dict[str, np.ndarray]
         Column name to length-*ntimes* array. ``rfswitch`` is a string
-        array; dict-stream fields are float arrays, except fields with
-        any string value, which are string arrays with ``MISSING`` for
-        gaps. Each stream also yields a boolean ``<stream>_ok``.
+        array; dict-stream fields are float arrays, except fields
+        declared in :data:`_STRING_FIELDS` or that carry any string
+        value in this file, which are string arrays with ``MISSING``
+        for gaps. Each stream also yields a boolean ``<stream>_ok``.
     """
     metadata = metadata or {}
     if streams == "all":
@@ -145,7 +161,10 @@ def flatten_metadata(metadata, ntimes, streams=None):
             raw = [
                 e.get(field) if isinstance(e, dict) else None for e in entries
             ]
-            if any(isinstance(v, str) for v in raw):
+            is_string = (name, field) in _STRING_FIELDS or any(
+                isinstance(v, str) for v in raw
+            )
+            if is_string:
                 cols[f"{name}_{field}"] = np.array(
                     [v if isinstance(v, str) else MISSING for v in raw],
                     dtype=object,

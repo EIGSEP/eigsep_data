@@ -100,3 +100,51 @@ class TestFlattenMetadata:
         meta = {"tempctrl_lna": [{"status": "update", "T_now": 31.5}]}
         cols = md.flatten_metadata(meta, ntimes=1)
         np.testing.assert_allclose(cols["tempctrl_lna_T_now"], [31.5])
+
+    def test_absent_string_field_stays_object_dtype(self):
+        # potmon's sp1_term_name is a curated string field. When the
+        # whole stream is absent, no row supplies a string, so a dtype
+        # sniffed purely from this file's values would silently fall
+        # back to a float64 NaN column instead of MISSING.
+        cols = md.flatten_metadata({}, ntimes=3)
+        assert cols["potmon_sp1_term_name"].dtype == object
+        assert list(cols["potmon_sp1_term_name"]) == [md.MISSING] * 3
+        assert not cols["potmon_ok"].any()
+
+    def test_always_none_string_field_stays_object_dtype(self):
+        # potmon present in every row, but sp1_term_name is None every
+        # time (the field itself is offline). Same dtype hazard as the
+        # absent-stream case, but here stream_ok is True, not False.
+        meta = {
+            "potmon": [
+                {"status": "update", "sp1_term_name": None},
+                {"status": "update", "sp1_term_name": None},
+            ]
+        }
+        cols = md.flatten_metadata(meta, ntimes=2)
+        assert cols["potmon_sp1_term_name"].dtype == object
+        assert list(cols["potmon_sp1_term_name"]) == [
+            md.MISSING,
+            md.MISSING,
+        ]
+        assert list(cols["potmon_ok"]) == [True, True]
+
+    def test_streams_explicit_iterable_limits_columns(self):
+        # An explicit streams= iterable carries only the named streams
+        # (with their curated fields), not every stream in the file.
+        meta = {
+            "motor": [{"status": "update", "el_pos": 1.0}],
+            "rfswitch": ["RFANT"],
+        }
+        cols = md.flatten_metadata(meta, ntimes=1, streams=["motor"])
+        np.testing.assert_allclose(cols["motor_el_pos"], [1.0])
+        assert "rfswitch" not in cols
+
+    def test_streams_all_discovers_uncurated_fields(self):
+        # streams="all" takes every stream and field present, not just
+        # the curated subset -- here an unrecognized field.
+        meta = {
+            "motor": [{"status": "update", "el_pos": 1.0, "extra_field": 2.0}]
+        }
+        cols = md.flatten_metadata(meta, ntimes=1, streams="all")
+        np.testing.assert_allclose(cols["motor_extra_field"], [2.0])
