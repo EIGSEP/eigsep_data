@@ -148,6 +148,35 @@ would be ~130 columns (~600 MB at 1.2 M rows), so widening is opt-in via
 So `UNKNOWN` (producer-asserted transition) is never confused with `MISSING`
 (no metadata at all).
 
+### `None` vs `UNKNOWN` for `rfswitch`
+
+These mean opposite things and must never be merged:
+
+- **`UNKNOWN` — "we have information, and it says this row is contaminated."**
+  Produced when any reading in the window has `status == "error"`; when two
+  different `sw_state_name` values appear inside one integration (a mid-window
+  flip); or by the writer's forward transition guard, which overrides even a
+  missing reading ("is also applied when the sample carried no rfswitch reading
+  at all").
+- **`None` — "we have no information."** Produced when the `rfswitch` key is
+  absent from the dict handed to `add_data` (so `_insert_sample` pads `None`);
+  when the stream value is not a non-empty list, or `avg_metadata` raises (both
+  logged at ERROR and dropped); when `value[0]` is not a dict; when the reading
+  arrived but carries no `sw_state_name`; or on a gap-fill sample.
+
+**Empirically, `None` is a Pico-level dropout.** `rfswitch` and
+`rfswitch_therm` are fanned out of the same `PicoRFSwitch._rfswitch_redis_handler`,
+so they fail together. Across 196080 sampled rows, `rfswitch` is `None` on
+**2.50 %**, and on those rows `rfswitch_therm` is also missing **4865 / 4896
+(99.4 %)**; where `rfswitch` holds a state, `rfswitch_therm` is present
+**191145 / 191184 (99.98 %)**. Run lengths are mostly 1 sample, but reach 197 —
+so both brief blips and multi-minute outages occur.
+
+Upstream quirk worth reporting (code reading, not observed in data): in
+`_avg_rfswitch_metadata`, `unique` excludes `None`, so `states == [None, "RFANT"]`
+yields `len(unique) == 1` and the function returns `states[0]` — i.e. `None`,
+discarding a good state because the *first* sub-reading lacked the field.
+
 ### `sync_consistent`, and what it cannot do
 
 `times = acc_cnt × integration_time + sync_times`, elementwise. A stale
@@ -313,13 +342,26 @@ Existing pure-function tests in `tests/test_data.py` are untouched.
 
 ## Open questions
 
-- **Deployment 4's `+3600` is unverified.** Its raw data is on the T7 drive, not
-  mounted. When it is, verify with an **external anchor** (the diurnal thermal
-  fold above), not filename-vs-header, which is blind to whole-run offsets.
-- **The Pi's timezone is inferred, not observed.** The data excludes a 7-hour
-  error, and D1–4's Pacific filenames exclude a 1-hour one, which together imply
-  `America/Los_Angeles`. A `timedatectl` on the Pi would make it certain.
-- **`sshpi` is a standing hazard.** It sends the laptop's Pacific wall clock as a
-  zone-less string; `date -s` interprets it in the Pi's zone, so the error is
-  `Pi_offset − laptop_offset`. It happens to be correct only because both
-  machines are Pacific. Sending epoch (`date -u +%s`) would remove the coupling.
+- **An unresolved timezone contradiction, which does not block this work.**
+  Three facts do not fit together:
+
+  1. `eigsep-field/image/pi-gen-config/config` pre-seeds `TIMEZONE_DEFAULT="Etc/UTC"`.
+  2. The analysis laptop is `America/Los_Angeles`, and the `sshpi` alias sends
+     `date +'%Y-%m-%d %H:%M:%S'` — a zone-less **local** string — which
+     `date -s` then interprets in the Pi's own zone.
+  3. Deployment-5 timestamps are nonetheless correct UTC.
+
+  (1) + (2) predict a 7-hour error; (3) excludes one decisively — the thermal
+  minimum falls in the 12:00Z bin against a computed sunrise of 12:26Z, and the
+  maximum 2.3 h after solar noon (19:40Z). So one premise does not hold for the
+  field Pi: either its zone was not `Etc/UTC` in July, or something other than
+  the current `sshpi` last set its clock. Note `~/.bashrc` was modified
+  2026-09-10, after the deployment, so today's alias text is not evidence of
+  what ran in the field. A `timedatectl` on the Pi resolves it.
+
+  This matters only for interpreting **future** deployments; D5's times are
+  verified correct regardless of which premise fails. The `sshpi` hazard itself
+  is known and tracked outside this repo.
+
+Deployment 1–4's `+3600` is confirmed by the observer's field notes; it is a
+display convention, and no longer an open question.
