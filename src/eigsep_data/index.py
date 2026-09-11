@@ -10,6 +10,7 @@ which is the header time when the file's clock was sane and a
 filename-derived estimate otherwise; see :func:`scan_corr_file`.
 """
 
+import fnmatch
 import json
 import warnings
 from pathlib import Path
@@ -18,7 +19,7 @@ import h5py
 import numpy as np
 import pandas as pd
 
-from .clock import filename_unix
+from .clock import filename_unix, to_unix_time
 from .metadata import MISSING, flatten_metadata
 
 SCHEMA_VERSION = 1
@@ -304,3 +305,181 @@ class MetadataIndex:
         """Scan every matching file and rebuild :attr:`table`."""
         self.from_cache = False
         self.table = self._scan(self.streams)
+
+    def select(self, **kwargs):
+        """
+        Choose integrations by metadata.
+
+        Keyword arguments are column filters: a scalar matches equality,
+        a list matches membership. Three named selectors:
+
+        ``files=``
+            A glob string, a *list* of globs, or a 2-*tuple*
+            ``(lo, hi)``: an inclusive lexical range on basenames (the
+            idiom the motor-scan notebook used, and the right selector
+            when header times cannot be trusted).
+        ``time=(lo, hi)``
+            Half-open range on ``time_best``; bounds go through
+            :func:`eigsep_data.clock.to_unix_time`.
+        ``where=``
+            A callable taking the DataFrame and returning a boolean
+            mask.
+
+        Returns
+        -------
+        Selection
+        """
+        return _apply_filters(self, self.table, [], **kwargs)
+
+
+class Selection:
+    """
+    A set of integrations chosen from a :class:`MetadataIndex`.
+
+    Holds only metadata rows -- no spectra. Load them with :meth:`load`
+    or :meth:`eigsep_data.EigsepData.from_selection`.
+    """
+
+    def __init__(self, index, meta, provenance=None):
+        self.index = index
+        self.meta = meta
+        self.provenance = list(provenance or [])
+
+    @property
+    def nrows(self):
+        return len(self.meta)
+
+    @property
+    def files(self):
+        """Filenames contributing rows, in ``time_best`` order."""
+        return list(dict.fromkeys(self.meta.file))
+
+    def file_counts(self):
+        """Rows per file, as a Series in selection order."""
+        return self.meta.groupby("file", sort=False).size()
+
+    def select(self, **kwargs):
+        """Narrow this selection further; same arguments as
+        :meth:`MetadataIndex.select`."""
+        return _apply_filters(self.index, self.meta, self.provenance, **kwargs)
+
+    def visits(self, gap_s=600):
+        """Group rows into contiguous visits separated by *gap_s*."""
+        times = self.meta.time_best.to_numpy()
+        visits = np.zeros(times.size, dtype=int)
+        if times.size > 1:
+            visits[1:] = np.cumsum(np.diff(times) > gap_s)
+        return visits
+
+    def summary(self):
+        """Human-readable account of what each filter removed."""
+        lines = [f"{len(self.index.table)} rows indexed"]
+        for name, before, after in self.provenance:
+            lines.append(
+                f"  {name}: {before} -> {after} ({before - after} removed)"
+            )
+        lines.append(
+            f"{self.nrows} rows selected from {len(self.files)} files"
+        )
+        if "sync_consistent" in self.meta:
+            n_bad = int((~self.meta.sync_consistent.astype(bool)).sum())
+            lines.append(
+                f"  {n_bad} rows have sync_consistent=False; their "
+                "time_best is a filename estimate, good to the write "
+                "backlog (~16 min), not to the integration"
+            )
+        if "time_best" in self.meta:
+            # A name with no stamp leaves nothing to fall back on, so
+            # these rows sort to the end and no time= window can ever
+            # reach them. Deliberate, but never silent.
+            n_no_time = int(self.meta.time_best.isna().sum())
+            lines.append(
+                f"  {n_no_time} rows have no time_best (an "
+                "inconsistent clock and no usable filename estimate); "
+                "they sort last and fall outside every time= window"
+            )
+        return "\n".join(lines)
+
+    def load(self, keys=None, time_avg=1, missing="raise"):
+        """Read the spectra for these integrations; see
+        :meth:`eigsep_data.EigsepData.from_selection`."""
+        # Lazy on purpose: data.py imports from this module for
+        # from_selection, so a module-scope import here would close
+        # the cycle.
+        from .data import EigsepData
+
+        return EigsepData.from_selection(
+            self, keys=keys, time_avg=time_avg, missing=missing
+        )
+
+
+def _is_range(spec):
+    """A 2-tuple of plain names is a lexical range; anything holding a
+    glob character is a pair of patterns, so ``("a*", "b*")`` still
+    means what a caller expects."""
+    return (
+        isinstance(spec, tuple)
+        and len(spec) == 2
+        and all(isinstance(s, str) for s in spec)
+        and not any(ch in s for s in spec for ch in "*?[")
+    )
+
+
+def _match_files(names, spec):
+    """Boolean mask over the unique *names* for a ``files=`` spec."""
+    if _is_range(spec):
+        lo, hi = spec
+        return np.array([lo <= n <= hi for n in names], dtype=bool)
+    patterns = [spec] if isinstance(spec, str) else list(spec)
+    return np.array(
+        [any(fnmatch.fnmatch(n, p) for p in patterns) for n in names],
+        dtype=bool,
+    )
+
+
+def _apply_filters(
+    index,
+    table,
+    provenance,
+    *,
+    files=None,
+    time=None,
+    where=None,
+    **filters,
+):
+    """Apply one round of filters, recording what each one removed."""
+    provenance = list(provenance)
+    current = table
+
+    def step(name, mask):
+        nonlocal current
+        before = len(current)
+        current = current[np.asarray(mask, dtype=bool)]
+        provenance.append((name, before, len(current)))
+
+    if files is not None:
+        # Match the few thousand unique names, not the million rows.
+        names = current.file.unique()
+        keep = names[_match_files(names, files)]
+        step(f"files={files!r}", current.file.isin(keep))
+    if time is not None:
+        lo, hi = (to_unix_time(t) for t in time)
+        step(
+            f"time=({lo}, {hi})",
+            (current.time_best >= lo) & (current.time_best < hi),
+        )
+    for column, value in filters.items():
+        if column not in current.columns:
+            raise KeyError(
+                f"No column {column!r} in the index. Available: "
+                f"{sorted(current.columns)}"
+            )
+        if isinstance(value, (list, tuple, set)):
+            mask = current[column].isin(list(value))
+        else:
+            mask = current[column] == value
+        step(f"{column}={value!r}", mask)
+    if where is not None:
+        step("where=<callable>", where(current))
+
+    return Selection(index, current, provenance)
