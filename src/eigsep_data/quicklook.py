@@ -25,7 +25,7 @@ import numpy as np
 
 from eigsep_observing.io import read_hdf5
 
-from . import rfi
+from . import metadata, rfi
 
 COMB_SPACING = 16  # cal comb lands in every 16th channel
 
@@ -201,7 +201,15 @@ def waterfall_stats(wf, flags=None):
 
 @dataclass
 class QuickLookResult:
-    """Everything :func:`quicklook` extracts from one corr file."""
+    """Everything :func:`quicklook` extracts from one corr file.
+
+    ``header`` is always the raw, ungated file header: it has one entry
+    per integration actually in the file, regardless of ``state``. By
+    contrast ``data``, ``times``, and ``meta`` are all restricted to the
+    rows kept by the ``state`` gate (all rows, if ``state`` is None). So
+    a gated result can have ``len(res.times) < len(res.header["times"])``
+    -- ``header`` is what the file says; the rest is what was asked for.
+    """
 
     path: Path
     pairs: list
@@ -211,6 +219,12 @@ class QuickLookResult:
     data: dict = field(repr=False)
     flags: dict = field(repr=False)
     stats: dict
+    #: Per-integration metadata columns from
+    #: :func:`eigsep_data.metadata.flatten_metadata`, gated like
+    #: ``data`` and ``times`` -- unlike ``header``, which is never
+    #: gated. ``None`` only if constructed directly without it;
+    #: :func:`quicklook` always fills it in.
+    meta: dict = field(default=None, repr=False)
 
     @property
     def tstart(self):
@@ -222,13 +236,27 @@ class QuickLookResult:
         """UTC end time as an ISO string."""
         return _iso(self.times[-1])
 
+    @property
+    def state_counts(self):
+        """``{switch state: n integrations}`` for this (gated) file.
+
+        ``UNKNOWN`` (producer asserts contamination) and ``MISSING``
+        (no rfswitch information reached the writer) are kept distinct
+        -- see :mod:`eigsep_data.metadata`. ``{}`` if ``meta`` carries
+        no ``rfswitch`` column at all.
+        """
+        if self.meta is None or "rfswitch" not in self.meta:
+            return {}
+        states, counts = np.unique(self.meta["rfswitch"], return_counts=True)
+        return {str(s): int(c) for s, c in zip(states, counts)}
+
 
 def _iso(unix_t):
     t = datetime.fromtimestamp(float(unix_t), tz=timezone.utc)
     return t.strftime("%Y-%m-%d %H:%M:%S")
 
 
-def quicklook(fname, nsig=8, spacing=COMB_SPACING, pad=1):
+def quicklook(fname, nsig=8, spacing=COMB_SPACING, pad=1, state=None):
     """
     Load a corr h5 file, flag it, and compute summary statistics.
 
@@ -242,6 +270,12 @@ def quicklook(fname, nsig=8, spacing=COMB_SPACING, pad=1):
         Comb tone spacing in channels.
     pad : int
         Channels flagged on each side of every comb tone.
+    state : str or None
+        If given, restrict flagging and stats to integrations whose
+        ``rfswitch`` state equals this value (e.g. ``"RFANT"``). Gates
+        ``data``, ``times``, and ``meta`` on the returned result; the
+        returned ``header`` is always the full, ungated file header.
+        Raises ``ValueError`` if no integration is in this state.
 
     Returns
     -------
@@ -249,12 +283,23 @@ def quicklook(fname, nsig=8, spacing=COMB_SPACING, pad=1):
 
     """
     fname = Path(fname)
-    data, header, _ = read_hdf5(fname)
+    data, header, raw_meta = read_hdf5(fname)
     pairs = sorted(data.keys(), key=lambda p: (len(p), p))
     nchan = next(iter(data.values())).shape[1]
     ntimes = next(iter(data.values())).shape[0]
     freqs = np.asarray(header.get("freqs", np.arange(nchan)))
     times = np.asarray(header.get("times", np.arange(ntimes)))
+    meta = metadata.flatten_metadata(raw_meta, ntimes)
+    if state is not None:
+        keep = np.flatnonzero(meta["rfswitch"] == state)
+        if keep.size == 0:
+            raise ValueError(
+                f"No integrations in state {state!r}; this file has "
+                f"{sorted(set(meta['rfswitch']))}."
+            )
+        data = {p: v[keep] for p, v in data.items()}
+        times = times[keep]
+        meta = {k: v[keep] for k, v in meta.items()}
     flags, stats = {}, {}
     for p in pairs:
         f, comb_offset = flag_spectra(
@@ -273,6 +318,7 @@ def quicklook(fname, nsig=8, spacing=COMB_SPACING, pad=1):
         data=data,
         flags=flags,
         stats=stats,
+        meta=meta,
     )
 
 
@@ -367,6 +413,10 @@ def plot_quicklook(res, save=None, show=False):
 def _print_report(res):
     print(f"\n{res.path.name}")
     print(f"  {res.tstart} to {res.tend} UTC")
+    counts = res.state_counts
+    if counts:
+        breakdown = "  ".join(f"{k}={v}" for k, v in sorted(counts.items()))
+        print(f"  switch states: {breakdown}")
     hdr = (
         f"  {'pair':>5} {'ntimes':>7} {'nchan':>6} {'zrows':>5} "
         f"{'zero%':>6} {'flag%':>6} {'med_power':>10} {'dynrng_dB':>9} "
@@ -422,6 +472,12 @@ def main(argv=None):
         "--no-plot", action="store_true", help="stats only, no figure"
     )
     parser.add_argument(
+        "--state",
+        default=None,
+        help="only integrations in this RF switch state "
+        "(e.g. RFANT, RFAMB, RFNON)",
+    )
+    parser.add_argument(
         "--show", action="store_true", help="open figures interactively"
     )
     args = parser.parse_args(argv)
@@ -435,7 +491,9 @@ def main(argv=None):
     figs = []
     for fname in files:
         try:
-            res = quicklook(fname, nsig=args.nsig, pad=args.pad)
+            res = quicklook(
+                fname, nsig=args.nsig, pad=args.pad, state=args.state
+            )
         except Exception as e:
             print(f"\n{fname}: SKIPPED ({type(e).__name__}: {e})")
             n_fail += 1
