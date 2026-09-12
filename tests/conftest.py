@@ -35,6 +35,7 @@ def write_corr_file(
     keys=("0", "4"),
     rfswitch=None,
     streams=("motor",),
+    el_pos=0.0,
     root_attrs=None,
     seed=0,
 ):
@@ -49,7 +50,12 @@ def write_corr_file(
     ``root_attrs`` are written at the file root after the producer is
     done, mirroring ``filter_corr_keys.py`` (``filter_phase``,
     ``filtered_keys``, ``mux_copy_0to1``, ``mux_copy_4to5``).
+    ``el_pos`` is the motor stream's commanded elevation (in stepper
+    counts): a scalar (the default, ``0.0``, matches every caller that
+    predates this parameter) or an array-like of length ``ntimes`` for
+    a genuine per-sample sweep.
     """
+    el_pos = np.broadcast_to(np.asarray(el_pos, dtype=float), (ntimes,))
     rng = np.random.default_rng(seed)
     acc_cnt = np.arange(acc_cnt0, acc_cnt0 + ntimes, dtype=np.int64)
     times = acc_cnt * integration_time + sync_time
@@ -84,8 +90,8 @@ def write_corr_file(
                 "boot_id": 7,
                 "az_pos": float(i),
                 "az_target_pos": float(i),
-                "el_pos": 0.0,
-                "el_target_pos": 0.0,
+                "el_pos": float(el_pos[i]),
+                "el_target_pos": float(el_pos[i]),
             }
             for i in range(ntimes)
         ]

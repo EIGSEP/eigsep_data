@@ -19,16 +19,35 @@ from conftest import write_corr_file
 BEAM_T0 = 1784320080.0
 BEAM_FILES = ["corr_20260717_202800Z.h5", "corr_20260717_203000Z.h5"]
 
+# A genuine elevation sweep (stepper counts), reset per file like
+# az_pos/pot_az_angle. With a *constant* el_pos, imu_el_from_accel's
+# cov = np.cov(raw_deg, el_motor_deg)[0, 1] is exactly zero, and the
+# sign of the pair of singular vectors LAPACK returns for this
+# fixture's accel (a legitimate SVD ambiguity that can differ across
+# BLAS/LAPACK backends) is then unconstrained: flipping the sign of
+# only one of the two vectors mirrors imu_el_deg (confirmed by
+# monkeypatching np.linalg.svd: max deviation ~10.8), and the cov==0
+# anchor has no way to catch it. A real sweep gives cov a definite,
+# nonzero sign, so the anchor actually anchors -- flipping one vector
+# now flips cov's sign too, which the `sign = -1.0 if cov < 0 else
+# 1.0` branch detects and corrects for. Confirmed by the same
+# monkeypatch against this sweep: flipping one vector, or both,
+# reproduces the unpatched result to ~3e-14, not ~10.8. The goldens
+# below are therefore reproducible across platforms, not an artifact
+# of one LAPACK build's sign convention.
+EL_POS_SWEEP = np.linspace(-300.0, 300.0, 20)
+
 # imu_el_deg for one 20-sample file, as extract_beam_mapping_data
-# produces it today from this fixture's deterministic accel_x=cos(0.01*i),
-# accel_y=sin(0.01*i), accel_z=0.1, el_pos=0.0 (no rng involved -- the
-# per-key data arrays are randomised by `seed`, but the motor/imu_el
-# streams are not). Recorded by running the unmodified
-# extract_beam_mapping_data against this exact fixture once and reading
-# off the result; file 2 reproduces the identical pattern because its
-# accel/el_pos generators reset their local index at the start of every
-# file, the same way az_pos and pot_az_angle do. This is a literal
-# constant, not a value computed from the function under test.
+# produces it today from this fixture's deterministic
+# accel_x=cos(0.01*i), accel_y=sin(0.01*i), accel_z=0.1, and
+# el_pos=EL_POS_SWEEP (no rng involved -- the per-key data arrays are
+# randomised by `seed`, but the motor/imu_el streams are not).
+# Recorded by running the unmodified extract_beam_mapping_data against
+# this exact fixture once and reading off the result; file 2
+# reproduces the identical pattern because its accel/el_pos generators
+# reset their local index at the start of every file, the same way
+# az_pos and pot_az_angle do. This is a literal constant, not a value
+# computed from the function under test.
 _IMU_EL_DEG_GOLDEN_FILE = [
     -5.416005,
     -4.845914,
@@ -64,6 +83,7 @@ def _beam_dir(tmp_path):
             keys=("0", "4", "04"),
             streams=("motor", "potmon", "imu_el"),
             rfswitch=["RFANT"] * 20,
+            el_pos=EL_POS_SWEEP,
             seed=i,
         )
     return tmp_path
@@ -150,7 +170,7 @@ class TestExtractBeamMappingDataContract:
         out = _extract(tmp_path)
         expected_az = np.tile(np.arange(20, dtype=float), 2)
         expected_pot = np.tile(10.0 + np.arange(20, dtype=float), 2)
-        expected_el = np.zeros(40)
+        expected_el = np.tile(EL_POS_SWEEP, 2)
         np.testing.assert_allclose(out["az_pos"], expected_az)
         np.testing.assert_allclose(out["pot_az_angle"], expected_pot)
         np.testing.assert_allclose(out["el_pos"], expected_el)
@@ -180,15 +200,41 @@ class TestExtractBeamMappingDataContract:
     def test_imu_el_deg_matches_recorded_golden_values(self, tmp_path):
         # imu_el_from_accel's SVD-plus-anchoring result is otherwise
         # unpinned by value anywhere in this file (only isfinite), so
-        # a rewrite that fed the wrong accel columns, dropped the
-        # el_pos anchor, or misaligned per-file indices would go
-        # undetected. atol is looser than the recorded precision, to
-        # tolerate floating-point differences across platforms/BLAS
-        # without losing the ability to catch a materially wrong
-        # computation.
+        # a rewrite that misaligned per-file indices/rows, or dropped
+        # the el_pos anchor, would go undetected. What this test does
+        # NOT catch: SVD-based plane fitting is invariant under any
+        # orthogonal transform of the accel columns, so permuting or
+        # negating accel_x/accel_y/accel_z leaves imu_el_deg
+        # bit-identical (confirmed empirically) -- no tolerance can
+        # close that gap here.
+        # test_imu_accel_matches_raw_generator_values below pins the
+        # raw accel columns themselves, which is the only place such
+        # a swap is visible. atol is looser than the
+        # recorded precision, to tolerate floating-point differences
+        # across platforms/BLAS without losing the ability to catch a
+        # materially wrong computation; EL_POS_SWEEP (unlike a
+        # constant el_pos) makes that safe -- see its comment above.
         out = _extract(tmp_path)
         expected = np.array(_IMU_EL_DEG_GOLDEN_FILE * 2)
         np.testing.assert_allclose(out["imu_el_deg"], expected, atol=1e-4)
+
+    def test_imu_accel_matches_raw_generator_values(self, tmp_path):
+        # imu_el_deg cannot detect a permuted or negated accel column
+        # (see the note above) because plane-fitting via SVD is
+        # invariant under orthogonal transforms of its input -- so the
+        # raw imu_accel array, pinned here against write_corr_file's
+        # own per-sample formula, is the only place in this file a
+        # Task 9 column swap would be visible.
+        out = _extract(tmp_path)
+        idx = np.arange(20, dtype=float)
+        expected = np.tile(
+            np.stack(
+                [np.cos(0.01 * idx), np.sin(0.01 * idx), np.full(20, 0.1)],
+                axis=1,
+            ),
+            (2, 1),
+        )
+        np.testing.assert_allclose(out["imu_accel"], expected)
 
     def test_sweep_slice_applies_to_every_per_sample_array(self, tmp_path):
         # sweep_slice exists to drop a calibration sweep at the start
