@@ -10,6 +10,7 @@ which is the header time when the file's clock was sane and a
 filename-derived estimate otherwise; see :func:`scan_corr_file`.
 """
 
+import contextlib
 import fnmatch
 import hashlib
 import json
@@ -28,6 +29,15 @@ from .metadata import (
     flatten_metadata,
 )
 
+#: Version of what a scan *produces*. **Bump this whenever a scan would
+#: give different columns or different values for identical inputs** --
+#: a field added to :data:`eigsep_data.metadata.CURATED_FIELDS`, a
+#: changed ``time_best`` or ``sync_recovered`` formula, a new identity
+#: column. It is the only part of the cache fingerprint that can say so:
+#: the manifest, the patterns, the zone and the scanner's qualified name
+#: all stay identical when the scanner's *behaviour* changes, so without
+#: a bump every existing sidecar keeps validating and keeps serving the
+#: old table, in every later session, with no warning.
 SCHEMA_VERSION = 1
 
 #: Sidecar cache written next to the data. Gitignored -- derived from
@@ -327,7 +337,10 @@ class MetadataIndex:
         Directory of corr h5 files.
     streams : iterable of str, "all", or None
         Metadata streams to carry; see
-        :func:`eigsep_data.metadata.flatten_metadata`.
+        :func:`eigsep_data.metadata.flatten_metadata`. Kept in canonical
+        form (``"all"`` or a sorted list, ``None`` spelled out as the
+        curated set), so an iterable is read exactly once however many
+        times :meth:`rebuild` runs.
     patterns : tuple of str
         Filename globs to index. Dot-prefixed names and the cache file
         are always excluded, whatever the pattern.
@@ -375,7 +388,11 @@ class MetadataIndex:
         scanner=None,
     ):
         self.data_dir = Path(data_dir)
-        self.streams = streams
+        # Canonicalised once, not per rebuild: a one-shot iterator would
+        # otherwise be consumed by the first build and canonicalise to
+        # the empty set on the next, scanning no streams at all and
+        # saying nothing about it.
+        self.streams = _stream_key(streams)
         self.patterns = tuple(patterns)
         self.use_cache = cache
         self.filename_tz = filename_tz
@@ -464,9 +481,17 @@ class MetadataIndex:
         the column set fell short, so :meth:`rebuild` can rescan for the
         union instead of dropping what was already cached.
 
-        A sidecar that cannot be read -- truncated, garbage, or written
-        by an incompatible layout -- is treated as absent and rebuilt
-        over, since the scan is always able to produce the same table.
+        A sidecar that cannot be *opened* -- truncated, garbage, not HDF5
+        at all -- is treated as absent without comment, since the scan
+        produces the same table anyway. One that opens but does not
+        decode warns instead: that is a defect in this codec rather than
+        a stale cache, and it would otherwise show up only as a
+        21-26 s rescan in every session for ever.
+
+        Note that the schema version is *not* checked here. Invalidation
+        is entirely by fingerprint, which :data:`SCHEMA_VERSION` is part
+        of, so a schema bump never reaches this point -- the fingerprints
+        simply do not match.
         """
         if not self.cache_path.exists():
             return None, None, None
@@ -490,7 +515,12 @@ class MetadataIndex:
                         for name in json.loads(h5.attrs["columns"])
                     }
                 )
-        except (OSError, KeyError, ValueError, TypeError):
+        except OSError:
+            return None, None, None
+        except (KeyError, ValueError, TypeError) as exc:
+            warnings.warn(
+                f"Could not read index cache, rescanning: {exc}", stacklevel=3
+            )
             return None, None, None
         return table, have, skipped
 
@@ -501,9 +531,16 @@ class MetadataIndex:
         Columns are encoded before the file is opened, so a column the
         cache cannot represent exactly leaves no half-written sidecar
         behind -- and a read-only data directory leaves none either.
-        Every failure here costs a rescan next session and nothing else,
-        so none of them is worth raising over: :attr:`table` is already
-        built and correct.
+        A failure part-way through the write does leave one, so the
+        handler removes it: it would only be rejected and rewritten next
+        session, and at ~300 bytes a row it is not worth leaving several
+        hundred MB of rubble next to the data.
+
+        Every failure here costs a rescan and nothing else, so none of
+        them is worth raising over: :attr:`table` is already built and
+        correct. The schema version is not written into the file -- it is
+        inside *fingerprint*, and a second copy nobody reads would only
+        suggest a read-side check that does not exist.
         """
         try:
             encoded = [
@@ -512,7 +549,6 @@ class MetadataIndex:
             ]
             with h5py.File(self.cache_path, "w") as h5:
                 h5.attrs["fingerprint"] = fingerprint
-                h5.attrs["schema"] = SCHEMA_VERSION
                 h5.attrs["streams"] = json.dumps(streams)
                 h5.attrs["columns"] = json.dumps(list(self.table.columns))
                 # A dataset, not an attr: a bad batch of files would put
@@ -525,6 +561,11 @@ class MetadataIndex:
                     dataset = group.create_dataset(name, data=values)
                     dataset.attrs["kind"] = kind
         except (OSError, TypeError, ValueError) as exc:
+            # Removing it may itself be impossible (the read-only
+            # directory that failed the write in the first place), in
+            # which case there is nothing there to remove anyway.
+            with contextlib.suppress(OSError):
+                self.cache_path.unlink(missing_ok=True)
             warnings.warn(f"Could not write index cache: {exc}", stacklevel=3)
 
     def rebuild(self, force=False):
@@ -554,7 +595,7 @@ class MetadataIndex:
             Ignore any existing cache and rescan.
         """
         fingerprint = self._fingerprint()
-        wanted = _stream_key(self.streams)
+        wanted = self.streams  # already canonical; see __init__
         self.from_cache = False
         have = None
         if self.use_cache and not force:

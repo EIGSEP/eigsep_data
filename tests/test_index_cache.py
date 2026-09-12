@@ -3,6 +3,7 @@
 import os
 import warnings
 
+import h5py
 import numpy as np
 import pandas as pd
 import pytest
@@ -169,6 +170,28 @@ class TestCache:
         assert not rebuilt.from_cache
         assert MetadataIndex(corr_dir).from_cache
 
+    def test_an_undecodable_cache_says_so(self, corr_dir):
+        # A readable sidecar whose contents do not decode is a defect in
+        # the codec, not a stale cache: silently rescanning would hide
+        # it behind nothing but a 21-26 s wait every session. (The
+        # sidecar is outside its own manifest, so editing it here does
+        # not invalidate the fingerprint.)
+        idx = MetadataIndex(corr_dir)
+        with h5py.File(idx.cache_path, "a") as h5:
+            del h5["columns"]["rfswitch"]  # still listed in the attr
+        with pytest.warns(UserWarning, match="Could not read index cache"):
+            rebuilt = MetadataIndex(corr_dir)
+        assert not rebuilt.from_cache
+        assert len(rebuilt.table) == 180
+
+    def test_a_one_shot_streams_iterator_survives_a_rebuild(self, corr_dir):
+        # An exhausted iterator canonicalises to the empty set, which
+        # would scan no streams at all and say nothing about it.
+        idx = MetadataIndex(corr_dir, streams=iter(["motor"]))
+        assert "motor_az_pos" in idx.table.columns
+        idx.rebuild(force=True)
+        assert "motor_az_pos" in idx.table.columns
+
     def test_cache_false_never_writes(self, corr_dir):
         idx = MetadataIndex(corr_dir, cache=False)
         assert not idx.cache_path.exists()
@@ -243,10 +266,24 @@ class TestLosslessColumns:
         # as int64 and object would still compare equal and quietly cost
         # memory on 1.2M rows.
         MetadataIndex(corr_dir)
-        table = MetadataIndex(corr_dir).table
-        assert table.row.dtype == np.int32
-        assert table.sync_consistent.dtype == bool
-        assert table.mux_copy_0to1.dtype == bool
+        second = MetadataIndex(corr_dir)
+        assert second.from_cache  # or these are the scan's dtypes
+        assert second.table.row.dtype == np.int32
+        assert second.table.sync_consistent.dtype == bool
+        assert second.table.mux_copy_0to1.dtype == bool
+
+    def test_a_failed_write_leaves_no_rubble(self, corr_dir):
+        # "." names a group itself in HDF5, so a column called that
+        # fails *inside* the write, after the file exists -- the shape a
+        # full disk or an interrupted write has. The partial sidecar can
+        # never be served, and at ~300 bytes a row it must not be left
+        # sitting next to the data either.
+        with h5py.File(corr_dir / "corr_20260717_150041Z.h5", "a") as h5:
+            h5.attrs["."] = 1
+        with pytest.warns(UserWarning, match="Could not write index cache"):
+            idx = MetadataIndex(corr_dir)
+        assert len(idx.table) == 180
+        assert not idx.cache_path.exists()
 
     def test_unrepresentable_column_is_not_cached(self, corr_dir):
         # A scanner is a public seam, so a column the cache cannot
