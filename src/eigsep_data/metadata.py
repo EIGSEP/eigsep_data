@@ -25,6 +25,12 @@ field is ``None``            ``MISSING`` / NaN   True
 (``MISSING`` for string fields, NaN for numeric ones. A string column
 never holds Python ``None``, so it survives the h5 cache unchanged.)
 
+The first row of that table is the one this module cannot keep on its
+own under ``streams="all"``, which takes the streams *this file* has
+and so emits no column at all for one it lacks. The gap is closed a
+level up, in :func:`eigsep_data.index._finalise`, which fills an
+``*_ok`` gap with ``False``.
+
 So ``UNKNOWN`` -- the producer asserting this integration is
 contaminated by a switch transition, an error status, or a
 mid-integration flip -- is never confused with ``MISSING``, which means

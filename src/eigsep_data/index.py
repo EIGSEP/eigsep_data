@@ -1,9 +1,10 @@
 """A per-integration index over a directory of corr files.
 
-Scanning reads only headers and metadata -- never spectra -- so a whole
-deployment (5120 files, ~1.2M integrations) indexes in ~21-26 s with all
-streams, ~5.5 s with rfswitch alone. Queries then run against the table
-and only the selected rows are ever read from disk.
+Scanning reads only headers and metadata -- never spectra. Measured on
+the 5124-file deployment 5 (1.23 M integrations, the nine curated
+streams): ~64 s for a cold scan, then ~5 s per session to rebuild from
+the sidecar cache it leaves behind. Queries run against the table and
+only the selected rows are ever read from disk.
 
 Row identity is the ``(file, row)`` pair. Ordering is by ``time_best``,
 which is the header time when the file's clock was sane and a
@@ -43,6 +44,14 @@ SCHEMA_VERSION = 1
 #: Sidecar cache written next to the data. Gitignored -- derived from
 #: untracked data and rebuilt whenever the inputs move.
 CACHE_NAME = ".eigsep_index.h5"
+
+#: Key under which :func:`scan_corr_file` reports metadata streams it
+#: could not parse, in the returned frame's ``DataFrame.attrs``, as
+#: ``[(stream, reason), ...]``. A scanner is a plain function with no
+#: handle on the index and the frame is the only thing it hands back;
+#: ``attrs`` carries the note without costing a column of a million
+#: identical values. A scanner that sets nothing reports nothing.
+LOST_STREAMS_ATTR = "lost_streams"
 
 #: A file whose last integration time differs from its filename by more
 #: than this is flagged ``sync_consistent = False``. Deployment 5 splits
@@ -130,6 +139,10 @@ def scan_corr_file(path, streams=None, filename_tz=None):
     Returns
     -------
     pandas.DataFrame
+        Carrying ``attrs[LOST_STREAMS_ATTR]``: the ``(stream, reason)``
+        pairs whose JSON would not parse. Each one warns as well, and
+        :class:`MetadataIndex` collects them into
+        :attr:`MetadataIndex.lost_streams`.
     """
     path = Path(path)
     with h5py.File(path, "r") as h5:
@@ -149,6 +162,7 @@ def scan_corr_file(path, streams=None, filename_tz=None):
         # would double the scan cost.
         data_keys = sorted(h5["data"]) if "data" in h5 else []
         meta = {}
+        lost = []
         if "metadata" in h5:
             for name in h5["metadata"]:
                 raw = h5["metadata"][name][()]
@@ -156,8 +170,20 @@ def scan_corr_file(path, streams=None, filename_tz=None):
                     raw = raw.decode()
                 try:
                     meta[name] = json.loads(raw)
-                except (ValueError, TypeError):
-                    continue
+                except (ValueError, TypeError) as exc:
+                    # Every column of this stream now reads MISSING,
+                    # which says "no information reached the writer" --
+                    # but information did reach it and was destroyed on
+                    # read. Nothing in the table can tell the two apart,
+                    # so the loss is reported here and recorded on the
+                    # index (see MetadataIndex.lost_streams).
+                    lost.append((name, str(exc)))
+                    warnings.warn(
+                        f"{path.name}: metadata stream {name!r} could "
+                        f"not be parsed, its columns read MISSING: "
+                        f"{exc}",
+                        stacklevel=2,
+                    )
 
     integration_time = float(header_attrs.get("integration_time", np.nan))
     row = np.arange(ntimes, dtype=np.int32)
@@ -182,7 +208,14 @@ def scan_corr_file(path, streams=None, filename_tz=None):
         cols[key] = np.repeat(header_attrs.get(key, default), ntimes)
     cols["data_keys"] = np.repeat(",".join(data_keys), ntimes)
     cols.update(flatten_metadata(meta, ntimes, streams=streams))
-    return pd.DataFrame(cols)
+    frame = pd.DataFrame(cols)
+    frame.attrs[LOST_STREAMS_ATTR] = lost
+    return frame
+
+
+def _is_boolean(values):
+    """Whether an object column's non-gap values are all booleans."""
+    return pd.api.types.infer_dtype(values.dropna(), skipna=True) == "boolean"
 
 
 def _finalise(table):
@@ -193,6 +226,18 @@ def _finalise(table):
     object column with NaN in the gaps; every such gap becomes
     ``MISSING``, so the column reads the same whether the table came
     from a scan or from the cache.
+
+    The ``<stream>_ok`` flags are the one exception and take ``False``
+    instead, because that is what the contract says a stream absent
+    from a file reads (see :mod:`eigsep_data.metadata`). A gap reaches
+    them only under ``streams="all"``, which enumerates the streams
+    *that file* carries and so emits no column at all for a file that
+    has none; ``MISSING`` there would make ``select(potmon_ok=False)``
+    return no rows for exactly the files it is asking about, and turn a
+    one-byte boolean into an object column besides. Root attrs share
+    this namespace, so the values are checked as well as the name:
+    filling a *string* column with ``False`` and casting it would read
+    ``True`` in every row.
 
     Only columns whose values are *all* strings are then cast to ``str``.
     A boolean root attr (``mux_copy_0to1``) is left holding real
@@ -207,6 +252,12 @@ def _finalise(table):
     """
     for col in table.columns:
         if table[col].dtype != object:
+            continue
+        if col.endswith("_ok") and _is_boolean(table[col]):
+            # eq, not fillna(False).astype(bool): a gap is NaN, which
+            # is not equal to True, and fillna on an object column
+            # downcasts with a pandas FutureWarning.
+            table[col] = table[col].eq(True)
             continue
         filled = table[col].fillna(MISSING)
         if filled.map(lambda v: isinstance(v, str)).all():
@@ -387,6 +438,16 @@ class MetadataIndex:
         cached table was built with and re-warns, because the file
         manifest of a partial scan validates just as well as a complete
         one and would otherwise serve the short table in silence.
+    lost_streams : list of (str, str, str)
+        ``(basename, stream, reason)`` for every metadata stream that
+        was present but unparseable. Its columns read ``MISSING`` for
+        that file, which otherwise means "no information reached the
+        writer" -- here it did, and was destroyed on read. Kept apart
+        from :attr:`skipped` deliberately: these files *are* in the
+        table, at full length, so folding them in would break the one
+        thing ``skipped`` is for (telling a short table from a complete
+        one). Restored and re-warned on a cache hit for the same reason
+        ``skipped`` is.
     """
 
     def __init__(
@@ -412,6 +473,7 @@ class MetadataIndex:
         self.from_cache = False
         self.cached_streams = None
         self.skipped = []
+        self.lost_streams = []
         self.rebuild()
 
     @property
@@ -433,12 +495,11 @@ class MetadataIndex:
     def _scan(self, streams):
         frames = []
         skipped = []
+        lost = []
         for path in self._files():
             try:
-                frames.append(
-                    self.scanner(
-                        path, streams=streams, filename_tz=self.filename_tz
-                    )
+                frame = self.scanner(
+                    path, streams=streams, filename_tz=self.filename_tz
                 )
             except (OSError, KeyError, TypeError, ValueError) as exc:
                 # One truncated or contract-violating file must not kill
@@ -446,7 +507,17 @@ class MetadataIndex:
                 # answerable afterwards -- the table is simply shorter.
                 skipped.append((path.name, str(exc)))
                 warnings.warn(f"Skipping {path.name}: {exc}", stacklevel=2)
+                continue
+            frames.append(frame)
+            # The scanner has already warned about each of these; this
+            # is what makes them answerable later, and cacheable. A
+            # scanner that reports nothing contributes nothing.
+            lost.extend(
+                (path.name, stream, reason)
+                for stream, reason in frame.attrs.get(LOST_STREAMS_ATTR, ())
+            )
         self.skipped = skipped
+        self.lost_streams = lost
         if not frames:
             raise FileNotFoundError(
                 f"No indexable files matching {self.patterns} in "
@@ -485,7 +556,8 @@ class MetadataIndex:
 
     def _read_cache(self, fingerprint, wanted):
         """
-        ``(table, streams, skipped)`` from the sidecar, or ``None``s.
+        ``(table, streams, skipped, lost)`` from the sidecar, or
+        ``None``s.
 
         *table* is ``None`` when there is nothing usable to read, but
         *streams* still comes back when the fingerprint matched and only
@@ -497,7 +569,7 @@ class MetadataIndex:
         produces the same table anyway. One that opens but does not
         decode warns instead: that is a defect in this codec rather than
         a stale cache, and it would otherwise show up only as a
-        21-26 s rescan in every session for ever.
+        ~64 s rescan in every session for ever.
 
         Note that the schema version is *not* checked here. Invalidation
         is entirely by fingerprint, which :data:`SCHEMA_VERSION` is part
@@ -505,17 +577,29 @@ class MetadataIndex:
         simply do not match.
         """
         if not self.cache_path.exists():
-            return None, None, None
+            return None, None, None, None
         try:
             with h5py.File(self.cache_path, "r") as h5:
                 if h5.attrs.get("fingerprint") != fingerprint:
-                    return None, None, None
+                    return None, None, None, None
                 have = json.loads(h5.attrs["streams"])
                 if not _covers(have, wanted):
-                    return None, have, None
+                    return None, have, None, None
                 skipped = [
                     tuple(item)
                     for item in json.loads(h5["skipped"][()].decode())
+                ]
+                # Absent from sidecars written before the record
+                # existed. Those tables are unchanged by it, and an
+                # empty list is the only answer such a file can give;
+                # they lose it for good on their next rebuild.
+                lost = [
+                    tuple(item)
+                    for item in json.loads(
+                        h5["lost_streams"][()].decode()
+                        if "lost_streams" in h5
+                        else "[]"
+                    )
                 ]
                 group = h5["columns"]
                 table = pd.DataFrame(
@@ -527,13 +611,13 @@ class MetadataIndex:
                     }
                 )
         except OSError:
-            return None, None, None
+            return None, None, None, None
         except (KeyError, ValueError, TypeError) as exc:
             warnings.warn(
                 f"Could not read index cache, rescanning: {exc}", stacklevel=3
             )
-            return None, None, None
-        return table, have, skipped
+            return None, None, None, None
+        return table, have, skipped, lost
 
     def _write_cache(self, fingerprint, streams):
         """
@@ -574,6 +658,10 @@ class MetadataIndex:
                 # thousands of skip reasons past the 64 KB attr limit.
                 h5.create_dataset(
                     "skipped", data=np.bytes_(json.dumps(self.skipped))
+                )
+                h5.create_dataset(
+                    "lost_streams",
+                    data=np.bytes_(json.dumps(self.lost_streams)),
                 )
                 group = h5.create_group("columns")
                 for name, values, kind in encoded:
@@ -618,15 +706,22 @@ class MetadataIndex:
         self.from_cache = False
         have = None
         if self.use_cache and not force:
-            cached, have, skipped = self._read_cache(fingerprint, wanted)
+            cached, have, skipped, lost = self._read_cache(fingerprint, wanted)
             if cached is not None:
                 self.table = cached
                 self.cached_streams = have
                 self.skipped = skipped
+                self.lost_streams = lost
                 self.from_cache = True
                 for name, reason in skipped:
                     warnings.warn(
                         f"Cached index omits {name}: {reason}", stacklevel=2
+                    )
+                for name, stream, reason in lost:
+                    warnings.warn(
+                        f"Cached index could not parse stream {stream!r} "
+                        f"of {name}, its columns read MISSING: {reason}",
+                        stacklevel=2,
                     )
                 return
         streams = _union(wanted, have)

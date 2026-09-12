@@ -133,6 +133,20 @@ def write_corr_file(
     return path
 
 
+def corrupt_stream(path, stream):
+    """
+    Replace one metadata stream's JSON blob with an unparseable one.
+
+    The writer stores each stream as a scalar bytes dataset holding
+    JSON, so a truncated write or a bad flush leaves exactly this: a
+    file that opens, has the stream, and cannot be read.
+    """
+    with h5py.File(path, "a") as h5:
+        del h5["metadata"][stream]
+        h5["metadata"].create_dataset(stream, data=np.bytes_("{truncated"))
+    return path
+
+
 def stale_pair(tmp_path):
     """
     One good file, then one whose ``sync_time`` is 54 days stale.

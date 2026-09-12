@@ -11,7 +11,7 @@ from eigsep_data import clock
 from eigsep_data.index import CACHE_NAME, MetadataIndex, scan_corr_file
 from eigsep_data.metadata import MISSING
 
-from conftest import stale_pair, write_corr_file
+from conftest import corrupt_stream, stale_pair, write_corr_file
 
 IDENTITY = (
     "file",
@@ -62,6 +62,62 @@ class TestMetadataIndexScan:
         idx = MetadataIndex(corr_dir, cache=False)
         sub = idx.table[idx.table.file == "corr_20260717_151041Z.h5"]
         assert (sub.rfswitch == MISSING).all()
+
+    def test_stream_ok_is_a_real_boolean_under_streams_all(self, corr_dir):
+        # streams="all" enumerates the streams *that file* carries, so
+        # the middle fixture file -- which has no rfswitch stream --
+        # contributes no rfswitch_ok column at all and concatenation
+        # leaves a gap. Filled with the MISSING sentinel the column
+        # would stop answering the question it exists for.
+        idx = MetadataIndex(corr_dir, cache=False, streams="all")
+        flags = [c for c in idx.table.columns if c.endswith("_ok")]
+        assert flags
+        for col in flags:
+            assert idx.table[col].dtype == bool, col
+        # 60 rows with no stream at all, plus the 5 None-padded rows of
+        # the ladder in the first file.
+        assert idx.select(rfswitch_ok=False).nrows == 65
+
+    def test_streams_all_still_finds_the_file_that_lacks_a_stream(
+        self, tmp_path
+    ):
+        # The query the flag exists for: which rows have no potmon
+        # reading. It must reach the file that has no potmon stream.
+        write_corr_file(
+            tmp_path / "corr_20260717_150041Z.h5",
+            ntimes=6,
+            streams=("motor", "potmon"),
+        )
+        write_corr_file(
+            tmp_path / "corr_20260717_151041Z.h5",
+            ntimes=6,
+            streams=("motor",),
+            sync_time=1.7843e9 + 600,
+            seed=1,
+        )
+        sel = MetadataIndex(tmp_path, cache=False, streams="all").select(
+            potmon_ok=False
+        )
+        assert sel.files == ["corr_20260717_151041Z.h5"]
+        assert sel.nrows == 6
+
+    def test_a_string_attr_named_like_a_flag_is_not_coerced(self, tmp_path):
+        # The gaps of a <stream>_ok column are collapsed to False.
+        # Root attrs share that namespace, and collapsing a string
+        # column the same way would destroy it.
+        write_corr_file(
+            tmp_path / "corr_20260717_150041Z.h5",
+            ntimes=4,
+            root_attrs={"cal_ok": "pending"},
+        )
+        write_corr_file(
+            tmp_path / "corr_20260717_151041Z.h5",
+            ntimes=4,
+            sync_time=1.7843e9 + 600,
+            seed=1,
+        )
+        col = MetadataIndex(tmp_path, cache=False).table.cal_ok
+        assert set(col) == {"pending", MISSING}
 
     def test_sync_recovered_matches_the_writer_formula(self, corr_dir):
         # sync = times - acc_cnt * integration_time. This is the direct
@@ -231,6 +287,54 @@ class TestMetadataIndexScan:
         idx = MetadataIndex(corr_dir, cache=False, scanner=scanner)
         assert len(seen) == 3
         assert len(idx.table) == 3
+
+
+class TestMalformedMetadataStream:
+    """A stream that cannot be parsed is lost, and must not be silent.
+
+    Every column of that stream then reads ``MISSING`` -- exactly what
+    a file whose sensor never published looks like -- so nothing in the
+    table distinguishes the two. The file itself is still indexed, so
+    ``skipped`` stays empty too.
+    """
+
+    def bad_file(self, tmp_path):
+        path = write_corr_file(
+            tmp_path / "corr_20260717_150041Z.h5",
+            ntimes=4,
+            streams=("motor", "potmon"),
+        )
+        return corrupt_stream(path, "potmon")
+
+    def test_the_scan_warns(self, tmp_path):
+        path = self.bad_file(tmp_path)
+        with pytest.warns(UserWarning, match="potmon"):
+            scan_corr_file(path)
+
+    def test_the_index_records_the_lost_stream(self, tmp_path):
+        path = self.bad_file(tmp_path)
+        with pytest.warns(UserWarning, match="potmon"):
+            idx = MetadataIndex(tmp_path, cache=False)
+        assert [(f, s) for f, s, _ in idx.lost_streams] == [
+            (path.name, "potmon")
+        ]
+        assert idx.lost_streams[0][2]  # a reason, not an empty string
+
+    def test_the_file_is_indexed_not_skipped(self, tmp_path):
+        self.bad_file(tmp_path)
+        with pytest.warns(UserWarning):
+            idx = MetadataIndex(tmp_path, cache=False)
+        assert idx.skipped == []
+        assert len(idx.table) == 4
+        # The rows the record is about: unreadable, and indistinguishable
+        # in the table from a potmon that never published.
+        assert idx.table.potmon_pot_az_angle.isna().all()
+        assert not idx.table.potmon_ok.any()
+        # A stream that parsed is untouched by its neighbour's failure.
+        assert idx.table.motor_ok.all()
+
+    def test_a_clean_directory_loses_nothing(self, corr_dir):
+        assert MetadataIndex(corr_dir, cache=False).lost_streams == []
 
 
 class TestSyncConsistent:

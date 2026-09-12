@@ -11,7 +11,7 @@ import pytest
 from eigsep_data.index import MetadataIndex, scan_corr_file
 from eigsep_data.metadata import MISSING
 
-from conftest import write_corr_file
+from conftest import corrupt_stream, write_corr_file
 
 
 def gappy_dir(tmp_path, present):
@@ -173,7 +173,7 @@ class TestCache:
     def test_an_undecodable_cache_says_so(self, corr_dir):
         # A readable sidecar whose contents do not decode is a defect in
         # the codec, not a stale cache: silently rescanning would hide
-        # it behind nothing but a 21-26 s wait every session. (The
+        # it behind nothing but a ~64 s wait every session. (The
         # sidecar is outside its own manifest, so editing it here does
         # not invalidate the fingerprint.)
         idx = MetadataIndex(corr_dir)
@@ -349,6 +349,21 @@ class TestPartialScans:
         assert second.skipped == first.skipped
         assert len(second.table) == len(first.table) == 180
 
+    def test_lost_streams_are_reported_again_from_the_cache(self, corr_dir):
+        # Same hazard as a skipped file, one level down: the table is
+        # full length, so nothing about it looks partial, and the rows
+        # of the lost stream read MISSING for ever after.
+        corrupt_stream(corr_dir / "corr_20260717_150041Z.h5", "motor")
+        with pytest.warns(UserWarning, match="motor"):
+            first = MetadataIndex(corr_dir)
+        with pytest.warns(UserWarning, match="motor"):
+            second = MetadataIndex(corr_dir)
+        assert second.from_cache
+        assert second.lost_streams == first.lost_streams
+        assert [(f, s) for f, s, _ in second.lost_streams] == [
+            ("corr_20260717_150041Z.h5", "motor")
+        ]
+
     def test_a_clean_cache_hit_warns_about_nothing(self, corr_dir):
         # The re-warning above must be driven by what was cached, not
         # emitted on every hit.
@@ -358,6 +373,7 @@ class TestPartialScans:
             second = MetadataIndex(corr_dir)
         assert second.from_cache
         assert second.skipped == []
+        assert second.lost_streams == []
 
 
 class TestReadOnlyDirectory:

@@ -8,10 +8,8 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import curve_fit
 
-from .clock import (  # noqa: F401  -- to_unix_time is re-exported
-    parse_filename_time,
-    to_unix_time,
-)
+# to_unix_time is also re-exported: callers import it from here.
+from .clock import parse_filename_time, to_unix_time
 
 
 def _parse_time_from_name(fname: str, tz=None) -> datetime:
@@ -26,6 +24,14 @@ _AVG_COLS = ("time", "time_best", "acc_cnt")
 #: used to size a NaN stand-in for a key that no selected file carries,
 #: and to estimate how much memory a load will take.
 _DEFAULT_NCHAN = 1024
+
+
+def _default_freq():
+    """The frequency axis assumed when no file declares one: the full
+    ADC band at :data:`_DEFAULT_NCHAN` channels. One definition, used
+    both as :class:`EigsepData`'s field default and as the fallback in
+    :meth:`EigsepData.from_selection`."""
+    return np.linspace(0, 250, num=_DEFAULT_NCHAN, endpoint=False)
 
 
 def _as_spectra(arr):
@@ -134,9 +140,7 @@ class EigsepData:
     #: not copied -- so writing into it edits ``meta`` too; take a copy
     #: before any in-place arithmetic.
     times: np.ndarray = None
-    freq: np.ndarray = field(
-        default_factory=lambda: np.linspace(0, 250, num=1024, endpoint=False)
-    )
+    freq: np.ndarray = field(default_factory=_default_freq)
     #: Per-integration metadata, one row per entry in ``times``.
     meta: pd.DataFrame = None
 
@@ -170,8 +174,10 @@ class EigsepData:
         -------
         EigsepData
             ``freq`` comes from the first selected file that carries a
-            ``freqs`` header, and ``meta`` is one row per entry in
-            ``times``.
+            ``freqs`` header, falling back to the class default when
+            none does -- callers index and plot against it unguarded, so
+            handing back ``None`` would fail a frame or two later
+            instead of here. ``meta`` is one row per entry in ``times``.
         """
         if missing not in ("raise", "nan"):
             raise ValueError("missing must be 'raise' or 'nan'")
@@ -351,7 +357,7 @@ class EigsepData:
             data=data,
             acc_cnt=out_meta.acc_cnt.to_numpy(),
             times=out_meta.time_best.to_numpy(),
-            freq=freq,
+            freq=_default_freq() if freq is None else freq,
             meta=out_meta,
         )
 
@@ -476,11 +482,14 @@ def extract_beam_mapping_data(
 
     Selection runs through :class:`eigsep_data.index.MetadataIndex`,
     which writes a sidecar cache ``.eigsep_index.h5`` next to the data
-    on first use (later calls are near-instant). A read-only directory
-    just skips the write with a warning. Only files whose clock agrees
-    with their filename (``sync_consistent``) are considered, which is
-    what the old header-time selection did in practice: a stale-clock
-    file never fell inside a real window.
+    on first use. Later calls reuse it -- ~5 s on the 5124-file
+    deployment 5, against ~64 s for the cold scan -- which is reuse,
+    not instant, and see the note below on when this wrapper pays the
+    cold scan again anyway. A read-only directory just skips the write
+    with a warning. Only files whose clock agrees with their filename
+    (``sync_consistent``) are considered, which is what the old
+    header-time selection did in practice: a stale-clock file never
+    fell inside a real window.
 
     The default curated streams already include ``motor``, ``potmon``
     and ``imu_el``, so this wrapper's metadata needs no extra scan

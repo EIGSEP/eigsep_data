@@ -61,6 +61,21 @@ class TestFromSelection:
         with h5py.File(corr_dir / "corr_20260717_150041Z.h5", "r") as h5:
             np.testing.assert_array_equal(d.freq, h5["header"]["freqs"][()])
 
+    def test_freq_falls_back_to_the_default_without_a_header(self, tmp_path):
+        # browse.py calls loaded.freq.min() on whatever comes back and
+        # the beam extractor hands freq straight to its caller, so a
+        # None here is an AttributeError one frame later rather than a
+        # visibly absent axis. The dataclass already declares the
+        # fallback; from_selection must not override it.
+        path = write_corr_file(tmp_path / "corr_20260717_150041Z.h5", ntimes=4)
+        with h5py.File(path, "a") as h5:
+            del h5["header"]["freqs"]
+        sel = MetadataIndex(tmp_path, cache=False).select()
+        d = EigsepData.from_selection(sel, keys=["0"])
+        np.testing.assert_array_equal(
+            d.freq, np.linspace(0, 250, num=1024, endpoint=False)
+        )
+
     def test_cross_is_complex(self, corr_dir):
         # The reader's rule: (n, nchan, 2) int32 is (re, im).
         sel = MetadataIndex(corr_dir, cache=False).select(rfswitch="RFANT")
