@@ -61,7 +61,7 @@ S11 sweeps, whose header carries `metadata_snapshot_unix` rather than
 `times` — without a second cache, query and summary implementation.
 
 ```python
-idx = MetadataIndex("data/deployment5_filtered")       # ~25 s cold, ~0.1 s cached
+idx = MetadataIndex("data/deployment5_filtered")       # ~64 s cold, ~5 s cached
 
 sel = idx.select(rfswitch="RFANT", run_tag="motor_scan",
                  time=("2026-07-17 20:28", "2026-07-17 21:28"))
@@ -178,6 +178,14 @@ Numeric columns use NaN; string columns — `rfswitch`, `sp1_term_name`, a
 missing `run_tag` — use the `MISSING` sentinel and **never** Python `None`.
 That is what makes the cache round trip lossless: an object column holding
 `None` would come back from HDF5 as the string `"None"`.
+
+The `<stream>_ok` column holds under every `streams=` mode, but only because
+`_finalise` normalises it. `streams="all"` enumerates the streams *each file*
+carries, so a file without one emits no such column at all and concatenation
+leaves a gap; `_finalise` fills the gaps of an `*_ok` column with `False`,
+which is the same answer a named or curated request produces directly. Without
+that step the gap reads `MISSING` and `select(<stream>_ok=False)` returns no
+rows for exactly the files it is asking about.
 
 So `UNKNOWN` (producer-asserted transition) is never confused with `MISSING`
 (no metadata at all).
@@ -379,11 +387,23 @@ on write and decoded on read; the `MISSING`-never-`None` rule above is what
 makes that exact. The test asserts whole-table equality after a round trip,
 not just the time column.
 
-Cold-scan cost measured: **~21–26 s** for 5120 files × 11 streams (~1.2 M rows);
-`rfswitch` alone ~5.5 s. Filename globs are matched against the unique
-filenames and then broadcast with `isin`, not evaluated per row — per-row
-`fnmatch` over 1.2 M rows costs seconds and would make the cached path slower
-than the promise above.
+Cold-scan cost, measured on the finished implementation against the real
+deployment (5124 files, 1.23 M rows, the nine curated streams): **63.7 s**
+cold, and **4.78 s** for a later session to rebuild from the sidecar, of which
+3.76 s is reading it. The sidecar is **407.7 MB**, 332 B/row.
+
+The pre-implementation estimate (~21–26 s cold, ~0.1 s cached) was wrong in
+both halves for one reason: it never priced the **per-row materialisation of
+per-file broadcast columns**. Eleven of the 48 columns hold one value per
+*file* stored once per *row* — a 240× redundancy at 5120 files against 1.23 M
+rows — and nothing in the cache is compressed. The remedy is identified and
+deferred to after the merge: `pd.Categorical` on the seven low-cardinality
+object columns plus HDF5 compression, which requires a `SCHEMA_VERSION` bump
+under the rule documented beside `SCHEMA_VERSION` in `index.py`.
+
+Filename globs are matched against the unique filenames and then broadcast
+with `isin`, not evaluated per row — per-row `fnmatch` over 1.2 M rows costs
+seconds and would make the cached path slower than the promise above.
 
 ## Deferred: the annotation layer
 
@@ -557,3 +577,8 @@ file. Changes, in order of consequence:
   is re-expressed rather than silently shifted.
 - `scanner=` hook on `MetadataIndex` as the seam for an S11 index.
 - `ipywidgets` goes in the existing `vis` extra, not a new one.
+
+**2026-09-11, after the whole-branch review of the implementation.** Corrections
+only, no design change: the scan and rebuild costs above are now the measured
+ones and carry the diagnosis of why the estimate missed them, and the
+`<stream>_ok` contract now says what makes it true under `streams="all"`.
