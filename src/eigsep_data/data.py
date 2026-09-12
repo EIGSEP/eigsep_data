@@ -470,119 +470,6 @@ class EigsepData:
         )
 
 
-def _select_h5_in_range(data_dir, start_unix, end_unix, file_patterns):
-    """
-    Read HDF5 files in *data_dir* matching *file_patterns* and keep only
-    the integrations with header["times"] in [start_unix, end_unix).
-
-    Returns
-    -------
-    times : np.ndarray, shape (nsamples,)
-        Chronologically sorted Unix times.
-    freqs : np.ndarray or None
-        Frequency axis from the first file's header.
-    data_range : dict[str, np.ndarray]
-        Per-key data arrays, sorted to match *times*.
-    headers : list[dict]
-        Per-file dicts with "selected_indices" (positions in the
-        original file arrays) and "times" (filtered), in file order.
-    metadata : list[dict]
-        Per-file raw metadata dicts (as returned by io.read_hdf5), in
-        file order, aligned with *headers*.
-    sort_index : np.ndarray
-        Index used to sort per-file-concatenated arrays chronologically;
-        reused to align per-file metadata (motor/potmon/imu) extracted
-        separately via *headers*.
-    """
-    data_dir = Path(data_dir)
-    h5_files = []
-    for pattern in file_patterns:
-        h5_files.extend(data_dir.glob(pattern))
-    h5_files = sorted(set(h5_files))
-    if not h5_files:
-        raise FileNotFoundError(
-            f"No files matching {file_patterns} found in:\n{data_dir}"
-        )
-
-    selected_data = {}
-    selected_times = []
-    headers = []
-    metadata = []
-    freqs = None
-
-    for filename in h5_files:
-        # Read header["times"] alone before deciding whether to load the
-        # file. io.read_hdf5 pulls the full payload at ~36 ms/file, which
-        # is ~77x the cost of this peek and is wasted on every file
-        # outside the window -- and in a deployment directory of several
-        # thousand files, that is nearly all of them. Selection still
-        # uses header times, so this changes speed only, not results.
-        try:
-            with h5py.File(filename, "r") as h5:
-                if "header" not in h5 or "times" not in h5["header"]:
-                    raise KeyError(
-                        f"{filename.name} does not contain header['times']."
-                    )
-                times_file = np.asarray(h5["header"]["times"])
-        except (OSError, KeyError) as e:
-            warnings.warn(f"Skipping {filename.name}: {e}")
-            continue
-
-        time_mask = (times_file >= start_unix) & (times_file < end_unix)
-        if not np.any(time_mask):
-            continue
-
-        try:
-            data_file, header_file, metadata_file = io.read_hdf5(filename)
-        except (OSError, KeyError) as e:
-            warnings.warn(f"Skipping {filename.name}: {e}")
-            continue
-
-        if selected_times and set(data_file) != set(selected_data):
-            raise KeyError(
-                f"{filename.name} has data keys {sorted(data_file)}, which "
-                f"differ from the keys seen so far {sorted(selected_data)}. "
-                "The requested time range straddles a change in recorded "
-                "data keys (e.g. a deployment reconfiguration); narrow the "
-                "range to a window with consistent keys."
-            )
-
-        selected_times.append(times_file[time_mask])
-        headers.append(
-            {
-                "selected_indices": np.flatnonzero(time_mask),
-                "times": times_file[time_mask],
-            }
-        )
-        metadata.append(metadata_file)
-        if freqs is None:
-            freqs = header_file.get("freqs")
-
-        for key, values in data_file.items():
-            values = np.asarray(values)
-            if values.shape[0] != times_file.size:
-                raise ValueError(
-                    f"{filename.name}, key {key!r}: shape mismatch "
-                    f"({values.shape[0]} vs {times_file.size})"
-                )
-            selected_data.setdefault(key, []).append(values[time_mask])
-
-    if not selected_times:
-        raise ValueError(
-            "No integrations found inside the requested time range."
-        )
-
-    times = np.concatenate(selected_times)
-    sort_index = np.argsort(times)
-    times = times[sort_index]
-    data_range = {
-        k: np.concatenate(v, axis=0)[sort_index]
-        for k, v in selected_data.items()
-    }
-
-    return times, freqs, data_range, headers, metadata, sort_index
-
-
 def extract_beam_mapping_data(
     data_dir,
     start_time,
@@ -603,6 +490,23 @@ def extract_beam_mapping_data(
     the beam-mapping pipeline (beam_sim, beam_fit, rfi). The IMU
     elevation angle is derived from the accelerometer axes via SVD, the
     same way as the reference notebook.
+
+    Selection runs through :class:`eigsep_data.index.MetadataIndex`,
+    which writes a sidecar cache ``.eigsep_index.h5`` next to the data
+    on first use (later calls are near-instant). A read-only directory
+    just skips the write with a warning. Only files whose clock agrees
+    with their filename (``sync_consistent``) are considered, which is
+    what the old header-time selection did in practice: a stale-clock
+    file never fell inside a real window.
+
+    The default curated streams already include ``motor``, ``potmon``
+    and ``imu_el``, so this wrapper's metadata needs no extra scan
+    beyond what any other caller of :class:`MetadataIndex` asks for.
+    It still uses the sidecar cache described above, but its
+    non-default *file_patterns* (``("*.h5", "*.hdf5")``) hash into a
+    different cache fingerprint than the ``("corr_*.h5",)`` default
+    every other caller uses, so this wrapper does not share one cache
+    entry with them over the same directory -- it gets its own.
 
     Parameters
     ----------
@@ -642,76 +546,36 @@ def extract_beam_mapping_data(
     if end_unix <= start_unix:
         raise ValueError("end_time must be later than start_time.")
 
-    times, freqs, data_range, headers, metadata, sort_index = (
-        _select_h5_in_range(data_dir, start_unix, end_unix, file_patterns)
+    from .index import MetadataIndex
+
+    index = MetadataIndex(data_dir, patterns=file_patterns)
+    sel = index.select(time=(start_unix, end_unix), sync_consistent=True)
+    if sel.nrows == 0:
+        raise ValueError(
+            "No integrations found inside the requested time range."
+        )
+    loaded = EigsepData.from_selection(
+        sel, keys=[sky_key, ground_key, cross_key], missing="raise"
     )
-
-    for key in (sky_key, ground_key, cross_key):
-        if key not in data_range:
-            raise KeyError(
-                f"Data key {key!r} not found; available keys: "
-                f"{sorted(data_range)}"
-            )
-
-    el_list, az_list, pot_list, accel_list = [], [], [], []
-    for header_entry, meta in zip(headers, metadata):
-        indices = header_entry["selected_indices"]
-
-        motor = meta["motor"]
-        file_el, file_az = [], []
-        for idx in indices:
-            entry = motor[idx]
-            if entry is None:
-                file_el.append(np.nan)
-                file_az.append(np.nan)
-            else:
-                file_el.append(entry.get("el_pos", np.nan))
-                file_az.append(entry.get("az_pos", np.nan))
-        el_list.append(np.asarray(file_el, dtype=float))
-        az_list.append(np.asarray(file_az, dtype=float))
-
-        potmon = meta["potmon"]
-        file_pot = []
-        for idx in indices:
-            entry = potmon[idx]
-            file_pot.append(
-                np.nan if entry is None else entry.get("pot_az_angle", np.nan)
-            )
-        pot_list.append(np.asarray(file_pot, dtype=float))
-
-        imu_el = meta["imu_el"]
-        file_accel = []
-        for idx in indices:
-            entry = imu_el[idx]
-            if entry is None:
-                file_accel.append((np.nan, np.nan, np.nan))
-            else:
-                file_accel.append(
-                    (
-                        entry.get("accel_x", np.nan),
-                        entry.get("accel_y", np.nan),
-                        entry.get("accel_z", np.nan),
-                    )
-                )
-        accel_list.append(np.asarray(file_accel, dtype=float))
-
-    el_pos = np.concatenate(el_list)[sort_index]
-    az_pos = np.concatenate(az_list)[sort_index]
-    pot_az_angle = np.concatenate(pot_list)[sort_index]
-    accel = np.concatenate(accel_list)[sort_index]
-
-    imu_el_deg = imu_el_from_accel(accel, el_pos, counts_per_deg)
-
+    meta = loaded.meta
+    el_pos = meta.motor_el_pos.to_numpy()
+    accel = np.column_stack(
+        [
+            meta.imu_el_accel_x.to_numpy(),
+            meta.imu_el_accel_y.to_numpy(),
+            meta.imu_el_accel_z.to_numpy(),
+        ]
+    )
     out = {
-        "times": times,
-        "freqs": freqs,
-        "sky": data_range[sky_key],
-        "ground": data_range[ground_key],
-        "cross": data_range[cross_key],
+        "times": loaded.times,
+        "freqs": loaded.freq,
+        "sky": loaded.data[sky_key],
+        "ground": loaded.data[ground_key],
+        "cross": loaded.data[cross_key],
         "el_pos": el_pos,
-        "az_pos": az_pos,
-        "pot_az_angle": pot_az_angle,
-        "imu_el_deg": imu_el_deg,
+        "az_pos": meta.motor_az_pos.to_numpy(),
+        "pot_az_angle": meta.potmon_pot_az_angle.to_numpy(),
+        "imu_el_deg": imu_el_from_accel(accel, el_pos, counts_per_deg),
         "imu_accel": accel,
     }
     if sweep_slice is not None:
