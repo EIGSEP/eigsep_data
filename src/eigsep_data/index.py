@@ -364,11 +364,30 @@ class Selection:
         return _apply_filters(self.index, self.meta, self.provenance, **kwargs)
 
     def visits(self, gap_s=600):
-        """Group rows into contiguous visits separated by *gap_s*."""
-        times = self.meta.time_best.to_numpy()
-        visits = np.zeros(times.size, dtype=int)
-        if times.size > 1:
-            visits[1:] = np.cumsum(np.diff(times) > gap_s)
+        """
+        Group rows into contiguous visits separated by *gap_s*.
+
+        Returns one id per row: ``0, 1, 2, ...`` in ``time_best`` order
+        for rows that have a ``time_best``, and ``-1`` for rows that do
+        not (an inconsistent clock and no usable filename estimate; see
+        :meth:`summary`). A row with no time is never reported as a
+        member of a real visit -- there is no time by which to place it
+        beside one -- so a caller averaging a visit gets only rows it
+        knows the time of, and the ``-1`` group is an explicit decision
+        rather than padding on the last visit.
+
+        Gaps are measured between rows that have times, so a run of
+        timeless rows never joins two visits or chains one into the
+        next.
+        """
+        times = self.meta.time_best.to_numpy(dtype=float)
+        visits = np.full(times.size, -1, dtype=int)
+        timed = np.isfinite(times)
+        known = times[timed]
+        if known.size:
+            ids = np.zeros(known.size, dtype=int)
+            ids[1:] = np.cumsum(np.diff(known) > gap_s)
+            visits[timed] = ids
         return visits
 
     def summary(self):

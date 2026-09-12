@@ -42,6 +42,19 @@ class TestSelect:
         sel = MetadataIndex(corr_dir, cache=False).select(rfswitch="RFNOFF")
         assert sel.nrows == 30  # 20 + 10, not 35
 
+    def test_missing_rows_are_addressable_as_missing(self, corr_dir):
+        # None outnumbers UNKNOWN 22x in deployment 5, so "no switch
+        # information" has to be reachable in its own right, not merely
+        # excluded from the real states. Both flavours answer to it:
+        # the ladder's 5-row None dropout and the 60 rows of the file
+        # that carries no rfswitch stream at all.
+        sel = MetadataIndex(corr_dir, cache=False).select(rfswitch=MISSING)
+        assert sel.nrows == 65
+        assert sel.file_counts().to_dict() == {
+            "corr_20260717_150041Z.h5": 5,
+            "corr_20260717_151041Z.h5": 60,
+        }
+
     def test_no_arguments_selects_everything(self, corr_dir):
         assert MetadataIndex(corr_dir, cache=False).select().nrows == 180
 
@@ -178,11 +191,17 @@ class TestTimeBestWindow:
 class TestSummary:
     def test_reports_what_each_filter_removed(self, corr_dir):
         # load_gated silently dropped every None row and every file with
-        # no stream. Making the exclusions visible is the point.
+        # no stream. Making the exclusions visible is the point, so the
+        # whole line shape is pinned -- which filter, before, after and
+        # how many it removed, in that order. Bare substring checks
+        # would pass on a summary with before and after swapped.
         sel = MetadataIndex(corr_dir, cache=False).select(rfswitch="RFANT")
         text = sel.summary()
         assert "180" in text and "20" in text
         assert "rfswitch" in text
+        assert text.startswith("180 rows indexed\n")
+        assert "  rfswitch='RFANT': 180 -> 20 (160 removed)" in text
+        assert "20 rows selected from 1 files" in text
 
     def test_reports_rows_with_estimated_times(self, corr_dir):
         text = MetadataIndex(corr_dir, cache=False).select().summary()
@@ -239,3 +258,26 @@ class TestVisits:
         sel = idx.select(where=lambda df: df.row < 2)
         # Three files, 10 min apart, two rows each.
         assert len(np.unique(sel.visits(gap_s=60))) == 3
+
+    def test_timeless_rows_join_no_visit(self, tmp_path):
+        # A row with no time_best cannot be placed beside anything. It
+        # sorts to the tail, so inheriting its neighbour's id would
+        # quietly pad the last visit with rows from an unrelated file
+        # on an unrelated day -- which a caller then averages.
+        write_corr_file(tmp_path / "corr_20260717_150041Z.h5", ntimes=4)
+        write_corr_file(
+            tmp_path / "corr_20260717_152041Z.h5",
+            ntimes=4,
+            sync_time=1.7843e9 + 1200,
+            seed=1,
+        )
+        write_corr_file(tmp_path / "corr_nostamp.h5", ntimes=3, seed=2)
+        sel = MetadataIndex(tmp_path, cache=False).select()
+        visits = sel.visits(gap_s=60)
+        # Two real visits 20 min apart, then three rows in no visit.
+        np.testing.assert_array_equal(
+            visits, [0, 0, 0, 0, 1, 1, 1, 1, -1, -1, -1]
+        )
+        timeless = sel.meta.time_best.isna().to_numpy()
+        assert set(visits[timeless]) == {-1}
+        assert -1 not in visits[~timeless]
