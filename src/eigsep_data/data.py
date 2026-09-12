@@ -229,8 +229,15 @@ class EigsepData:
             # per-file check in the read loop stays as the backstop for
             # an index that has gone stale against the files.
             undeclared = {}
-            per_file_keys = meta.groupby("file", sort=False).data_keys.first()
-            for fname, spec in per_file_keys.items():
+            for fname, group in meta.groupby("file", sort=False):
+                # Trimmed exactly as the read loop trims below: a file
+                # that cannot fill one block contributes no rows at all,
+                # so a key it lacks never reaches the output. Without
+                # this, an averaged day-long load would raise over a
+                # short phase-boundary file it was going to ignore.
+                if len(group) < time_avg:
+                    continue
+                spec = group.data_keys.iloc[0]
                 for key in set(keys) - set(str(spec).split(",")):
                     undeclared.setdefault(key, []).append(fname)
             if undeclared:

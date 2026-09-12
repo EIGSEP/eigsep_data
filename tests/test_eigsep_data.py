@@ -404,6 +404,33 @@ class TestTimeAvg:
         expected = full.data["04"].reshape(5, 4, NCHAN).mean(axis=1)
         np.testing.assert_allclose(avg.data["04"], expected, rtol=1e-6)
 
+    def test_short_file_without_the_key_is_ignored(self, tmp_path):
+        # A file contributing fewer selected rows than time_avg cannot
+        # fill a block, so the read loop drops it and none of its rows
+        # reach the output -- which means a key it lacks is irrelevant
+        # and the missing= policy must not fire for it. The shape of a
+        # routine deployment-5 phase-boundary file.
+        names = ["corr_20260717_150041Z.h5", "corr_20260717_151041Z.h5"]
+        write_corr_file(tmp_path / names[0], ntimes=16, keys=("0", "4"))
+        write_corr_file(
+            tmp_path / names[1],
+            ntimes=3,
+            keys=("0",),
+            sync_time=1.7843e9 + 600,
+            seed=1,
+        )
+        sel = MetadataIndex(tmp_path, cache=False).select()
+        with pytest.warns(UserWarning, match="dropped 3"):
+            d = EigsepData.from_selection(sel, keys=["0", "4"], time_avg=8)
+            # ... and missing="nan" must not invent a block for it.
+            nan = EigsepData.from_selection(
+                sel, keys=["0", "4"], time_avg=8, missing="nan"
+            )
+        for out in (d, nan):
+            assert out.data["4"].shape == (2, NCHAN)
+            assert out.meta.file.tolist() == [names[0]] * 2
+            assert np.isfinite(out.data["4"]).all()
+
     def test_never_averages_across_files(self, corr_dir):
         # 20 RFANT rows in one file, 30 RFAMB in another: 2 + 3 blocks
         # of 8, never a block straddling the boundary.
