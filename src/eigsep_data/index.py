@@ -218,11 +218,22 @@ def _finalise(table):
 
 
 def _stream_key(streams):
-    """Canonical form of a stream request: ``"all"`` or a sorted list."""
+    """
+    Canonical form of a stream request: ``"all"`` or a sorted list.
+
+    A bare string other than ``"all"`` is one stream name, not an
+    iterable of characters. ``"all"`` being a documented bare string
+    makes ``streams="rfswitch"`` a natural thing to try, and
+    ``sorted(set("rfswitch"))`` would ask for eight streams named after
+    letters -- a table of ``c_ok``, ``f_ok``, ``h_ok`` columns and not
+    one real value in any of them.
+    """
     if streams == "all":
         return "all"
     if streams is None:
         return sorted(set(CURATED_FIELDS) | set(SCALAR_STREAMS))
+    if isinstance(streams, str):
+        return [streams]
     return sorted(set(streams))
 
 
@@ -528,13 +539,17 @@ class MetadataIndex:
         """
         Write :attr:`table` to the sidecar, warning rather than raising.
 
-        Columns are encoded before the file is opened, so a column the
-        cache cannot represent exactly leaves no half-written sidecar
-        behind -- and a read-only data directory leaves none either.
-        A failure part-way through the write does leave one, so the
-        handler removes it: it would only be rejected and rewritten next
-        session, and at ~300 bytes a row it is not worth leaving several
-        hundred MB of rubble next to the data.
+        The two stages are handled separately because only one of them
+        owns the file. Encoding happens first and touches nothing, so a
+        column the cache cannot represent leaves the path exactly as it
+        was -- which matters when a sidecar is already there: under the
+        widening policy a request can rescan, fail to encode the *wider*
+        table, and must not take the narrower cache down with it. Past
+        the open, ``h5py`` has truncated the path, so whatever is there
+        is this attempt's own half-written sidecar and the handler
+        removes it rather than leave several hundred MB of rubble next to
+        the data. A read-only directory fails at the open with nothing
+        created, and removing nothing is not an error.
 
         Every failure here costs a rescan and nothing else, so none of
         them is worth raising over: :attr:`table` is already built and
@@ -547,6 +562,10 @@ class MetadataIndex:
                 (name,) + _encode_column(name, self.table[name].to_numpy())
                 for name in self.table.columns
             ]
+        except (TypeError, ValueError) as exc:
+            warnings.warn(f"Could not write index cache: {exc}", stacklevel=3)
+            return
+        try:
             with h5py.File(self.cache_path, "w") as h5:
                 h5.attrs["fingerprint"] = fingerprint
                 h5.attrs["streams"] = json.dumps(streams)
@@ -561,9 +580,9 @@ class MetadataIndex:
                     dataset = group.create_dataset(name, data=values)
                     dataset.attrs["kind"] = kind
         except (OSError, TypeError, ValueError) as exc:
-            # Removing it may itself be impossible (the read-only
-            # directory that failed the write in the first place), in
-            # which case there is nothing there to remove anyway.
+            # Removing it may itself be refused (the read-only directory
+            # that failed the open in the first place), in which case
+            # there was nothing there to remove anyway.
             with contextlib.suppress(OSError):
                 self.cache_path.unlink(missing_ok=True)
             warnings.warn(f"Could not write index cache: {exc}", stacklevel=3)

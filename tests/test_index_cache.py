@@ -192,6 +192,14 @@ class TestCache:
         idx.rebuild(force=True)
         assert "motor_az_pos" in idx.table.columns
 
+    def test_a_bare_stream_name_is_a_name_not_eight_letters(self, corr_dir):
+        # "all" is a documented bare string, so streams="rfswitch" is a
+        # natural thing to try. Iterating it as characters would scan
+        # eight streams named after letters and return nothing real.
+        idx = MetadataIndex(corr_dir, streams="rfswitch", cache=False)
+        assert "rfswitch" in idx.table.columns
+        assert "r_ok" not in idx.table.columns
+
     def test_cache_false_never_writes(self, corr_dir):
         idx = MetadataIndex(corr_dir, cache=False)
         assert not idx.cache_path.exists()
@@ -284,6 +292,29 @@ class TestLosslessColumns:
             idx = MetadataIndex(corr_dir)
         assert len(idx.table) == 180
         assert not idx.cache_path.exists()
+
+    def test_a_failed_write_keeps_the_cache_it_never_touched(self, corr_dir):
+        # The widening policy means a request can rescan and then fail to
+        # cache the wider table -- here because the wider stream set is
+        # what brings in the column that cannot be encoded. That failure
+        # happens before anything is opened, so the narrower cache
+        # already on disk is not this attempt's rubble: deleting it would
+        # throw away a valid table and leave the next narrow request to
+        # rescan for nothing.
+        def scanner(path, streams=None, filename_tz=None):
+            table = scan_corr_file(path, streams, filename_tz)
+            if streams == "all":
+                table["odd"] = [{"a": 1}] * len(table)
+            return table
+
+        narrow = MetadataIndex(corr_dir, streams=("motor",), scanner=scanner)
+        assert narrow.cache_path.exists()
+        with pytest.warns(UserWarning, match="Could not write index cache"):
+            MetadataIndex(corr_dir, streams="all", scanner=scanner)
+        assert narrow.cache_path.exists()
+        assert MetadataIndex(
+            corr_dir, streams=("motor",), scanner=scanner
+        ).from_cache
 
     def test_unrepresentable_column_is_not_cached(self, corr_dir):
         # A scanner is a public seam, so a column the cache cannot
