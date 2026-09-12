@@ -482,7 +482,7 @@ def extract_beam_mapping_data(
 
     Selection runs through :class:`eigsep_data.index.MetadataIndex`,
     which writes a sidecar cache ``.eigsep_index.h5`` next to the data
-    on first use. Later calls reuse it -- ~5 s on the 5124-file
+    on first use. Later calls reuse it -- ~5 s on the 5120-file
     deployment 5, against ~64 s for the cold scan -- which is reuse,
     not instant, and see the note below on when this wrapper pays the
     cold scan again anyway. A read-only directory just skips the write

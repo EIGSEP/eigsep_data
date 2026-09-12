@@ -388,7 +388,7 @@ makes that exact. The test asserts whole-table equality after a round trip,
 not just the time column.
 
 Cold-scan cost, measured on the finished implementation against the real
-deployment (5124 files, 1.23 M rows, the nine curated streams): **63.7 s**
+deployment (5120 files, 1.23 M rows, the nine curated streams): **63.7 s**
 cold, and **4.78 s** for a later session to rebuild from the sidecar, of which
 3.76 s is reading it. The sidecar is **407.7 MB**, 332 B/row.
 

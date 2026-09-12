@@ -1,7 +1,7 @@
 """A per-integration index over a directory of corr files.
 
 Scanning reads only headers and metadata -- never spectra. Measured on
-the 5124-file deployment 5 (1.23 M integrations, the nine curated
+the 5120-file deployment 5 (1.23 M integrations, the nine curated
 streams): ~64 s for a cold scan, then ~5 s per session to rebuild from
 the sidecar cache it leaves behind. Queries run against the table and
 only the selected rows are ever read from disk.
