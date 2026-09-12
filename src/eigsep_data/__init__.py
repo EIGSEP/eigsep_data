@@ -9,14 +9,14 @@ from . import rfi
 
 try:
     from . import hpm
-    from . import sim
+    from . import sph_fit
     from . import beam_sim
     from . import beam_fit
 except ImportError:
     from warnings import warn
 
     warn(
-        "hpm, sim, beam_sim, and beam_fit modules require additional "
-        "dependencies (JAX, jax_healpy). Install them to use these modules.",
+        "hpm, sph_fit, beam_sim, and beam_fit modules require additional "
+        "dependencies (JAX, healjax). Install them to use these modules.",
         ImportWarning,
     )

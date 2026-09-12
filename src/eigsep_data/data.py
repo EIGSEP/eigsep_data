@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 import re
 import warnings
@@ -8,46 +8,8 @@ import h5py
 import numpy as np
 from scipy.optimize import curve_fit
 
-from eigsep_observing import io
-
-
-def to_unix_time(value):
-    """
-    Convert a datetime string, datetime object, or Unix timestamp to Unix
-    seconds (float).
-
-    Strings without a timezone are interpreted as UTC.
-
-    Accepted formats:
-        "2026-07-17 06:00:00"
-        "2026-7-17 6:00:00"
-        "2026-07-17T06:00:00Z"
-    """
-    if isinstance(value, (int, float, np.integer, np.floating)):
-        return float(value)
-
-    if isinstance(value, datetime):
-        dt = value
-    else:
-        text = str(value).strip()
-        try:
-            dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        except ValueError:
-            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
-                try:
-                    dt = datetime.strptime(text, fmt)
-                    break
-                except ValueError:
-                    continue
-            else:
-                raise ValueError(
-                    f"Could not interpret time {value!r}. "
-                    "Use a format such as '2026-07-17 06:00:00'."
-                )
-
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.timestamp()
+from eigsep_base import io
+from eigsep_base.time import to_unix_time
 
 
 def _parse_time_from_name(fname: str) -> datetime:

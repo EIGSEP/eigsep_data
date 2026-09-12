@@ -19,7 +19,7 @@ import numpy as np
 import jax.numpy as jnp
 from scipy.optimize import differential_evolution, minimize
 
-from .hpm import angles_to_coord
+from healjax.coord import angles_to_coord
 from .beam_sim import RotatingAntennaCartesian, TransmitterAntenna, power_sim
 
 

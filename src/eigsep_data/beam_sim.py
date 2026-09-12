@@ -24,7 +24,7 @@ import jax
 import jax.numpy as jnp
 from jax_healpy import pixelfunc as jhp
 
-from .hpm import xyz2thphi
+from healjax.coord import xyz2thphi
 
 jax.config.update("jax_enable_x64", True)
 
