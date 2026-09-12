@@ -11,6 +11,7 @@ filename-derived estimate otherwise; see :func:`scan_corr_file`.
 """
 
 import fnmatch
+import hashlib
 import json
 import warnings
 from pathlib import Path
@@ -20,7 +21,12 @@ import numpy as np
 import pandas as pd
 
 from .clock import filename_unix, to_unix_time
-from .metadata import MISSING, flatten_metadata
+from .metadata import (
+    CURATED_FIELDS,
+    MISSING,
+    SCALAR_STREAMS,
+    flatten_metadata,
+)
 
 SCHEMA_VERSION = 1
 
@@ -201,6 +207,116 @@ def _finalise(table):
     ).reset_index(drop=True)
 
 
+def _stream_key(streams):
+    """Canonical form of a stream request: ``"all"`` or a sorted list."""
+    if streams == "all":
+        return "all"
+    if streams is None:
+        return sorted(set(CURATED_FIELDS) | set(SCALAR_STREAMS))
+    return sorted(set(streams))
+
+
+def _covers(have, want):
+    """
+    Whether a cache holding *have* can answer a request for *want*.
+
+    Both are canonical stream keys. ``"all"`` covers everything and is
+    covered by nothing else: a named set cannot promise to contain every
+    stream the files happen to carry.
+
+    The promise is about the *request*, not the columns. ``"all"`` means
+    every stream the files happen to carry, so an ``"all"`` cache over
+    files that carry no ``lidar`` stream covers a later curated or
+    ``("lidar",)`` request and hands back a table with no
+    ``lidar_distance_m`` column -- where a cold scan for that request
+    would have given one, padded with NaN, because a named stream is
+    always materialised. Accepted: a caller that needs the column to
+    exist checks ``name in index.table.columns``, and gets it by
+    rescanning for exactly its own request
+    (:meth:`MetadataIndex.rebuild` with ``force=True``, or
+    ``cache=False``).
+    """
+    if have == "all":
+        return True
+    if want == "all":
+        return False
+    return set(want) <= set(have)
+
+
+def _union(a, b):
+    """Canonical stream key covering both *a* and *b* (*b* may be
+    ``None``, meaning nothing was cached)."""
+    if b is None:
+        return a
+    if a == "all" or b == "all":
+        return "all"
+    return sorted(set(a) | set(b))
+
+
+#: Encoding of an ``object`` column, keyed by what
+#: :func:`pandas.api.types.infer_dtype` says about the values that are
+#: not the ``MISSING`` sentinel. Strings and booleans are the two kinds
+#: the scan produces: a gap upcasts a string column to object (it
+#: already is one) and a boolean column to object, while a numeric
+#: column just takes a NaN and stays numeric. Anything else is
+#: unrepresentable; see :func:`_encode_column`.
+_OBJECT_KINDS = {
+    "string": "str",
+    "empty": "str",
+    "boolean": "bool",
+}
+
+
+def _encode_column(name, values):
+    """
+    One column as ``(array, kind)`` ready for :mod:`h5py`.
+
+    A non-object column goes to disk in its own dtype (``"native"``),
+    so a float column's NaN gaps stay NaN and an ``int32`` column does
+    not come back widened. An object column is written as fixed-width
+    utf-8 bytes, and *kind* names what its non-``MISSING`` values are
+    converted back to on read: ``"str"`` or ``"bool"``.
+
+    That last distinction is the point of this function. A boolean root
+    attr written for only some files (``mux_copy_0to1``) lands in an
+    object column holding real ``True``, real ``False`` and the string
+    ``MISSING``; encoding object columns as bytes wholesale would hand
+    back the *strings* ``"True"``/``"False"``, after which
+    ``table.mux_copy_0to1 == True`` matches nothing -- an empty answer
+    indistinguishable from an honest one.
+
+    Raises
+    ------
+    TypeError
+        The column mixes types the cache cannot restore exactly. A lossy
+        cache would serve a different table in every later session, so
+        the caller declines to write one at all.
+    """
+    if values.dtype != object:
+        return values, "native"
+    live = values[values != MISSING]
+    inferred = pd.api.types.infer_dtype(live, skipna=True)
+    kind = _OBJECT_KINDS.get(inferred)
+    if kind is None:
+        raise TypeError(f"column {name!r} holds {inferred} values")
+    return np.char.encode(values.astype(str), "utf-8"), kind
+
+
+def _decode_column(values, kind):
+    """Invert :func:`_encode_column`, gaps and element types included."""
+    if kind == "native":
+        return values
+    text = np.char.decode(values, "utf-8")
+    # astype(object) on a numpy string array yields real Python str,
+    # not np.str_, so a decoded column is indistinguishable from a
+    # scanned one.
+    out = text.astype(object)
+    if kind == "bool":
+        live = text != MISSING
+        out[live] = (text[live] == "True").astype(object)
+    return out
+
+
 class MetadataIndex:
     """
     One row per integration across a directory of corr files.
@@ -216,8 +332,9 @@ class MetadataIndex:
         Filename globs to index. Dot-prefixed names and the cache file
         are always excluded, whatever the pattern.
     cache : bool
-        Read and write the sidecar cache. No cache exists yet, so this
-        only records the caller's intent.
+        Read and write the sidecar cache (:data:`CACHE_NAME`, next to
+        the data); see :meth:`rebuild` for when it is trusted. ``False``
+        neither reads nor writes it, leaving any existing sidecar alone.
     filename_tz : str or None
         Zone for filename stamps without a ``Z`` suffix (deployments
         1-4); ``None`` means Pacific.
@@ -234,11 +351,18 @@ class MetadataIndex:
         file set changes.
     from_cache : bool
         Whether the last :meth:`rebuild` was served from the sidecar.
+    cached_streams : list of str or "all"
+        The stream set :attr:`table` actually carries, which is a
+        superset of the requested one whenever the cache had more; see
+        :meth:`rebuild`.
     skipped : list of (str, str)
         ``(basename, reason)`` for every file the last :meth:`rebuild`
         could not index. Scanning warns and moves on, so this is the
         only way to tell a short table from a complete one without
-        re-globbing the directory.
+        re-globbing the directory. A cache hit restores the list the
+        cached table was built with and re-warns, because the file
+        manifest of a partial scan validates just as well as a complete
+        one and would otherwise serve the short table in silence.
     """
 
     def __init__(
@@ -246,7 +370,7 @@ class MetadataIndex:
         data_dir,
         streams=None,
         patterns=("corr_*.h5",),
-        cache=False,
+        cache=True,
         filename_tz=None,
         scanner=None,
     ):
@@ -258,6 +382,7 @@ class MetadataIndex:
         self.scanner = scanner or scan_corr_file
         self.table = None
         self.from_cache = False
+        self.cached_streams = None
         self.skipped = []
         self.rebuild()
 
@@ -301,10 +426,154 @@ class MetadataIndex:
             )
         return _finalise(pd.concat(frames, ignore_index=True))
 
-    def rebuild(self):
-        """Scan every matching file and rebuild :attr:`table`."""
+    def _fingerprint(self):
+        """
+        Identity of the inputs the table was built from -- the stream
+        set is deliberately *not* part of it (see :meth:`rebuild`).
+
+        Everything that changes what a scan would produce is in here:
+        the schema version, the patterns, the filename zone, the
+        scanner, and the ``(basename, size, mtime_ns)`` manifest. The
+        sidecar itself is never in the manifest (:meth:`_files` excludes
+        it), or writing it would change the fingerprint it was written
+        under and no build would ever hit the cache.
+        """
+        manifest = []
+        for path in self._files():
+            stat = path.stat()
+            manifest.append((path.name, stat.st_size, stat.st_mtime_ns))
+        payload = json.dumps(
+            {
+                "schema": SCHEMA_VERSION,
+                "patterns": sorted(self.patterns),
+                "filename_tz": self.filename_tz,
+                "scanner": f"{self.scanner.__module__}."
+                f"{self.scanner.__qualname__}",
+                "manifest": manifest,
+            },
+            sort_keys=True,
+        )
+        return hashlib.sha256(payload.encode()).hexdigest()
+
+    def _read_cache(self, fingerprint, wanted):
+        """
+        ``(table, streams, skipped)`` from the sidecar, or ``None``s.
+
+        *table* is ``None`` when there is nothing usable to read, but
+        *streams* still comes back when the fingerprint matched and only
+        the column set fell short, so :meth:`rebuild` can rescan for the
+        union instead of dropping what was already cached.
+
+        A sidecar that cannot be read -- truncated, garbage, or written
+        by an incompatible layout -- is treated as absent and rebuilt
+        over, since the scan is always able to produce the same table.
+        """
+        if not self.cache_path.exists():
+            return None, None, None
+        try:
+            with h5py.File(self.cache_path, "r") as h5:
+                if h5.attrs.get("fingerprint") != fingerprint:
+                    return None, None, None
+                have = json.loads(h5.attrs["streams"])
+                if not _covers(have, wanted):
+                    return None, have, None
+                skipped = [
+                    tuple(item)
+                    for item in json.loads(h5["skipped"][()].decode())
+                ]
+                group = h5["columns"]
+                table = pd.DataFrame(
+                    {
+                        name: _decode_column(
+                            group[name][()], group[name].attrs["kind"]
+                        )
+                        for name in json.loads(h5.attrs["columns"])
+                    }
+                )
+        except (OSError, KeyError, ValueError, TypeError):
+            return None, None, None
+        return table, have, skipped
+
+    def _write_cache(self, fingerprint, streams):
+        """
+        Write :attr:`table` to the sidecar, warning rather than raising.
+
+        Columns are encoded before the file is opened, so a column the
+        cache cannot represent exactly leaves no half-written sidecar
+        behind -- and a read-only data directory leaves none either.
+        Every failure here costs a rescan next session and nothing else,
+        so none of them is worth raising over: :attr:`table` is already
+        built and correct.
+        """
+        try:
+            encoded = [
+                (name,) + _encode_column(name, self.table[name].to_numpy())
+                for name in self.table.columns
+            ]
+            with h5py.File(self.cache_path, "w") as h5:
+                h5.attrs["fingerprint"] = fingerprint
+                h5.attrs["schema"] = SCHEMA_VERSION
+                h5.attrs["streams"] = json.dumps(streams)
+                h5.attrs["columns"] = json.dumps(list(self.table.columns))
+                # A dataset, not an attr: a bad batch of files would put
+                # thousands of skip reasons past the 64 KB attr limit.
+                h5.create_dataset(
+                    "skipped", data=np.bytes_(json.dumps(self.skipped))
+                )
+                group = h5.create_group("columns")
+                for name, values, kind in encoded:
+                    dataset = group.create_dataset(name, data=values)
+                    dataset.attrs["kind"] = kind
+        except (OSError, TypeError, ValueError) as exc:
+            warnings.warn(f"Could not write index cache: {exc}", stacklevel=3)
+
+    def rebuild(self, force=False):
+        """
+        Build :attr:`table`, reusing the sidecar cache when it matches.
+
+        The cache is keyed on the file manifest (name, size, mtime), the
+        schema version, the patterns, the filename zone and the scanner
+        -- see :meth:`_fingerprint`. The stream set is stored alongside
+        rather than in the key: a request is served from the cache when
+        its streams are a subset of what was cached, and otherwise
+        rescans for the union and overwrites, so widening and narrowing
+        never thrash each other.
+
+        ``patterns`` *is* in the key, and there is only one sidecar per
+        directory, so two callers that glob differently over the same
+        directory overwrite each other's cache and each rescan. The beam
+        extraction (``file_patterns=("*.h5", "*.hdf5")``) is the one
+        such caller; alternating it with a plain index over the same
+        directory rebuilds every time. Accepted deliberately: the
+        pattern set changes which files are seen, and a cache must not
+        answer for files it never looked at.
+
+        Parameters
+        ----------
+        force : bool
+            Ignore any existing cache and rescan.
+        """
+        fingerprint = self._fingerprint()
+        wanted = _stream_key(self.streams)
         self.from_cache = False
-        self.table = self._scan(self.streams)
+        have = None
+        if self.use_cache and not force:
+            cached, have, skipped = self._read_cache(fingerprint, wanted)
+            if cached is not None:
+                self.table = cached
+                self.cached_streams = have
+                self.skipped = skipped
+                self.from_cache = True
+                for name, reason in skipped:
+                    warnings.warn(
+                        f"Cached index omits {name}: {reason}", stacklevel=2
+                    )
+                return
+        streams = _union(wanted, have)
+        self.table = self._scan(streams)
+        self.cached_streams = streams
+        if self.use_cache:
+            self._write_cache(fingerprint, streams)
 
     def select(self, **kwargs):
         """
