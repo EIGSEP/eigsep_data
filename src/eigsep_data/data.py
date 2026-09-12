@@ -8,8 +8,6 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import curve_fit
 
-from eigsep_observing import io
-
 from .clock import (  # noqa: F401  -- to_unix_time is re-exported
     parse_filename_time,
     to_unix_time,
@@ -360,82 +358,67 @@ class EigsepData:
     @classmethod
     def from_path(
         cls,
-        path: Path,
-        start_time: str = None,
-        end_time: str = None,
-        pacific_to_mountain: bool = True,
+        path,
+        start_time=None,
+        end_time=None,
+        pacific_to_mountain=None,
+        keys=None,
     ):
         """
         Create an EigsepData instance from a directory or a file.
 
+        Sugar over :class:`eigsep_data.index.MetadataIndex` and
+        :meth:`from_selection`. Selection is on ``time_best`` in UTC
+        epoch -- no longer on the filename wall clock, which is what
+        this method filtered on before deployment 5. A directory gets
+        a ``.eigsep_index.h5`` sidecar cache on first use.
+
         Parameters
         ----------
         path : Path
-            The path to the directory or file.
-        start_time : str
-            The start time in the format "YYYYMMDD_HHMMSS" for filtering data.
-            Only used if reading from a directory.
-        end_time : str
-            The end time in the format "YYYYMMDD_HHMMSS" for filtering data.
-            Only used if reading from a directory.
-        pacific_to_mountain : bool
-            If True, convert times from Pacific to Mountain time by adding
-            3600 seconds.
+            Directory of corr files, or a single file.
+        start_time, end_time : str or float, optional
+            Half-open window, passed through
+            :func:`eigsep_data.clock.to_unix_time`; naive strings are
+            UTC.
+        pacific_to_mountain : bool, optional
+            **Deprecated and ignored.** Times are Unix epoch and are
+            never shifted. The old +3600 s was a display convention for
+            deployment 1-4's Pacific-stamped filenames; use
+            :func:`eigsep_data.clock.format_time` with
+            ``tz="America/Denver"`` instead.
+        keys : list of str, optional
+            Data keys to read; ``None`` reads every key common to the
+            selected files.
 
         Returns
         -------
         EigsepData
-
         """
-        if path.is_dir():
-            files = sorted(path.glob("corr*.h5"))
-            times = [
-                _parse_time_from_name(f.name).replace(tzinfo=None)
-                for f in files
-            ]
-            if start_time:
-                start_dt = datetime.strptime(start_time, "%Y%m%d_%H%M%S")
-                files = [f for f, t in zip(files, times) if t >= start_dt]
-                times = [
-                    _parse_time_from_name(f.name).replace(tzinfo=None)
-                    for f in files
-                ]
-            if end_time:
-                end_dt = datetime.strptime(end_time, "%Y%m%d_%H%M%S")
-                files = [f for f, t in zip(files, times) if t <= end_dt]
-        elif path.is_file():
-            files = [path]
-        if not files:
-            raise ValueError(f"No data files found in {path}.")
+        if pacific_to_mountain is not None:
+            warnings.warn(
+                "pacific_to_mountain is deprecated and ignored: times "
+                "are Unix epoch and are never shifted. Use "
+                "format_time(t, tz='America/Denver') to render Utah "
+                "local time.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        from .index import MetadataIndex
 
-        data = {}
-        acc_cnt = []
-        times = []
-        freq = None
-        for f in files:
-            try:
-                d, hdr, metadata = io.read_hdf5(f)
-            except Exception as e:
-                warnings.warn(f"Failed to read {f}: {e}. Skipping this file.")
-                continue
-            for k, v in d.items():
-                data[k] = data.get(k, []) + [v]
-            acc_cnt.append(hdr["acc_cnt"])
-            times.append(hdr["times"])
-            if freq is None:
-                freq = hdr["freqs"]
-            elif not np.array_equal(freq, hdr["freqs"]):
-                warnings.warn(
-                    f"Frequency mismatch in {f}. Using first file's "
-                    "frequency array. "
-                )
-        for k, v in data.items():
-            data[k] = np.concatenate(v, axis=0)
-        acc_cnt = np.concatenate(acc_cnt, axis=0)
-        times = np.concatenate(times, axis=0)
-        if pacific_to_mountain:
-            times += 3600
-        return cls(data=data, acc_cnt=acc_cnt, times=times, freq=freq)
+        path = Path(path)
+        if path.is_file():
+            index = MetadataIndex(
+                path.parent, patterns=(path.name,), cache=False
+            )
+        else:
+            index = MetadataIndex(path)
+        filters = {}
+        if start_time is not None or end_time is not None:
+            lo = -np.inf if start_time is None else to_unix_time(start_time)
+            hi = np.inf if end_time is None else to_unix_time(end_time)
+            filters["time"] = (lo, hi)
+        return cls.from_selection(index.select(**filters), keys=keys)
 
     def slice(self, min_index, max_index):
         """
