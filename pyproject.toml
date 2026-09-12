@@ -66,6 +66,9 @@ vis = [
     "jupyterlab",
     "jupyterlab-vim",
     "ipympl",
+    # browse.StateBrowser's controls; imported lazily, so the module
+    # itself works without it.
+    "ipywidgets",
 ]
 dev = [
     "pytest",
