@@ -98,8 +98,30 @@ def _warn_if_large(nbytes):
         warnings.warn(
             f"Loading ~{nbytes / 1e9:.1f} GB of spectra with "
             f"{avail / 1e9:.1f} GB available; narrow the selection, "
-            "drop keys, or pass time_avg."
+            "drop keys, or pass time_avg.",
+            # 3, not 2: the advice is for whoever called
+            # from_selection, which is this helper's own caller.
+            stacklevel=3,
         )
+
+
+def _missing_keys_error(absent):
+    """
+    The ``KeyError`` for keys absent from some of the selected files.
+
+    Built in one place because it is raised twice: once from the
+    metadata before any spectra are read, and once from the files
+    themselves as a backstop (see
+    :meth:`EigsepData.from_selection`).
+    """
+    detail = "; ".join(
+        f"key {k!r} is absent from {sorted(set(v))}" for k, v in absent.items()
+    )
+    return KeyError(
+        f"{detail}. The selection straddles a change in recorded data "
+        "keys: narrow it with a data_keys or filter_phase filter, or "
+        "pass missing='nan'."
+    )
 
 
 @dataclass
@@ -109,7 +131,10 @@ class EigsepData:
     acc_cnt: np.ndarray = None
     #: ``time_best`` of each row: the header time where the file's clock
     #: was sane, a filename-derived estimate otherwise. The raw header
-    #: time is ``meta.time``.
+    #: time is ``meta.time``. As built by :meth:`from_selection` this is
+    #: a *view* of ``meta.time_best`` -- the same numbers, deliberately
+    #: not copied -- so writing into it edits ``meta`` too; take a copy
+    #: before any in-place arithmetic.
     times: np.ndarray = None
     freq: np.ndarray = field(
         default_factory=lambda: np.linspace(0, 250, num=1024, endpoint=False)
@@ -162,9 +187,19 @@ class EigsepData:
             )
         data_dir = selection.index.data_dir
         if keys is None:
+            # A file with no data group at all declares nothing, and
+            # must not drag the intersection to empty: every key is
+            # simply absent from it, which the missing= policy covers.
             per_file = [
-                set(str(k).split(",")) for k in meta.data_keys.unique()
+                set(str(k).split(","))
+                for k in meta.data_keys.unique()
+                if str(k)
             ]
+            if not per_file:
+                raise ValueError(
+                    "No selected file records any data keys; there is "
+                    "nothing to read."
+                )
             keys = sorted(set.intersection(*per_file))
             if not keys:
                 raise ValueError(
@@ -174,19 +209,38 @@ class EigsepData:
                     "wiring phase."
                 )
         # A bare string is one key, not an iterable of characters:
-        # list("04") would read the two autos instead of the cross.
-        keys = [keys] if isinstance(keys, str) else list(keys)
+        # list("04") would read the two autos instead of the cross. A
+        # repeated key is read once: blocks is keyed by name, so a
+        # duplicate would append a second block per file and hand back
+        # one file's rows in another file's place.
+        keys = list(dict.fromkeys([keys] if isinstance(keys, str) else keys))
         # A fallback only: the real width comes from the data below.
         nchan = _DEFAULT_NCHAN
         if "nchan" in meta:
             declared = pd.to_numeric(meta.nchan, errors="coerce").dropna()
             if not declared.empty:
                 nchan = int(declared.iloc[0])
+
+        if missing == "raise" and "data_keys" in meta:
+            # The same column that infers `keys` above says which files
+            # carry them, so a straddled phase boundary -- a routine
+            # thing in deployment 5 -- can be reported before spending
+            # the I/O and the peak memory of the whole selection. The
+            # per-file check in the read loop stays as the backstop for
+            # an index that has gone stale against the files.
+            undeclared = {}
+            per_file_keys = meta.groupby("file", sort=False).data_keys.first()
+            for fname, spec in per_file_keys.items():
+                for key in set(keys) - set(str(spec).split(",")):
+                    undeclared.setdefault(key, []).append(fname)
+            if undeclared:
+                raise _missing_keys_error(undeclared)
+
         _warn_if_large(_estimate_bytes(len(meta), nchan, keys, time_avg))
 
         blocks = {k: [] for k in keys}
         absent = {}
-        positions, stamps = [], []
+        positions, stamps, files_read = [], [], []
         dropped = 0
         freq = None
         for name, group in meta.groupby("file", sort=False):
@@ -197,6 +251,7 @@ class EigsepData:
             if keep == 0:
                 continue
             pos, rows = pos[:keep], rows[:keep]
+            files_read.append(name)
             with h5py.File(data_dir / name, "r") as h5:
                 if freq is None and "freqs" in h5["header"]:
                     freq = np.asarray(h5["header"]["freqs"])
@@ -233,15 +288,8 @@ class EigsepData:
             positions.append(pos)
 
         if absent and missing == "raise":
-            detail = "; ".join(
-                f"key {k!r} is absent from "
-                f"{sorted({fname for fname, _, _ in v})}"
-                for k, v in absent.items()
-            )
-            raise KeyError(
-                f"{detail}. The selection straddles a change in recorded "
-                "data keys: narrow it with a data_keys or filter_phase "
-                "filter, or pass missing='nan'."
+            raise _missing_keys_error(
+                {k: [fname for fname, _, _ in v] for k, v in absent.items()}
             )
         if not positions:
             raise ValueError(
@@ -251,7 +299,8 @@ class EigsepData:
         if dropped:
             warnings.warn(
                 f"time_avg={time_avg}: dropped {dropped} trailing rows "
-                "that did not fill a block."
+                "that did not fill a block.",
+                stacklevel=2,
             )
         for key, slots in absent.items():
             real = next((b for b in blocks[key] if b is not None), None)
@@ -262,6 +311,20 @@ class EigsepData:
                 gap = _nan_block(nrows, width, key)
                 blocks[key][slot] = (
                     _avg_rows(gap, time_avg) if time_avg > 1 else gap
+                )
+
+        for key, parts in blocks.items():
+            if len({part.shape[-1] for part in parts}) > 1:
+                # np.concatenate would raise a bare dimension mismatch
+                # naming neither the key nor the files.
+                detail = ", ".join(
+                    f"{fname}: {part.shape[-1]}"
+                    for fname, part in zip(files_read, parts)
+                )
+                raise ValueError(
+                    f"key {key!r} has a different channel count in "
+                    f"different selected files ({detail}); narrow the "
+                    "selection to one correlator configuration."
                 )
 
         gathered = np.concatenate(positions)

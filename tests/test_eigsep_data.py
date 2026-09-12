@@ -82,6 +82,31 @@ class TestFromSelection:
         assert list(d.data) == ["04"]
         assert d.data["04"].dtype.kind == "c"
 
+    def test_a_repeated_key_is_read_once(self, tmp_path):
+        # blocks is keyed by name, so a duplicate used to append a
+        # second block per file while the row positions stayed one per
+        # row: correct shape, right dtype, one file's rows served in
+        # another file's place.
+        names = ["corr_20260717_150041Z.h5", "corr_20260717_151041Z.h5"]
+        write_corr_file(tmp_path / names[0], ntimes=6, keys=("0",))
+        write_corr_file(
+            tmp_path / names[1],
+            ntimes=6,
+            keys=("0",),
+            sync_time=1.7843e9 + 600,
+            seed=1,
+        )
+        sel = MetadataIndex(tmp_path, cache=False).select()
+        d = EigsepData.from_selection(sel, keys=["0", "0"])
+        assert list(d.data) == ["0"]
+        assert d.data["0"].shape == (12, NCHAN)
+        raw = {}
+        for name in names:
+            with h5py.File(tmp_path / name, "r") as h5:
+                raw[name] = h5["data"]["0"][()]
+        for i, (name, row) in enumerate(zip(d.meta.file, d.meta.row)):
+            np.testing.assert_array_equal(d.data["0"][i], raw[name][row])
+
     def test_empty_selection_raises_clearly(self, corr_dir):
         sel = MetadataIndex(corr_dir, cache=False).select(rfswitch="VNAO")
         with pytest.raises(ValueError, match="no integrations"):
@@ -202,6 +227,48 @@ class TestMissingKeys:
             EigsepData.from_selection(sel, keys=["04"])
         assert "data_keys" in str(info.value)
 
+    def test_raise_names_every_offending_file(self, tmp_path):
+        # The pre-pass reports the whole selection, not the first file
+        # it trips over.
+        _mixed_keys_dir(tmp_path)
+        write_corr_file(
+            tmp_path / "corr_20260717_152041Z.h5",
+            ntimes=10,
+            keys=("0", "4"),
+            sync_time=1.7843e9 + 1200,
+            seed=2,
+        )
+        sel = MetadataIndex(tmp_path, cache=False).select()
+        with pytest.raises(KeyError) as info:
+            EigsepData.from_selection(sel, keys=["04"])
+        assert "151041Z" in str(info.value)
+        assert "152041Z" in str(info.value)
+
+    def test_raise_happens_before_any_spectra_are_read(
+        self, tmp_path, monkeypatch
+    ):
+        # A straddled phase boundary is routine, so it must not cost the
+        # I/O and peak memory of the whole selection first.
+        sel = MetadataIndex(_mixed_keys_dir(tmp_path), cache=False).select()
+
+        def _no_reads(*args, **kwargs):
+            raise AssertionError("opened a file before raising")
+
+        monkeypatch.setattr("eigsep_data.data.h5py.File", _no_reads)
+        with pytest.raises(KeyError, match="151041Z"):
+            EigsepData.from_selection(sel, keys=["04"])
+
+    def test_a_stale_index_still_raises_from_the_file(self, tmp_path):
+        # The pre-pass believes meta.data_keys; when the file has
+        # changed since the scan, the per-file check is the backstop.
+        path = tmp_path / "corr_20260717_150041Z.h5"
+        write_corr_file(path, ntimes=6, keys=("0", "4"))
+        sel = MetadataIndex(tmp_path, cache=False).select()
+        with h5py.File(path, "a") as h5:
+            del h5["data"]["4"]
+        with pytest.raises(KeyError, match="150041Z"):
+            EigsepData.from_selection(sel, keys=["4"])
+
     def test_nan_fills_that_files_rows(self, tmp_path):
         sel = MetadataIndex(_mixed_keys_dir(tmp_path), cache=False).select()
         d = EigsepData.from_selection(sel, keys=["04"], missing="nan")
@@ -253,6 +320,23 @@ class TestMissingKeys:
         assert d.data["0"].shape == (12, NCHAN)
         assert np.isnan(d.data["0"][-6:]).all()
         assert np.isfinite(d.data["0"][:6]).all()
+        # ... and with keys=None too: declaring nothing must not drag
+        # the intersection to empty and turn this into "no shared keys".
+        with pytest.raises(KeyError, match="151041Z"):
+            EigsepData.from_selection(sel)
+        d = EigsepData.from_selection(sel, missing="nan")
+        assert list(d.data) == ["0"]
+        assert np.isnan(d.data["0"][-6:]).all()
+
+    def test_no_file_records_any_keys(self, tmp_path):
+        write_corr_file(
+            tmp_path / "corr_20260717_150041Z.h5", ntimes=4, keys=("0",)
+        )
+        with h5py.File(tmp_path / "corr_20260717_150041Z.h5", "a") as h5:
+            del h5["data"]
+        sel = MetadataIndex(tmp_path, cache=False).select()
+        with pytest.raises(ValueError, match="nothing to read"):
+            EigsepData.from_selection(sel)
 
     def test_nan_fill_survives_time_avg(self, tmp_path):
         sel = MetadataIndex(_mixed_keys_dir(tmp_path), cache=False).select()
@@ -341,15 +425,32 @@ class TestTimeAvg:
             EigsepData.from_selection(sel, keys=["0"], time_avg=64)
 
 
-def _narrow_dir(tmp_path, nchan=512):
-    """
-    A 512-channel pair carrying no ``nchan`` header attr, whose *first*
-    file has no cross key.
+def _narrow_file(path, nchan=512, declare=False):
+    """Rewrite one file with *nchan* channels; *declare* keeps the
+    ``nchan`` header attr, otherwise it is removed."""
+    with h5py.File(path, "a") as h5:
+        for key in list(h5["data"]):
+            narrow = h5["data"][key][()][:, :nchan]
+            del h5["data"][key]
+            h5["data"][key] = narrow
+        freqs = h5["header"]["freqs"][()][:nchan]
+        del h5["header"]["freqs"]
+        h5["header"]["freqs"] = freqs
+        if declare:
+            h5["header"].attrs["nchan"] = nchan
+        else:
+            del h5["header"].attrs["nchan"]
 
-    Deployments predating the attr leave ``meta.nchan`` all-NaN, so any
-    width taken from the metadata is a 1024-channel guess; the only
-    honest source is the real block read from the file that does carry
-    the key.
+
+def _narrow_dir(tmp_path, nchan=512, declare=False):
+    """
+    A 512-channel pair whose *first* file has no cross key.
+
+    With ``declare=False`` neither file carries an ``nchan`` header attr
+    -- the shape a deployment predating it has -- so ``meta.nchan`` is
+    all-NaN and any width taken from the metadata is a 1024-channel
+    guess; the only honest source is then the real block read from the
+    file that does carry the key.
     """
     names = ["corr_20260717_150041Z.h5", "corr_20260717_151041Z.h5"]
     write_corr_file(tmp_path / names[0], ntimes=10, keys=("0", "4"))
@@ -361,15 +462,7 @@ def _narrow_dir(tmp_path, nchan=512):
         seed=1,
     )
     for name in names:
-        with h5py.File(tmp_path / name, "a") as h5:
-            for key in list(h5["data"]):
-                narrow = h5["data"][key][()][:, :nchan]
-                del h5["data"][key]
-                h5["data"][key] = narrow
-            freqs = h5["header"]["freqs"][()][:nchan]
-            del h5["header"]["freqs"]
-            h5["header"]["freqs"] = freqs
-            del h5["header"].attrs["nchan"]
+        _narrow_file(tmp_path / name, nchan=nchan, declare=declare)
     return tmp_path
 
 
@@ -384,6 +477,36 @@ class TestChannelWidth:
         gap = (d.meta.file == "corr_20260717_150041Z.h5").to_numpy()
         assert np.isnan(d.data["04"][gap]).all()
         assert np.isfinite(d.data["04"][~gap]).all()
+
+    def test_key_no_file_carries_falls_back_to_the_header(self, tmp_path):
+        # The one path where the metadata's nchan sizes a returned
+        # array: no file has the key, so no real width was ever seen.
+        sel = MetadataIndex(
+            _narrow_dir(tmp_path, declare=True), cache=False
+        ).select()
+        assert (sel.meta.nchan == 512).all()
+        d = EigsepData.from_selection(sel, keys=["5"], missing="nan")
+        assert d.data["5"].shape == (20, 512)  # not the 1024 default
+        assert np.isnan(d.data["5"]).all()
+
+    def test_files_that_disagree_on_nchan_say_so(self, tmp_path):
+        # np.concatenate would raise a bare dimension mismatch naming
+        # neither the key nor the files.
+        names = ["corr_20260717_150041Z.h5", "corr_20260717_151041Z.h5"]
+        write_corr_file(tmp_path / names[0], ntimes=6, keys=("0",))
+        write_corr_file(
+            tmp_path / names[1],
+            ntimes=6,
+            keys=("0",),
+            sync_time=1.7843e9 + 600,
+            seed=1,
+        )
+        _narrow_file(tmp_path / names[0], declare=True)
+        sel = MetadataIndex(tmp_path, cache=False).select()
+        with pytest.raises(ValueError, match="different channel count") as e:
+            EigsepData.from_selection(sel, keys=["0"])
+        assert names[0] in str(e.value)
+        assert "512" in str(e.value) and str(NCHAN) in str(e.value)
 
 
 def _gappy_attr_dir(tmp_path):
