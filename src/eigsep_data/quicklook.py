@@ -23,7 +23,7 @@ from pathlib import Path
 
 import numpy as np
 
-from eigsep_observing.io import read_hdf5
+from eigsep_base.io import read_hdf5
 
 from . import rfi
 

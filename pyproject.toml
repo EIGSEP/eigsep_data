@@ -19,7 +19,6 @@ classifiers = [
     "Programming Language :: Python :: 3",
 ]
 dependencies = [
-    "aipy",
     "astropy",
     "croissant-sim",
     # croissant-sim imports spiceypy but doesn't declare it
@@ -38,7 +37,7 @@ dependencies = [
     # hpm.py uses scipy.special.sph_harm_y, added in 1.15
     "scipy>=1.15",
     "tqdm",
-    "eigsep_observing",
+    "eigsep_base",
     "eigsep_redis",
     "eigsep-vna",
     "picohost",
@@ -50,10 +49,16 @@ dependencies = [
     "pygdsm",
 ]
 
+# eigsep_base and healjax are not on PyPI yet. Until they are, install them
+# from the sibling checkouts with:
+#     pip install -e ../eigsep_base -e ../healjax
+# then `pip install -e .` here (or add them to [tool.uv.sources] below if
+# you drive the workspace with uv).
+
 # Field setup: eigsep stack comes from local editable checkouts so code
 # can be updated on-site without network access.
 [tool.uv.sources]
-eigsep_observing = { path = "../eigsep_observing", editable = true }
+eigsep_base = { path = "../eigsep_base", editable = true }
 eigsep_redis = { path = "../eigsep_redis", editable = true }
 eigsep-vna = { path = "../cmt_vna", editable = true }
 picohost = { path = "../pico-firmware/picohost", editable = true }
