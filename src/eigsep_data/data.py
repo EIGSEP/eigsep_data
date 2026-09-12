@@ -5,6 +5,7 @@ import warnings
 
 import h5py
 import numpy as np
+import pandas as pd
 from scipy.optimize import curve_fit
 
 from eigsep_observing import io
@@ -20,15 +21,271 @@ def _parse_time_from_name(fname: str, tz=None) -> datetime:
     return parse_filename_time(fname, tz=tz)
 
 
+#: Per-row stamps that are averaged when ``time_avg > 1``.
+_AVG_COLS = ("time", "time_best", "acc_cnt")
+
+#: Channel count assumed when no selected file declares one. Only ever
+#: used to size a NaN stand-in for a key that no selected file carries,
+#: and to estimate how much memory a load will take.
+_DEFAULT_NCHAN = 1024
+
+
+def _as_spectra(arr):
+    """
+    Apply ``read_hdf5``'s storage rule: (re, im) int32 pairs are complex.
+
+    The rule is duplicated from ``eigsep_observing.io.read_hdf5`` -- its
+    source, and the place to look if the storage convention ever changes
+    -- because ``read_hdf5`` loads whole files and this reads only the
+    selected rows.
+    """
+    arr = np.asarray(arr)
+    if arr.ndim >= 2 and arr.shape[-1] == 2 and arr.dtype.kind == "i":
+        return arr[..., 0].astype(np.float64) + 1j * arr[..., 1].astype(
+            np.float64
+        )
+    return arr
+
+
+def _avg_rows(block, time_avg):
+    """Mean over consecutive groups of *time_avg* rows; float32 for
+    autos, complex64 for crosses. The caller trims the remainder."""
+    nout = block.shape[0] // time_avg
+    out = block.reshape((nout, time_avg) + block.shape[1:]).mean(axis=1)
+    return out.astype(np.complex64 if out.dtype.kind == "c" else np.float32)
+
+
+def _nan_block(nrows, nchan, key):
+    """
+    An all-NaN stand-in for the rows of a file that lacks *key*.
+
+    Whether *key* is a cross is decided from its name, not from
+    :func:`_as_spectra`'s shape rule: there is no array to inspect --
+    that is the whole point -- so the two-character key name is the only
+    information available.
+    """
+    dtype = np.complex128 if len(key) == 2 else np.float64
+    return np.full((nrows, nchan), np.nan, dtype=dtype)
+
+
+def _estimate_bytes(nrows, nchan, keys, time_avg):
+    """Bytes one load will hold. Crosses are wider, and again the key
+    name is the only cross test available before anything is read."""
+    if time_avg > 1:
+        width = sum(8 if len(k) == 2 else 4 for k in keys)
+    else:
+        width = sum(16 if len(k) == 2 else 4 for k in keys)
+    return (nrows // time_avg) * nchan * width
+
+
+def _mem_available():
+    """Bytes of MemAvailable from /proc/meminfo, or None."""
+    try:
+        with open("/proc/meminfo") as fh:
+            for line in fh:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) * 1024
+    except OSError:
+        return None
+    return None
+
+
+def _warn_if_large(nbytes):
+    """Warn when a load would take more than half of free memory. Peak
+    usage is about twice *nbytes*, during the concatenation."""
+    avail = _mem_available()
+    if avail is not None and nbytes > avail / 2:
+        warnings.warn(
+            f"Loading ~{nbytes / 1e9:.1f} GB of spectra with "
+            f"{avail / 1e9:.1f} GB available; narrow the selection, "
+            "drop keys, or pass time_avg."
+        )
+
+
 @dataclass
 class EigsepData:
 
     data: dict[str, np.ndarray] = None
     acc_cnt: np.ndarray = None
+    #: ``time_best`` of each row: the header time where the file's clock
+    #: was sane, a filename-derived estimate otherwise. The raw header
+    #: time is ``meta.time``.
     times: np.ndarray = None
     freq: np.ndarray = field(
         default_factory=lambda: np.linspace(0, 250, num=1024, endpoint=False)
     )
+    #: Per-integration metadata, one row per entry in ``times``.
+    meta: pd.DataFrame = None
+
+    @classmethod
+    def from_selection(cls, selection, keys=None, time_avg=1, missing="raise"):
+        """
+        Read the spectra for the integrations in *selection*.
+
+        Only the chosen rows of the chosen keys are read, so selecting a
+        few percent of a deployment costs a few percent of the I/O.
+        Crosses come back complex, exactly as ``read_hdf5`` returns
+        them. Output rows are in selection order (``time_best``), even
+        where two files interleave in time.
+
+        Parameters
+        ----------
+        selection : eigsep_data.index.Selection
+        keys : list of str or None
+            Data keys to read. ``None`` reads every key common to the
+            selected files.
+        time_avg : int
+            Average this many consecutive selected rows *within each
+            file* into one output row; a trailing remainder is dropped
+            with a warning. Autos become float32 and crosses complex64,
+            which is what lets a whole day fit in a laptop.
+        missing : {"raise", "nan"}
+            What to do when a requested key is absent from one of the
+            selected files (a wiring-phase change inside the window).
+
+        Returns
+        -------
+        EigsepData
+            ``freq`` comes from the first selected file that carries a
+            ``freqs`` header, and ``meta`` is one row per entry in
+            ``times``.
+        """
+        if missing not in ("raise", "nan"):
+            raise ValueError("missing must be 'raise' or 'nan'")
+        time_avg = int(time_avg)
+        if time_avg < 1:
+            raise ValueError("time_avg must be >= 1")
+        meta = selection.meta.reset_index(drop=True)
+        if len(meta) == 0:
+            raise ValueError(
+                "Selection contains no integrations; nothing to load."
+            )
+        data_dir = selection.index.data_dir
+        if keys is None:
+            per_file = [
+                set(str(k).split(",")) for k in meta.data_keys.unique()
+            ]
+            keys = sorted(set.intersection(*per_file))
+            if not keys:
+                raise ValueError(
+                    "The selected files share no data keys "
+                    f"({[sorted(p) for p in per_file]}); name the keys to "
+                    "read explicitly, or narrow the selection to one "
+                    "wiring phase."
+                )
+        # A bare string is one key, not an iterable of characters:
+        # list("04") would read the two autos instead of the cross.
+        keys = [keys] if isinstance(keys, str) else list(keys)
+        # A fallback only: the real width comes from the data below.
+        nchan = _DEFAULT_NCHAN
+        if "nchan" in meta:
+            declared = pd.to_numeric(meta.nchan, errors="coerce").dropna()
+            if not declared.empty:
+                nchan = int(declared.iloc[0])
+        _warn_if_large(_estimate_bytes(len(meta), nchan, keys, time_avg))
+
+        blocks = {k: [] for k in keys}
+        absent = {}
+        positions, stamps = [], []
+        dropped = 0
+        freq = None
+        for name, group in meta.groupby("file", sort=False):
+            pos = group.index.to_numpy()
+            rows = group.row.to_numpy()
+            keep = (len(rows) // time_avg) * time_avg
+            dropped += len(rows) - keep
+            if keep == 0:
+                continue
+            pos, rows = pos[:keep], rows[:keep]
+            with h5py.File(data_dir / name, "r") as h5:
+                if freq is None and "freqs" in h5["header"]:
+                    freq = np.asarray(h5["header"]["freqs"])
+                # One contiguous span covering the selected rows, then
+                # the rows out of it: h5py's own fancy indexing reads
+                # element by element, and a corr file is ~60 rows.
+                lo, hi = int(rows.min()), int(rows.max()) + 1
+                local = rows - lo
+                # A file with no data group at all is indexable (the
+                # scanner tolerates it), and every key is then absent.
+                datasets = h5["data"] if "data" in h5 else {}
+                for key in keys:
+                    if key in datasets:
+                        block = _as_spectra(datasets[key][lo:hi][local])
+                        if time_avg > 1:
+                            block = _avg_rows(block, time_avg)
+                    else:
+                        # How wide the NaN stand-in must be is not known
+                        # yet -- the files that do carry this key may not
+                        # have been read. Note the slot it goes in and
+                        # fill it once every real block is in hand.
+                        absent.setdefault(key, []).append(
+                            (name, len(blocks[key]), keep)
+                        )
+                        block = None
+                    blocks[key].append(block)
+            if time_avg > 1:
+                # Only now is meta touched: at full resolution its
+                # stamps are the header's own values, untouched.
+                stamp = group[list(_AVG_COLS)].to_numpy(dtype=float)[:keep]
+                stamp = stamp.reshape(-1, time_avg, len(_AVG_COLS))
+                stamps.append(stamp.mean(axis=1))
+                pos = pos.reshape(-1, time_avg)[:, 0]
+            positions.append(pos)
+
+        if absent and missing == "raise":
+            detail = "; ".join(
+                f"key {k!r} is absent from "
+                f"{sorted({fname for fname, _, _ in v})}"
+                for k, v in absent.items()
+            )
+            raise KeyError(
+                f"{detail}. The selection straddles a change in recorded "
+                "data keys: narrow it with a data_keys or filter_phase "
+                "filter, or pass missing='nan'."
+            )
+        if not positions:
+            raise ValueError(
+                f"time_avg={time_avg} exceeds every file's contribution; "
+                "nothing to load."
+            )
+        if dropped:
+            warnings.warn(
+                f"time_avg={time_avg}: dropped {dropped} trailing rows "
+                "that did not fill a block."
+            )
+        for key, slots in absent.items():
+            real = next((b for b in blocks[key] if b is not None), None)
+            # No file carried the key, so no width was ever observed and
+            # the header's channel count is all there is to go on.
+            width = nchan if real is None else real.shape[-1]
+            for _, slot, nrows in slots:
+                gap = _nan_block(nrows, width, key)
+                blocks[key][slot] = (
+                    _avg_rows(gap, time_avg) if time_avg > 1 else gap
+                )
+
+        gathered = np.concatenate(positions)
+        # gathered[i] is the selection position of read row i, so putting
+        # the read rows in gathered order inverts the gather. Sorting the
+        # times instead would be right only if files never interleaved.
+        inverse = np.argsort(gathered, kind="stable")
+        data = {
+            k: np.concatenate(v, axis=0)[inverse] for k, v in blocks.items()
+        }
+        out_meta = meta.iloc[gathered[inverse]].reset_index(drop=True)
+        if time_avg > 1:
+            # The spec's one sanctioned edit to an epoch column: each
+            # block keeps its first row, with the stamps it averaged.
+            stamp = np.concatenate(stamps)[inverse]
+            for i, col in enumerate(_AVG_COLS):
+                out_meta[col] = stamp[:, i]
+        return cls(
+            data=data,
+            acc_cnt=out_meta.acc_cnt.to_numpy(),
+            times=out_meta.time_best.to_numpy(),
+            freq=freq,
+            meta=out_meta,
+        )
 
     @classmethod
     def from_path(
@@ -135,6 +392,11 @@ class EigsepData:
             acc_cnt=sliced_acc_cnt,
             times=sliced_times,
             freq=self.freq,
+            meta=(
+                None
+                if self.meta is None
+                else self.meta.iloc[min_index:max_index].reset_index(drop=True)
+            ),
         )
 
 
