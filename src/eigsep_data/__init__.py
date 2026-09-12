@@ -6,12 +6,12 @@ from .s11 import S11
 from .data import EigsepData, to_unix_time
 from . import plot
 from . import rfi
+from . import beam_mapping
 
 try:
     from . import hpm
     from . import sph_fit
     from . import beam_sim
-    from . import beam_fit
 except ImportError:
     from warnings import warn
 
