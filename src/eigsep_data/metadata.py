@@ -85,8 +85,7 @@ _STRING_FIELDS = frozenset(
 
 
 def _as_float(value):
-    if isinstance(value, bool):
-        return float(value)
+    # bool is an int, so True/False land here as 1.0/0.0.
     if isinstance(value, (int, float, np.integer, np.floating)):
         return float(value)
     return np.nan

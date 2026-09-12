@@ -1,8 +1,29 @@
 """Tests for eigsep_data.metadata."""
 
 import numpy as np
+from eigsep_observing.io import SENSOR_SCHEMAS
 
 from eigsep_data import metadata as md
+
+
+class TestCuratedFieldsMatchTheProducer:
+    """CURATED_FIELDS and _STRING_FIELDS are claims about the producer."""
+
+    def test_every_curated_field_exists_in_the_producer_schema(self):
+        for stream, fields in md.CURATED_FIELDS.items():
+            assert set(fields) <= set(SENSOR_SCHEMAS[stream]), stream
+
+    def test_string_fields_are_declared_not_sniffed(self):
+        # A string field left out of _STRING_FIELDS is sniffed per file,
+        # so a file where it is None in every row comes out float: a
+        # dtype that depends on content, which the concatenation and
+        # the cache round trip both forbid. Tie the two declarations to
+        # the producer's types so the next string field cannot drift.
+        for stream, fields in md.CURATED_FIELDS.items():
+            for field in fields:
+                declared = (stream, field) in md._STRING_FIELDS
+                is_str = SENSOR_SCHEMAS[stream][field] is str
+                assert declared == is_str, (stream, field)
 
 
 class TestFlattenMetadata:

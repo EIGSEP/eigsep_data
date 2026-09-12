@@ -730,12 +730,14 @@ class MetadataIndex:
         if self.use_cache:
             self._write_cache(fingerprint, streams)
 
-    def select(self, **kwargs):
+    def select(self, *, files=None, time=None, where=None, **filters):
         """
         Choose integrations by metadata.
 
         Keyword arguments are column filters: a scalar matches equality,
-        a list matches membership. Three named selectors:
+        a list, tuple or set matches membership. Three named selectors
+        stand apart, and note that a 2-tuple means a *range* for them
+        and *membership* for a column filter:
 
         ``files=``
             A glob string, a *list* of globs, or a 2-*tuple*
@@ -753,7 +755,15 @@ class MetadataIndex:
         -------
         Selection
         """
-        return _apply_filters(self, self.table, [], **kwargs)
+        return _apply_filters(
+            self,
+            self.table,
+            [],
+            files=files,
+            time=time,
+            where=where,
+            **filters,
+        )
 
 
 class Selection:
@@ -782,10 +792,18 @@ class Selection:
         """Rows per file, as a Series in selection order."""
         return self.meta.groupby("file", sort=False).size()
 
-    def select(self, **kwargs):
+    def select(self, *, files=None, time=None, where=None, **filters):
         """Narrow this selection further; same arguments as
         :meth:`MetadataIndex.select`."""
-        return _apply_filters(self.index, self.meta, self.provenance, **kwargs)
+        return _apply_filters(
+            self.index,
+            self.meta,
+            self.provenance,
+            files=files,
+            time=time,
+            where=where,
+            **filters,
+        )
 
     def visits(self, gap_s=600):
         """
@@ -906,7 +924,16 @@ def _apply_filters(
         keep = names[_match_files(names, files)]
         step(f"files={files!r}", current.file.isin(keep))
     if time is not None:
-        lo, hi = (to_unix_time(t) for t in time)
+        # A bare string unpacks into characters and a float fails with
+        # "cannot unpack", neither of which mentions time=.
+        bad = TypeError(f"time= takes a (lo, hi) pair, got {time!r}")
+        if isinstance(time, str):
+            raise bad
+        try:
+            lo, hi = time
+        except (TypeError, ValueError):
+            raise bad from None
+        lo, hi = to_unix_time(lo), to_unix_time(hi)
         step(
             f"time=({lo}, {hi})",
             (current.time_best >= lo) & (current.time_best < hi),

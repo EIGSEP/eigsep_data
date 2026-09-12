@@ -103,12 +103,35 @@ class TestSelect:
         assert sel.nrows == 60
 
     def test_filters_by_root_attr(self, corr_dir):
+        # On a one-phase fixture a no-op filter would also give 180, so
+        # add a file from another phase that the filter must drop.
+        other = "corr_20260714_120041Z.h5"
+        write_corr_file(
+            corr_dir / other, ntimes=6, root_attrs={"filter_phase": "B"}
+        )
         sel = MetadataIndex(corr_dir, cache=False).select(filter_phase="C")
         assert sel.nrows == 180
+        assert other not in sel.files
 
-    def test_filters_by_bool_column(self, corr_dir):
-        sel = MetadataIndex(corr_dir, cache=False).select(sync_consistent=True)
-        assert sel.nrows == 180
+    def test_filters_by_bool_column(self, tmp_path):
+        # sync_consistent is a native bool present in every file, unlike
+        # the object-dtype root attrs, and both legs must select.
+        idx = MetadataIndex(stale_pair(tmp_path), cache=False)
+        assert idx.table.sync_consistent.dtype == bool
+        assert idx.select(sync_consistent=True).files == [
+            "corr_20260717_150041Z.h5"
+        ]
+        assert idx.select(sync_consistent=False).files == [
+            "corr_20260717_151041Z.h5"
+        ]
+
+    def test_malformed_time_is_rejected_clearly(self, corr_dir):
+        # A bare string or a float would otherwise fail on the unpack,
+        # with a message that never mentions time=.
+        idx = MetadataIndex(corr_dir, cache=False)
+        for bad in ("2026-07-17", 1.7843e9, (1.0, 2.0, 3.0)):
+            with pytest.raises(TypeError, match=r"time= takes a \(lo, hi\)"):
+                idx.select(time=bad)
 
     def test_bool_attr_false_is_distinct_from_missing(self, tmp_path):
         # filter_corr_keys.py writes mux_copy_* on the files it

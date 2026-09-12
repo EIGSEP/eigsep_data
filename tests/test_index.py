@@ -41,6 +41,17 @@ class TestMetadataIndexScan:
         ):
             assert col in idx.table.columns
 
+    def test_columns_come_in_the_documented_order(self, corr_dir):
+        # scan_corr_file documents the identity block first, then root
+        # attrs, header attrs, data_keys and the metadata columns; the
+        # sidecar stores columns in table order, so a reader may rely
+        # on it.
+        cols = list(MetadataIndex(corr_dir, cache=False).table.columns)
+        assert tuple(cols[: len(IDENTITY)]) == IDENTITY
+        assert cols.index("filter_phase") < cols.index("integration_time")
+        assert cols.index("integration_time") < cols.index("data_keys")
+        assert cols.index("data_keys") < cols.index("rfswitch")
+
     def test_row_identity_is_file_and_row_not_position(self, corr_dir):
         # Positions shift when the file set changes; annotations and
         # selections pinned to them would rot invisibly.

@@ -1,8 +1,11 @@
 """The fixture must produce files the real reader accepts."""
 
+from pathlib import Path
+
 import h5py
 import numpy as np
-from eigsep_observing.io import read_hdf5
+import pytest
+from eigsep_observing.io import SENSOR_SCHEMAS, _validate_metadata, read_hdf5
 
 from conftest import NCHAN, RFSWITCH_LADDER, write_corr_file
 
@@ -83,3 +86,37 @@ class TestWriteCorrFile:
             assert bool(h5.attrs["mux_copy_4to5"]) is True
         _, header, _ = read_hdf5(p)
         assert "filter_phase" not in header
+
+    def test_dict_streams_obey_the_producer_schemas(self, tmp_path):
+        # write_hdf5 never validates metadata, so a fixture stream that
+        # drifts from SENSOR_SCHEMAS -- a field the producer dropped, or
+        # one it never had -- keeps passing every test while pinning a
+        # contract the real files do not honour. The producer's own
+        # validator is the contract.
+        p = write_corr_file(
+            tmp_path / "corr_20260717_150041Z.h5",
+            ntimes=3,
+            streams=("motor", "potmon", "imu_el"),
+        )
+        _, _, meta = read_hdf5(p)
+        assert sorted(meta) == ["imu_el", "motor", "potmon"]
+        for stream, entries in meta.items():
+            for entry in entries:
+                assert _validate_metadata(entry, SENSOR_SCHEMAS[stream]) == []
+
+    def test_ladder_must_be_one_entry_per_integration(self, tmp_path):
+        # A ladder silently truncated or padded to ntimes would let a
+        # test pass while asserting against rows that were never
+        # written -- the writer emits exactly one entry per integration.
+        with pytest.raises(ValueError, match="rfswitch ladder has 9"):
+            write_corr_file(
+                tmp_path / "corr_20260717_150041Z.h5",
+                ntimes=10,
+                rfswitch=["RFANT"] * 9,
+            )
+
+    def test_returns_a_path_for_a_str(self, tmp_path):
+        p = write_corr_file(
+            str(tmp_path / "corr_20260717_150041Z.h5"), ntimes=3
+        )
+        assert isinstance(p, Path)

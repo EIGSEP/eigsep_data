@@ -26,8 +26,10 @@ FILENAME_TZ = {
     "deployment5": "UTC",
 }
 
-#: Zone assumed for a filename stamp that has no Z suffix.
-LEGACY_FILENAME_TZ = "America/Los_Angeles"
+#: Zone assumed for a filename stamp that has no Z suffix -- the
+#: deployment 1-4 convention, so it is that table's entry rather than
+#: a second copy of the string.
+LEGACY_FILENAME_TZ = FILENAME_TZ["deployment4"]
 
 _STAMP = re.compile(r"(\d{8})_(\d{6})(Z?)")
 

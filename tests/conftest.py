@@ -8,6 +8,8 @@ writer's UNKNOWN transition guard, a second steady state, a dropout
 run of None, and recovery.
 """
 
+from pathlib import Path
+
 import h5py
 import numpy as np
 import pytest
@@ -40,7 +42,7 @@ def write_corr_file(
     seed=0,
 ):
     """
-    Write one synthetic corr file and return its path.
+    Write one synthetic corr file and return its path (always a Path).
 
     Keys of length 2 are cross-correlations and are stored as
     ``(ntimes, NCHAN, 2)`` int32 -- (re, im) pairs -- exactly as
@@ -80,7 +82,16 @@ def write_corr_file(
     }
     md = {}
     if rfswitch is not None:
-        md["rfswitch"] = list(rfswitch)[:ntimes]
+        rfswitch = list(rfswitch)
+        if len(rfswitch) != ntimes:
+            # The writer emits exactly one entry per integration.
+            # Truncating or padding here would let a test pass while
+            # asserting against rows that were never written.
+            raise ValueError(
+                f"rfswitch ladder has {len(rfswitch)} entries for "
+                f"ntimes={ntimes}; pass one per integration"
+            )
+        md["rfswitch"] = rfswitch
     if "motor" in streams:
         md["motor"] = [
             {
@@ -103,7 +114,10 @@ def write_corr_file(
                 "app_id": 2,
                 "pot_az_angle": 10.0 + i,
                 "pot_az_voltage": 1.5,
+                "pot_az_cal_slope": 100.0,
+                "pot_az_cal_intercept": 0.0,
                 "pot_az_near_rail": False,
+                "sp1_term": 0,
                 "sp1_term_name": "SHORT",
             }
             for i in range(ntimes)
@@ -121,7 +135,6 @@ def write_corr_file(
                 "yaw": 0.0,
                 "pitch": 0.0,
                 "roll": 0.0,
-                "standby": False,
             }
             for i in range(ntimes)
         ]
@@ -130,7 +143,7 @@ def write_corr_file(
         with h5py.File(path, "a") as h5:
             for key, value in root_attrs.items():
                 h5.attrs[key] = value
-    return path
+    return Path(path)
 
 
 def corrupt_stream(path, stream):

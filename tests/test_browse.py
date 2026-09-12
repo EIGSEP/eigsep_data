@@ -2,6 +2,7 @@
 
 import importlib
 import sys
+import warnings
 
 import matplotlib
 import numpy as np
@@ -16,9 +17,11 @@ from eigsep_data.index import MetadataIndex  # noqa: E402
 
 from conftest import RFSWITCH_LADDER, write_corr_file  # noqa: E402
 
-#: Rows the ``corr_dir`` fixture puts in each file, read off the fixture
-#: rather than off the index, so a test comparing against them is not
-#: comparing the code under test with itself.
+#: Rows the ``corr_dir`` fixture puts in each file, taken from the
+#: fixture's definition rather than from the index, so a test comparing
+#: against them is not comparing the code under test with itself.
+#: N_RFANT is counted off the ladder; the third file's ladder is inlined
+#: in conftest.corr_dir, so N_RFAMB and the names are transcribed.
 N_RFANT = RFSWITCH_LADDER.count("RFANT")
 N_RFAMB = 30
 FILE_RFANT = "corr_20260717_150041Z.h5"
@@ -73,6 +76,54 @@ class TestStateBrowser:
         # Past the end clamps to the last file rather than raising.
         b.goto(99)
         assert b.pos == 1
+
+    def test_goto_keeps_the_slider_in_step(self, corr_dir, monkeypatch):
+        # A programmatic goto must move the widget too, or the next drag
+        # starts from the stale position and jumps -- and mirroring the
+        # position into the slider must not cost a second read.
+        import IPython.display
+
+        monkeypatch.setattr(IPython.display, "display", lambda *a, **k: None)
+        sel = MetadataIndex(corr_dir, cache=False).select(
+            rfswitch=["RFANT", "RFAMB"]
+        )
+        b = StateBrowser(sel, keys=["0"], controls=True)
+        assert b._slider.value == 0
+
+        reads = []
+        read = b._read
+        monkeypatch.setattr(
+            b, "_read", lambda pos: reads.append(pos) or read(pos)
+        )
+        b.goto(1)
+        assert b._slider.value == 1
+        assert reads == [1]
+        assert list(b.loaded.meta.file.unique()) == [FILE_CAL]
+
+        # The widget still drives the browser, once per change.
+        b._slider.value = 0
+        assert b.pos == 0
+        assert reads == [1, 0]
+        assert list(b.loaded.meta.file.unique()) == [FILE_RFANT]
+
+    def test_no_live_key_means_no_legend_and_no_warning(self, tmp_path):
+        # A file carrying none of the requested keys has nothing to
+        # label. An unconditional legend() would have matplotlib warn
+        # "No artists with labels" over the empty panel on every such
+        # file while Play runs.
+        write_corr_file(
+            tmp_path / "corr_20260714_120041Z.h5",
+            ntimes=20,
+            keys=("4",),
+            rfswitch=["RFANT"] * 20,
+        )
+        sel = MetadataIndex(tmp_path, cache=False).select(rfswitch="RFANT")
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            b = StateBrowser(sel, keys=["0"], controls=False)
+        assert not [w for w in caught if "No artists" in str(w.message)]
+        assert b.ax_s.get_legend() is None
+        assert not b.ax_w.images
 
     def test_empty_selection_raises(self, corr_dir):
         sel = MetadataIndex(corr_dir, cache=False).select(rfswitch="VNAO")

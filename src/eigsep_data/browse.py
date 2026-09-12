@@ -61,6 +61,7 @@ class StateBrowser:
         self._files = selection.files
         self.pos = 0
         self.loaded = None
+        self._slider = None
 
         self.fig, (self.ax_w, self.ax_s) = plt.subplots(
             2,
@@ -87,6 +88,12 @@ class StateBrowser:
     def goto(self, pos):
         """Draw the file at index *pos*."""
         self.pos = int(np.clip(pos, 0, self.nfiles - 1))
+        if self._slider is not None:
+            # Keep the widget in step with a programmatic goto, so the
+            # next drag starts from here instead of jumping back to
+            # wherever the slider was left. _on_slide drops the
+            # notification this raises, since it already matches pos.
+            self._slider.value = self.pos
         name, loaded = self._read(self.pos)
         self.loaded = loaded
         # missing="nan" hands back every requested key, including the
@@ -143,8 +150,15 @@ class StateBrowser:
         self.ax_s.set_yscale("log")
         self.ax_s.set_xlabel("Frequency [MHz]")
         self.ax_s.set_ylabel("Power [counts]")
-        self.ax_s.legend(loc="upper right", fontsize=8)
+        if live:
+            # No artists means no legend -- and no matplotlib warning
+            # about it on every such file while Play runs.
+            self.ax_s.legend(loc="upper right", fontsize=8)
         self.fig.canvas.draw_idle()
+
+    def _on_slide(self, change):
+        if change["new"] != self.pos:
+            self.goto(change["new"])
 
     def _build_controls(self):
         try:
@@ -165,5 +179,6 @@ class StateBrowser:
         )
         play = widgets.Play(interval=400, min=0, max=self.nfiles - 1, step=1)
         widgets.jslink((play, "value"), (slider, "value"))
-        slider.observe(lambda ch: self.goto(ch["new"]), names="value")
+        slider.observe(self._on_slide, names="value")
+        self._slider = slider
         display(widgets.HBox([play, slider]))
