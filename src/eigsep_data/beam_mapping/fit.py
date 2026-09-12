@@ -20,7 +20,7 @@ import jax.numpy as jnp
 from scipy.optimize import differential_evolution, minimize
 
 from healjax.coord import angles_to_coord
-from .beam_sim import RotatingAntennaCartesian, TransmitterAntenna, power_sim
+from ..beam_sim import RotatingAntennaCartesian, TransmitterAntenna, power_sim
 
 
 def fit_multi_freq_joint(
