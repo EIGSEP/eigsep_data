@@ -74,7 +74,7 @@ def comb_present(spectrum, band=COMB_BAND, min_tones=COMB_MIN_TONES,
     return int(np.sum(band_values > snr * max(mad, 1e-30))) >= min_tones
 
 
-def load_v007_data(data_path, require_comb=True):
+def load_v007_data(data_path, require_comb=True, start=-185, stop=-150):
     """Load v007 metadata and baseline-subtracted comb channels.
 
     *** The comb in this slice is NOT the transmitter. ***  Measured across all
@@ -94,7 +94,7 @@ def load_v007_data(data_path, require_comb=True):
     import glob
     from eigsep_observing import io
 
-    files = sorted(glob.glob(str(Path(data_path) / "*.h5")))[-185:-150]
+    files = sorted(glob.glob(str(Path(data_path) / "*.h5")))[start:stop]
     if not files:
         raise ValueError(f"No HDF5 files found in {data_path}")
     comb_off_files = []
