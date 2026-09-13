@@ -53,14 +53,18 @@ COMB_MIN_TONES = 20
 
 def comb_present(spectrum, band=COMB_BAND, min_tones=COMB_MIN_TONES,
                  snr=20.0):
-    """True if a TX comb is on in this spectrum, whatever its spacing.
+    """True if *a* comb is on in this spectrum, whatever its spacing.
 
     Counts channels whose adjacent-channel second difference stands more than
-    ``snr`` MADs above the band's continuum.  Deliberately does not assume a
-    comb spacing: the Marjum comb was reconfigured between 2, 4, 8 and 256
-    channels during the campaign, so a fixed grid would mislabel other eras.
+    ``snr`` MADs above the band's continuum, assuming no particular spacing.
     Measured separation on the 07-17/18 beam scan is clean -- comb-on files
     score 29-45, comb-off files 0-16.
+
+    WARNING: this does not identify *which* comb, and in the beam-scan window
+    the answer is not the one you want.  Across all 227 files of 07-17 18:51 ->
+    07-18 03:22 on input 4, the only comb present is the digital self-comb at
+    250/128 MHz (8.000 channels, locked to the channel grid); the transmitter
+    comb is absent everywhere.  Use ``tx_state_detector.py`` to tell them apart.
     """
     lo, hi = band
     spectrum = np.asarray(spectrum, float)
@@ -71,14 +75,21 @@ def comb_present(spectrum, band=COMB_BAND, min_tones=COMB_MIN_TONES,
 
 
 def load_v007_data(data_path, require_comb=True):
-    """Load v007 metadata and baseline-subtracted TX comb channels.
+    """Load v007 metadata and baseline-subtracted comb channels.
 
-    ``require_comb`` drops spectra from files in which the transmitter comb is
-    off.  Three of the 35 files in the default slice are comb-off -- the
-    transmitter was being toggled around beam-scan start (fieldnotes p181) --
-    and they are *not* caught by the existing flagging, because a comb-off
-    sample is small rather than a large excursion.  Including them shifts the
-    fitted TX heading by 10.6 deg.  Pass False only to reproduce older results.
+    *** The comb in this slice is NOT the transmitter. ***  Measured across all
+    227 beam-scan files on input 4, the transmitter comb (1.000 MHz, offset
+    ~4.03 channels from DC) is absent, and the comb these channels carry is the
+    digital self-comb at 250/128 MHz -- 8.000 channels exactly, phase-locked to
+    the channel grid, i.e. an ADC-clock subharmonic.  A fit built on this slice
+    measures the antenna's response to our own radiated electronics, not a beam
+    toward the ridge transmitter.  See ``tx_state_detector.py``.
+
+    ``require_comb`` drops spectra from files where that comb is off.  Three of
+    the 35 files in the default slice are comb-off, and they are *not* caught by
+    the existing flagging, because a comb-off sample is small rather than a
+    large excursion.  Including them shifts the fitted heading by 10.6 deg.
+    Pass False only to reproduce older results.
     """
     import glob
     from eigsep_observing import io
