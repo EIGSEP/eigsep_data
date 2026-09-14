@@ -18,7 +18,7 @@ Two entry points, for two different data products:
 """
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 import h5py
