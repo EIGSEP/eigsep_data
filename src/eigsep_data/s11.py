@@ -300,8 +300,16 @@ class RawS11:
         self.data, self.cal_data, self.hdr, self.meta = io.read_s11_file(
             fpath
         )
-        self.time = datetime.fromisoformat(fpath.name[-18:-3])
-        self.timestamp = self.time.timestamp()
+        # metadata_snapshot_unix is the canonical per-capture
+        # timestamp used throughout the calibration pipeline (see
+        # scripts/calibrate_field_s11.py) -- read it from the header
+        # rather than parsing it out of the filename. The filename
+        # isn't reliably ISO-8601-shaped: e.g.
+        # eigsep_observing.io.write_s11_file's default naming is
+        # "{mode}s11_%Y%m%d_%H%M%SZ.h5" (no dashes/colons/"T"), which
+        # datetime.fromisoformat() can't parse.
+        self.timestamp = self.hdr["metadata_snapshot_unix"]
+        self.time = datetime.fromtimestamp(self.timestamp, tz=timezone.utc)
         self.freqs = np.array(self.hdr["freqs"]) / 1e6  # in MHz
         self.dlys = (
             np.fft.fftfreq(self.freqs.size, d=self.freqs[1] - self.freqs[0])
