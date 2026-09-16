@@ -122,6 +122,37 @@ class TestFlattenMetadata:
         cols = md.flatten_metadata(meta, ntimes=1)
         np.testing.assert_allclose(cols["tempctrl_lna_T_now"], [31.5])
 
+    def test_potmon_carries_the_voltage_and_its_calibration(self):
+        # pot_az_angle is slope * voltage + intercept, and the field
+        # rederives that calibration: deployment 5 carries 15 distinct
+        # (slope, intercept) pairs, four of them different slopes, so
+        # the angle column has steps the voltage does not. Anything that
+        # fits the pot needs the raw voltage and the epoch boundaries,
+        # not somebody else's angle.
+        assert md.CURATED_FIELDS["potmon"][:4] == (
+            "pot_az_voltage",
+            "pot_az_angle",
+            "pot_az_cal_slope",
+            "pot_az_cal_intercept",
+        )
+        meta = {
+            "potmon": [
+                {
+                    "status": "update",
+                    "pot_az_voltage": 1.3761416673333333,
+                    "pot_az_angle": -97.81870213114614,
+                    "pot_az_cal_slope": 323.7485244455132,
+                    "pot_az_cal_intercept": -543.3425363583011,
+                }
+            ]
+        }
+        cols = md.flatten_metadata(meta, ntimes=1)
+        np.testing.assert_allclose(
+            cols["potmon_pot_az_cal_slope"] * cols["potmon_pot_az_voltage"]
+            + cols["potmon_pot_az_cal_intercept"],
+            cols["potmon_pot_az_angle"],
+        )
+
     def test_absent_string_field_stays_object_dtype(self):
         # potmon's sp1_term_name is a curated string field. When the
         # whole stream is absent, no row supplies a string, so a dtype

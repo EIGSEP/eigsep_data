@@ -112,6 +112,12 @@ class TestExtractBeamMappingDataContract:
         # The beam pipeline (beam_sim, beam_fit, rfi) unpacks this dict
         # by key. Task 9's rewrite onto MetadataIndex must not add,
         # drop, or rename any of them.
+        #
+        # The three pot_az_cal_* / voltage keys are a deliberate,
+        # backward-compatible addition (2026-09-16): pot_az_angle is
+        # slope * voltage + intercept with a calibration the field
+        # rederives, so the angle alone cannot be fitted across an
+        # epoch boundary. No existing key moved.
         out = _extract(tmp_path)
         assert sorted(out) == sorted(
             [
@@ -122,7 +128,10 @@ class TestExtractBeamMappingDataContract:
                 "cross",
                 "el_pos",
                 "az_pos",
+                "pot_az_voltage",
                 "pot_az_angle",
+                "pot_az_cal_slope",
+                "pot_az_cal_intercept",
                 "imu_el_deg",
                 "imu_accel",
             ]

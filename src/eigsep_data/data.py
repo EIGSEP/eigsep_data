@@ -527,7 +527,15 @@ def extract_beam_mapping_data(
         freqs : np.ndarray -- frequency axis from the first file's header
         sky, ground, cross : np.ndarray, shape (nsamples, nchan)
         el_pos, az_pos : np.ndarray -- commanded motor positions
-        pot_az_angle : np.ndarray -- raw potentiometer azimuth reading
+        pot_az_voltage : np.ndarray -- potentiometer voltage, the
+            quantity to fit; the angle below is derived from it with
+            a calibration that is rederived in the field
+        pot_az_angle : np.ndarray -- potentiometer azimuth reading,
+            ``pot_az_cal_slope * pot_az_voltage + pot_az_cal_intercept``
+        pot_az_cal_slope, pot_az_cal_intercept : np.ndarray -- the
+            calibration in force at each integration; a change in
+            either marks an epoch boundary, across which the angle
+            steps and the voltage does not
         imu_el_deg : np.ndarray -- IMU-derived elevation angle, in
             degrees, with sign and zero point anchored to el_pos
         imu_accel : np.ndarray, shape (nsamples, 3) -- raw accelerometer
@@ -566,7 +574,10 @@ def extract_beam_mapping_data(
         "cross": loaded.data[cross_key],
         "el_pos": el_pos,
         "az_pos": meta.motor_az_pos.to_numpy(),
+        "pot_az_voltage": meta.potmon_pot_az_voltage.to_numpy(),
         "pot_az_angle": meta.potmon_pot_az_angle.to_numpy(),
+        "pot_az_cal_slope": meta.potmon_pot_az_cal_slope.to_numpy(),
+        "pot_az_cal_intercept": meta.potmon_pot_az_cal_intercept.to_numpy(),
         "imu_el_deg": imu_el_from_accel(accel, el_pos, counts_per_deg),
         "imu_accel": accel,
     }
