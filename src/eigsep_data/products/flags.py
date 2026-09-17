@@ -14,6 +14,8 @@ the version is a required part of the spec and the dtype comes back as
 stored, never coerced.
 """
 
+import os
+
 import numpy as np
 
 from .base import Product, axis_fingerprint, read_manifest, register
@@ -58,6 +60,51 @@ class Flags(Product):
             )
         with h5py.File(day_files[0], "r") as h:
             return h["freqs_mhz"][:]
+
+    def read_file(self, campaign, version, fname, input_key=None):
+        """
+        One whole file's mask, without going through a selection.
+
+        The campaign's ``flagging/read_flags.py`` is a thin wrapper over
+        this. Kept as a first-class method rather than a private helper
+        because "give me this file's flags" is a real question -- a
+        producer checking its own output, a notebook eyeballing one
+        file -- that should not require building an index first.
+
+        Returns ``(cat, freqs_mhz)``, or ``({input: cat}, freqs_mhz)``
+        when *input_key* is None. The dtype is whatever the version
+        stores: uint8 for v0, uint16 for v2.
+        """
+        import h5py
+
+        fname = os.path.basename(str(fname))
+        path = self._day_file(campaign, version, fname)
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"no flags day file for day {fname[5:13]!r} derived from "
+                f"{fname!r} (expected {path}); has the flags/{version} "
+                "pipeline been run for this day?"
+            )
+        with h5py.File(path, "r") as h:
+            freqs_mhz = h["freqs_mhz"][:]
+            mask = h["mask"]
+            if fname not in mask:
+                raise KeyError(
+                    f"{fname!r} not found in {path.name} (the file wasn't "
+                    "processed by build_masks.py, errored out, or the name "
+                    "doesn't match a file in data/)"
+                )
+            group = mask[fname]
+            available = sorted(group.keys())
+            if input_key is None:
+                return {k: group[k][:] for k in available}, freqs_mhz
+            input_key = str(input_key)
+            if input_key not in available:
+                raise KeyError(
+                    f"input {input_key!r} not found for {fname!r} in "
+                    f"{path.name}; available inputs: {available}"
+                )
+            return group[input_key][:], freqs_mhz
 
     def fetch(self, campaign, version, fname, rows, key, band, times):
         import h5py
