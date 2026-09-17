@@ -114,12 +114,18 @@ class TestFlattenMetadata:
         ]
         assert None not in list(cols["potmon_sp1_term_name"])
 
-    def test_tempctrl_lna_is_curated(self):
-        # Calibrator work needs the LNA temperature as much as the load
-        # temperature; both are two columns.
-        assert md.CURATED_FIELDS["tempctrl_lna"] == ("T_now", "active")
+    def test_tempctrl_lna_is_not_curated_but_is_reachable(self):
+        # Curated until 2026-09-17. eigsep_observing dropped the stream
+        # in 4e30eff ("got rid of peltier func"), so it is not in
+        # SENSOR_SCHEMAS and cannot be curated without breaking the
+        # schema-agreement tests above; the LNA Peltier was never
+        # commanded in the field, so nothing needs the column by
+        # default. It must still come back when asked for by name --
+        # an unknown stream yields every field it carries.
+        assert "tempctrl_lna" not in md.CURATED_FIELDS
         meta = {"tempctrl_lna": [{"status": "update", "T_now": 31.5}]}
-        cols = md.flatten_metadata(meta, ntimes=1)
+        assert "tempctrl_lna_T_now" not in md.flatten_metadata(meta, ntimes=1)
+        cols = md.flatten_metadata(meta, ntimes=1, streams=["tempctrl_lna"])
         np.testing.assert_allclose(cols["tempctrl_lna_T_now"], [31.5])
 
     def test_potmon_carries_the_voltage_and_its_calibration(self):

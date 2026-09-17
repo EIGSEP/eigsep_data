@@ -43,8 +43,17 @@ MISSING = "MISSING"
 
 #: Streams and fields carried by default. Flattening every field of
 #: every stream would be ~130 columns (~600 MB at 1.2M rows), dominated
-#: by adc_stats' 36 floats and the two tempctrl streams' 20 each. Widen
-#: with ``streams=`` when you need them.
+#: by adc_stats' 36 floats and tempctrl's 20. Widen with ``streams=``
+#: when you need them.
+#:
+#: ``tempctrl_lna`` was curated here until 2026-09-17 and is not any
+#: more. eigsep_observing dropped the stream in 4e30eff ("got rid of
+#: peltier func", 2026-09-08), so it is absent from SENSOR_SCHEMAS and
+#: the schema-agreement tests below could not pass with it listed. The
+#: LNA Peltier was never commanded in the field (Aaron, 2026-09-17), so
+#: whatever the July-2026 files may carry under that key is not data
+#: anyone needs -- request it explicitly with ``streams=`` if that ever
+#: changes.
 CURATED_FIELDS = {
     "motor": (
         "az_pos",
@@ -63,7 +72,6 @@ CURATED_FIELDS = {
     ),
     "imu_el": ("accel_x", "accel_y", "accel_z", "el_deg"),
     "tempctrl_load": ("T_now", "active"),
-    "tempctrl_lna": ("T_now", "active"),
     "rfswitch_therm": ("temp_therm0", "temp_therm1", "temp_therm2"),
     "system_current": ("current_a",),
     "lidar": ("distance_m",),
