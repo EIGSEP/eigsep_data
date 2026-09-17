@@ -114,3 +114,13 @@ A product is a derived dataset keyed by the raw files —
   and exploratory work. Imports this package; not installable itself.
 - [`eigsep_observing`](https://github.com/EIGSEP/eigsep_observing) — field
   software that writes the files this package reads.
+
+## Recent changes
+
+- 2026-09-17 (`agent:eigsep-67`): `import eigsep_data` made lazy, 7.05 s
+  -> 0.00 s; JAX is no longer pulled to read a flag mask.
+- 2026-09-17 (`agent:eigsep-67`): added `bundle.py` and `products/`, the
+  raw-plus-companions loader, and this README -- the split carried the
+  package across but not a file describing it.
+- 2026-09-17 (`agent:eigsep-67`): repo created by splitting the package
+  half out of `EIGSEP/data-analysis`, with history.
