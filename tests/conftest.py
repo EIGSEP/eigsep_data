@@ -8,6 +8,7 @@ writer's UNKNOWN transition guard, a second steady state, a dropout
 run of None, and recovery.
 """
 
+import json
 from pathlib import Path
 
 import h5py
@@ -39,6 +40,7 @@ def write_corr_file(
     streams=("motor",),
     el_pos=0.0,
     root_attrs=None,
+    input_to_ant=None,
     seed=0,
 ):
     """
@@ -55,7 +57,10 @@ def write_corr_file(
     ``el_pos`` is the motor stream's commanded elevation (in stepper
     counts): a scalar (the default, ``0.0``, matches every caller that
     predates this parameter) or an array-like of length ``ntimes`` for
-    a genuine per-sample sweep.
+    a genuine per-sample sweep. ``input_to_ant`` is the producer's
+    ``{key: antenna}`` map, written as the JSON string the real writer
+    stores; omitted by default, which is what files that predate the
+    field carry.
     """
     el_pos = np.broadcast_to(np.asarray(el_pos, dtype=float), (ntimes,))
     rng = np.random.default_rng(seed)
@@ -80,6 +85,10 @@ def write_corr_file(
         "adc_mux_sel": 5,
         "nchan": NCHAN,
     }
+    if input_to_ant is not None:
+        header["input_to_ant"] = json.dumps(
+            {str(k): str(v) for k, v in input_to_ant.items()}
+        )
     md = {}
     if rfswitch is not None:
         rfswitch = list(rfswitch)

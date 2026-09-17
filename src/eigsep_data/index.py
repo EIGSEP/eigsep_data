@@ -861,6 +861,29 @@ class Selection:
             )
         return "\n".join(lines)
 
+    def load_bundle(
+        self,
+        antenna=None,
+        key=None,
+        products=(),
+        band_mhz=None,
+        root=None,
+        missing="skip",
+    ):
+        """Read these rows for one antenna, with companion products
+        aligned to them; see :func:`eigsep_data.bundle.load_bundle`."""
+        from .bundle import load_bundle
+
+        return load_bundle(
+            self,
+            antenna=antenna,
+            key=key,
+            products=products,
+            band_mhz=band_mhz,
+            root=root,
+            missing=missing,
+        )
+
     def load(self, keys=None, time_avg=1, missing="raise"):
         """Read the spectra for these integrations; see
         :meth:`eigsep_data.EigsepData.from_selection`."""

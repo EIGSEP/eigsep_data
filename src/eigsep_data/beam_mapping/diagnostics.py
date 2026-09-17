@@ -77,6 +77,15 @@ def comb_present(spectrum, band=COMB_BAND, min_tones=COMB_MIN_TONES,
 def load_v007_data(data_path, require_comb=True, start=-185, stop=-150):
     """Load v007 metadata and baseline-subtracted comb channels.
 
+    *** Frozen: not being moved onto eigsep_data.bundle. ***  The
+    range-plus-companions loader (``Selection.load_bundle``) supersedes
+    this for new work, but v007 itself is withdrawn and this function
+    has ~35 call sites across ``notebooks/arp/marjum-2026-07/`` whose
+    published numbers came out of exactly this code path. Rewiring it
+    would buy nothing and could move a result nobody is looking at any
+    more (Aaron, 2026-09-17). Read it as a historical loader: keep it
+    working, do not build on it.
+
     *** The comb in this slice is NOT the transmitter. ***  Measured across all
     227 beam-scan files on input 4, the transmitter comb (1.000 MHz, offset
     ~4.03 channels from DC) is absent, and the comb these channels carry is the
