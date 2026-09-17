@@ -6,6 +6,14 @@ for ``flags/`` and ``derived/smooth_model/``. The arrays are the ones
 ``abscal`` produces: ``sol_times`` (one per solution), ``freqs``, and
 per-solution spectra ``gain`` and ``t_rx``.
 
+**Status: not yet validated against real solutions.** The tests cover
+the join on synthetic fixtures only. ``abscal``'s real output is still
+loose ``.npz`` in ``abscal/`` rather than at ``derived/gain/v0/
+solutions.npz``, and moving it was deliberately deferred until someone
+is actually calibrating with this (Aaron, 2026-09-17). Treat the
+tolerance default and the column set as untested guesses about real
+data until that happens; the join logic itself is tested.
+
 **This is the nearest-in-time join, and it is the one that can quietly
 go wrong.** A solution is valid for the state the receiver was in when
 it was measured; carrying it across a switch cycle or a hardware change
