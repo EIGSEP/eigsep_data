@@ -6,7 +6,9 @@ from .s11 import S11, RawS11
 from .clock import to_unix_time, format_time
 from .data import EigsepData
 from .index import MetadataIndex, Selection
+from .bundle import Bundle, Campaign, load_bundle
 from . import metadata
+from . import products
 from . import clock
 from . import plot
 from . import rfi
