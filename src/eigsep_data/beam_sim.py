@@ -57,8 +57,17 @@ def read_beam(path=DEFAULT_BEAM_PATH, drop_last=True):
       - gain_th, gain_ph : spherical theta/phi gain components, shape
         (nfreq, npix); summed and peak-normalized per frequency to serve
         as HFSS "truth" maps for comparison against reduced data.
-      - freqs : frequency of each slice, in MHz, on the same grid as
-        eigsep_observing's correlator freqs (freqs[::16][12:]).
+      - freqs : true frequency of each slice, in MHz (50.78125-250.0,
+        step 3.90625), taken directly from the HFSS export filenames
+        (Re_Ex_<freq>MHz.csv etc. under research/data/all_Efields/
+        ElectricPatterns_NEW/). The top slice (250.0 MHz) is HFSS's own
+        Nyquist edge and has no matching eigsep_observing correlator
+        channel; after drop_last removes it, the remaining slices match
+        eigsep_observing's correlator freqs (freqs[::16][13:]) exactly.
+        (This array was previously off by one grid step low -- reverse-
+        engineered from a mislabeled notebook anchor point rather than
+        read from the source filenames -- found and fixed 2026-09-16;
+        beam_cart/gain_th/gain_ph were never affected, only this label.)
       - nside : HEALPix nside of the pixelization (npix = 12*nside**2).
 
     Parameters
@@ -68,9 +77,9 @@ def read_beam(path=DEFAULT_BEAM_PATH, drop_last=True):
         at hfss_beam_maps/bowtie_beam.npz.
     drop_last : bool
         If True (default), drop the last frequency slice from beam_cart,
-        gain_th, gain_ph, and freqs before combining -- matches the
-        convention used elsewhere in this pipeline where the final HFSS
-        entry is unused.
+        gain_th, gain_ph, and freqs before combining -- the final HFSS
+        entry (250.0 MHz) is HFSS's own Nyquist edge and has no matching
+        correlator channel.
 
     Returns
     -------
