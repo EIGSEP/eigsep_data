@@ -332,3 +332,57 @@ class TestGainJoinsOnTime:
             products=["gain@v_nope"],
         )
         assert bundle.provenance["products"]["gain"]["skipped"]
+
+
+class TestFlagsWholeFileRead:
+    """``read_file`` is what the campaign's read_flags.py delegates to."""
+
+    def test_one_input_comes_back_with_its_axis(self, campaign):
+        from eigsep_data.bundle import Campaign
+        from eigsep_data.products import get
+
+        root, names, freqs, _band = campaign
+        mask, axis = get("flags").read_file(
+            Campaign(root), "v2", names[0], "0"
+        )
+        assert mask.shape == (6, NCHAN)
+        assert mask.dtype == np.uint16
+        np.testing.assert_allclose(axis, freqs)
+
+    def test_no_key_returns_every_input(self, campaign):
+        from eigsep_data.bundle import Campaign
+        from eigsep_data.products import get
+
+        root, names, _f, _b = campaign
+        by_input, _axis = get("flags").read_file(
+            Campaign(root), "v2", names[0]
+        )
+        assert sorted(by_input) == ["0", "4"]
+
+    def test_a_full_path_is_reduced_to_its_basename(self, campaign):
+        from eigsep_data.bundle import Campaign
+        from eigsep_data.products import get
+
+        root, names, _f, _b = campaign
+        mask, _axis = get("flags").read_file(
+            Campaign(root), "v2", root / "data" / names[0], "0"
+        )
+        assert mask.shape == (6, NCHAN)
+
+    def test_missing_day_file_says_which_pipeline_to_run(self, campaign):
+        from eigsep_data.bundle import Campaign
+        from eigsep_data.products import get
+
+        root, _n, _f, _b = campaign
+        with pytest.raises(FileNotFoundError, match="pipeline been run"):
+            get("flags").read_file(
+                Campaign(root), "v2", "corr_20990101_000000Z.h5", "0"
+            )
+
+    def test_unknown_input_lists_what_is_available(self, campaign):
+        from eigsep_data.bundle import Campaign
+        from eigsep_data.products import get
+
+        root, names, _f, _b = campaign
+        with pytest.raises(KeyError, match=r"\['0', '4'\]"):
+            get("flags").read_file(Campaign(root), "v2", names[0], "9")
