@@ -214,7 +214,7 @@ class GlobalSim:
             index0 = np.random.uniform(spectral_index_range[0], spectral_index_range[1], size=(nsrcs, 1))
             flux = Isky0[:,None] * (self.freqs[None,:] / fq0)**index0
         else:
-            flux = Isky0[:,None] * (freqs[None,:] / fq0)**0
+            flux = Isky0[:,None] * (self.freqs[None,:] / fq0)**0
         return flux
 
     def set_sky_model(self,
