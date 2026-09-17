@@ -246,3 +246,89 @@ class TestAntennaMovesBetweenInputs:
             np.testing.assert_array_equal(bundle.data[:4], h["data/0"][:])
         with h5py.File(data / "corr_20260717_151041Z.h5", "r") as h:
             np.testing.assert_array_equal(bundle.data[4:], h["data/2"][:])
+
+
+class TestGainJoinsOnTime:
+    """The nearest-in-time shape: bounded, and honest about the offset.
+
+    Unlike flags and the smooth model (keyed by ``(file, row)``) and the
+    pointing table (keyed the same way), a gain solution has its own
+    cadence and has to be matched by time. That is the join that can
+    silently attach a calibration measured in one receiver state to
+    rows taken in another, so every assertion here is about the bound.
+    """
+
+    @pytest.fixture
+    def campaign_with_gain(self, campaign):
+        root, names, freqs, _band = campaign
+        gain_dir = root / "derived" / "gain" / "v0"
+        gain_dir.mkdir(parents=True)
+        # Two solutions: one right on the first file, one 10 000 s after
+        # the window, far outside any sane tolerance.
+        np.savez(
+            gain_dir / "solutions.npz",
+            freqs=freqs,
+            sol_times=np.array([1.7843e9 + 1.0, 1.7843e9 + 10000.0]),
+            gain=np.stack(
+                [np.full(NCHAN, 2.0), np.full(NCHAN, 99.0)]
+            ),
+            t_rx=np.stack([np.full(NCHAN, 300.0), np.full(NCHAN, 999.0)]),
+        )
+        (gain_dir / "manifest.json").write_text(
+            json.dumps({"provenance": {"product": "gain", "version": "v0"}})
+        )
+        return root
+
+    def _bundle(self, root, **kw):
+        index = MetadataIndex(root / "data", cache=False)
+        return index.select().load_bundle(
+            antenna="box-gnd", root=root, products=["gain@v0"], **kw
+        )
+
+    def test_rows_take_the_nearest_solution(self, campaign_with_gain):
+        bundle = self._bundle(campaign_with_gain)
+        gain = bundle.products["gain"]["gain"]
+        first_file = (bundle.meta.file == bundle.meta.file.iloc[0]).to_numpy()
+        assert (gain[first_file] == 2.0).all()
+
+    def test_rows_outside_the_tolerance_are_nan_not_stretched(
+        self, campaign_with_gain
+    ):
+        # The second file's rows are ~600 s from solution one and ~9400 s
+        # from solution two. With a 60 s tolerance neither is allowed,
+        # and the answer must be NaN rather than the nearest anyway.
+        from eigsep_data import products as P
+
+        product = P.get("gain")
+        old = product.tolerance_s
+        try:
+            product.tolerance_s = 60.0
+            bundle = self._bundle(campaign_with_gain)
+        finally:
+            product.tolerance_s = old
+        gain = bundle.products["gain"]["gain"]
+        second = (bundle.meta.file == bundle.meta.file.iloc[-1]).to_numpy()
+        assert np.isnan(gain[second]).all()
+
+    def test_the_offset_actually_used_comes_back(self, campaign_with_gain):
+        # A caller has to be able to see how stale its calibration is;
+        # a join that hides the offset is how a solution from another
+        # regime passes for a fresh one.
+        bundle = self._bundle(campaign_with_gain)
+        dt = bundle.products["gain"]["gain_dt_s"]
+        assert dt.shape == (bundle.nrows,)
+        assert np.nanmax(np.abs(dt)) < 3600.0
+
+    def test_every_solution_column_is_carried(self, campaign_with_gain):
+        bundle = self._bundle(campaign_with_gain)
+        assert set(bundle.products["gain"]) >= {"gain", "t_rx", "gain_dt_s"}
+
+    def test_an_absent_version_is_a_skip_not_a_crash(self, campaign_with_gain):
+        bundle = MetadataIndex(
+            campaign_with_gain / "data", cache=False
+        ).select().load_bundle(
+            antenna="box-gnd",
+            root=campaign_with_gain,
+            products=["gain@v_nope"],
+        )
+        assert bundle.provenance["products"]["gain"]["skipped"]

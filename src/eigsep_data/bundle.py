@@ -331,11 +331,22 @@ def load_bundle(
     # --- one frequency axis, resolved once per product version -----
     lo, hi = _band_slice(freqs_full, band_mhz)
     spans = {}
+    absent = {}
     for kind, version in specs:
         product = _products.get(kind)
         if not product.cube:
             continue
-        pf = np.asarray(product.freqs(campaign, version), dtype=float)
+        try:
+            pf = np.asarray(product.freqs(campaign, version), dtype=float)
+        except FileNotFoundError as e:
+            # A version with no payload at all on disk. Under
+            # missing="skip" that is the same kind of event as one file
+            # lacking a companion -- reported, not fatal -- and it must
+            # not take the whole load down before a single row is read.
+            if missing == "raise":
+                raise
+            absent[kind] = str(e)
+            continue
         start, stop = locate_axis(freqs_full, pf, f"{kind}@{version}")
         spans[kind] = (start, stop, axis_fingerprint(pf))
         lo, hi = max(lo, start), min(hi, stop)
@@ -352,6 +363,15 @@ def load_bundle(
     prov_products = {}
     for kind, version in specs:
         product = _products.get(kind)
+        if kind in absent:
+            out[kind] = {}
+            prov_products[kind] = {
+                "version": version,
+                "skipped": list(rows_meta.file.unique()),
+                "reason": absent[kind],
+                "manifest": {},
+            }
+            continue
         band = None
         if product.cube:
             start, _stop, expect_fp = spans[kind]
@@ -360,7 +380,13 @@ def load_bundle(
         for fname, group in rows_meta.groupby("file", sort=False):
             rows = group.row.to_numpy(dtype=int)
             got = product.fetch(
-                campaign, version, fname, rows, keys_by_file[fname], band
+                campaign,
+                version,
+                fname,
+                rows,
+                keys_by_file[fname],
+                band,
+                group.time_best.to_numpy(dtype=float),
             )
             if got is None:
                 skipped.append(fname)

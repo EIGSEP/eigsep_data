@@ -48,7 +48,7 @@ class SmoothModel(Product):
         with h5py.File(companions[0], "r") as h:
             return h["freqs_mhz"][:]
 
-    def fetch(self, campaign, version, fname, rows, key, band):
+    def fetch(self, campaign, version, fname, rows, key, band, times):
         import h5py
         import numpy as np
 

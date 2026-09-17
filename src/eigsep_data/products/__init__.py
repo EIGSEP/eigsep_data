@@ -14,7 +14,7 @@ from .base import (  # noqa: F401
     register,
     registered,
 )
-from . import flags, pointing, smooth_model  # noqa: F401,E402
+from . import flags, gain, pointing, smooth_model  # noqa: F401,E402
 
 __all__ = [
     "Product",

@@ -68,7 +68,7 @@ class Pointing(Product):
                 "directory -- check out the revision you meant."
             )
 
-    def fetch(self, campaign, version, fname, rows, key, band):
+    def fetch(self, campaign, version, fname, rows, key, band, times):
         import pandas as pd
 
         path = self._path(campaign, version)

@@ -59,7 +59,7 @@ class Flags(Product):
         with h5py.File(day_files[0], "r") as h:
             return h["freqs_mhz"][:]
 
-    def fetch(self, campaign, version, fname, rows, key, band):
+    def fetch(self, campaign, version, fname, rows, key, band, times):
         import h5py
 
         path = self._day_file(campaign, version, fname)

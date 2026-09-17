@@ -24,9 +24,10 @@ class TestParseSpec:
 
 
 class TestRegistry:
-    def test_ships_the_three_products_with_real_consumers(self):
+    def test_ships_the_products_with_real_consumers(self):
         assert products.registered() == [
             "flags",
+            "gain",
             "pointing",
             "smooth_model",
         ]

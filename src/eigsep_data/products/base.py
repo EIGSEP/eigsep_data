@@ -182,7 +182,7 @@ class Product:
         """The product's own frequency axis in MHz (cube products)."""
         raise NotImplementedError
 
-    def fetch(self, campaign, version, fname, rows, key, band):
+    def fetch(self, campaign, version, fname, rows, key, band, times):
         """
         Arrays for one file's *rows*.
 
@@ -200,6 +200,10 @@ class Product:
         band : slice or None
             Slice into this product's *own* channel axis, resolved once
             per version by the bundle.
+        times : ndarray of float
+            ``time_best`` of each row, Unix seconds. Products joined on
+            time rather than on ``(file, row)`` -- a gain solution, an
+            S11 measurement -- match against these.
 
         Returns
         -------
