@@ -18,10 +18,14 @@ re-exports the common entry points; it contains no logic of its own.
 | `basis.py` | Low-rank template banks (PCA eigen-beams, `BeamPCA`) packed as an `HFSSBeamSet` for linear fitting. |
 | `rfi.py` | Model-independent RFI flagging from raw correlator data (not beam residuals) — flags outlier times using off-comb monitor channels. |
 | `fit.py` | Transmitter position and polarization fitting (JAX). |
-| `diagnostics.py` | v007 campaign loading, joint fits, and the standard diagnostic figures. |
+| `diagnostics.py` | v007 campaign loading, joint fits, and the standard diagnostic figures. `load_v007_data` is **frozen**: `Selection.load_bundle` supersedes it for new work, but v007 is withdrawn and ~35 call sites in `data-analysis/notebooks/arp/marjum-2026-07/` published numbers out of exactly that code path. Keep it working, do not build on it. |
 
 ## Recent changes
 
+- 2026-09-17 (`agent:eigsep-67`): marked `diagnostics.load_v007_data`
+  frozen rather than migrating it onto the new `eigsep_data.bundle`
+  loader (Aaron's call) -- v007 is withdrawn and its callers' published
+  numbers came from this code path.
 - 2026-09-15 (`software-engineer`): added this file (README-convention
   retrofit, fleet-wide consolidation pass) — the B5 promotion itself hadn't
   had one until now.
