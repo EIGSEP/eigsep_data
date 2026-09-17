@@ -71,6 +71,9 @@ vis = [
     "jupyterlab",
     "jupyterlab-vim",
     "ipympl",
+    # browse.StateBrowser's controls; imported lazily, so the module
+    # itself works without it.
+    "ipywidgets",
 ]
 dev = [
     "pytest",
@@ -98,6 +101,9 @@ where = ["src"]
 
 [tool.setuptools.dynamic]
 version = {attr = "eigsep_data.__version__"}
+
+[tool.pytest.ini_options]
+pythonpath = ["tests"]
 
 [tool.black]
 line-length = 79
