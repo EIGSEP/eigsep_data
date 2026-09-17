@@ -47,14 +47,57 @@ def _records_to_array(records, fields, n):
     return out[:, 0] if len(fields) == 1 else out
 
 
-def load_v007_data(data_path):
-    """Load v007 metadata and baseline-subtracted TX comb channels."""
+COMB_BAND = (480, 800)
+COMB_MIN_TONES = 20
+
+
+def comb_present(spectrum, band=COMB_BAND, min_tones=COMB_MIN_TONES,
+                 snr=20.0):
+    """True if *a* comb is on in this spectrum, whatever its spacing.
+
+    Counts channels whose adjacent-channel second difference stands more than
+    ``snr`` MADs above the band's continuum, assuming no particular spacing.
+    Measured separation on the 07-17/18 beam scan is clean -- comb-on files
+    score 29-45, comb-off files 0-16.
+
+    WARNING: this does not identify *which* comb, and in the beam-scan window
+    the answer is not the one you want.  Across all 227 files of 07-17 18:51 ->
+    07-18 03:22 on input 4, the only comb present is the digital self-comb at
+    250/128 MHz (8.000 channels, locked to the channel grid); the transmitter
+    comb is absent everywhere.  Use ``tx_state_detector.py`` to tell them apart.
+    """
+    lo, hi = band
+    spectrum = np.asarray(spectrum, float)
+    second = spectrum[1:-1] - 0.5 * (spectrum[:-2] + spectrum[2:])
+    band_values = second[lo - 1:hi - 1]
+    mad = 1.4826 * np.median(np.abs(band_values - np.median(band_values)))
+    return int(np.sum(band_values > snr * max(mad, 1e-30))) >= min_tones
+
+
+def load_v007_data(data_path, require_comb=True, start=-185, stop=-150):
+    """Load v007 metadata and baseline-subtracted comb channels.
+
+    *** The comb in this slice is NOT the transmitter. ***  Measured across all
+    227 beam-scan files on input 4, the transmitter comb (1.000 MHz, offset
+    ~4.03 channels from DC) is absent, and the comb these channels carry is the
+    digital self-comb at 250/128 MHz -- 8.000 channels exactly, phase-locked to
+    the channel grid, i.e. an ADC-clock subharmonic.  A fit built on this slice
+    measures the antenna's response to our own radiated electronics, not a beam
+    toward the ridge transmitter.  See ``tx_state_detector.py``.
+
+    ``require_comb`` drops spectra from files where that comb is off.  Three of
+    the 35 files in the default slice are comb-off, and they are *not* caught by
+    the existing flagging, because a comb-off sample is small rather than a
+    large excursion.  Including them shifts the fitted heading by 10.6 deg.
+    Pass False only to reproduce older results.
+    """
     import glob
     from eigsep_observing import io
 
-    files = sorted(glob.glob(str(Path(data_path) / "*.h5")))[-185:-150]
+    files = sorted(glob.glob(str(Path(data_path) / "*.h5")))[start:stop]
     if not files:
         raise ValueError(f"No HDF5 files found in {data_path}")
+    comb_off_files = []
     n = len(files) * 240
     accel = np.zeros((n, 3), dtype=np.float32)
     pot = np.zeros(n, dtype=np.float32)
@@ -75,6 +118,12 @@ def load_v007_data(data_path):
         azm[sl], elm[sl] = _records_to_array(
             metadata.get("motor"), ["az_pos", "el_pos"], nt).T
         auto = np.asarray(dat["4"], float)
+        if freqs is None:
+            freqs = np.asarray(header["freqs"])
+        if require_comb and not comb_present(np.median(auto, axis=0)):
+            comb_off_files.append(Path(filename).name)
+            times[sl] = 0.0          # the loader's existing invalid sentinel
+            continue
         measured_tx[sl, 1:-1] = auto[:, 1:-1] - 0.5 * (
             auto[:, :-2] + auto[:, 2:])
         bandwidth_hz = abs(float(header["freqs"][1] - header["freqs"][0])) * 1e6
@@ -83,13 +132,14 @@ def load_v007_data(data_path):
         measured_sigma[sl, 1:-1] = radiometer_difference_sigma(
             auto[:, 1:-1], auto[:, :-2], auto[:, 2:],
             bandwidth_hz, integration_s)
-        if freqs is None:
-            freqs = np.asarray(header["freqs"])
+    if comb_off_files:
+        print(f"load_v007_data: dropped {len(comb_off_files)} comb-off file(s) "
+              f"of {len(files)}: {', '.join(comb_off_files)}")
     return {
         "files": files, "times": times, "accel": accel, "pot": pot,
         "az_deg": azm * MOTOR_CAL, "el_deg": elm * MOTOR_CAL,
         "measured_tx": measured_tx, "measured_sigma": measured_sigma,
-        "freqs": freqs,
+        "freqs": freqs, "comb_off_files": comb_off_files,
     }
 
 
