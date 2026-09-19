@@ -41,7 +41,6 @@ _SUBMODULES = {
     "products",
     "quicklook",
     "rfi",
-    "s11",
     "sim",
     "sph_fit",
 }
@@ -56,8 +55,6 @@ _ATTRS = {
     "ImuDataset": "imu",
     "ImuSnapshot": "imu",
     "MetadataIndex": "index",
-    "RawS11": "s11",
-    "S11": "s11",
     "Selection": "index",
     "format_time": "clock",
     "to_unix_time": "clock",
