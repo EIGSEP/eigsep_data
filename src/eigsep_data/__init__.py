@@ -34,6 +34,7 @@ _SUBMODULES = {
     "clock",
     "data",
     "flagging",
+    "geometry_release",
     "hpm",
     "imu",
     "index",

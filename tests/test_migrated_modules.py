@@ -133,3 +133,44 @@ def test_detect_combs_is_known_broken():
     freqs = np.linspace(45.0, 235.0, 1024)
     with pytest.raises(NameError, match="CHANNEL_LOCKED_COMBS"):
         detectors.detect_combs(np.zeros(1024), freqs)
+
+
+class TestGeometryRelease:
+    """Release publishing resolves both roots at call time."""
+
+    def test_imports_unconfigured(self):
+        out = subprocess.run(
+            [sys.executable, "-c", "import eigsep_data.geometry_release"],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        assert out.returncode == 0, out.stderr
+
+    def test_terrain_defaults_beside_the_campaign(self, campaign_dir):
+        from eigsep_data import geometry_release as gr
+
+        paths.set_campaign_root(campaign_dir)
+        assert gr._campaign() == campaign_dir
+        assert gr._workspace() == campaign_dir.parent
+        assert gr._terrain() == campaign_dir.parent / "terrain"
+        assert gr._fit_root() == campaign_dir / "imgs" / "fits"
+
+    def test_terrain_env_override(self, campaign_dir, tmp_path, monkeypatch):
+        from eigsep_data import geometry_release as gr
+
+        paths.set_campaign_root(campaign_dir)
+        monkeypatch.setenv("EIGSEP_TERRAIN_ROOT", str(tmp_path / "elsewhere"))
+        assert gr._terrain() == tmp_path / "elsewhere"
+
+    def test_workspace_is_the_campaign_parent(self, campaign_dir):
+        """Release provenance is recorded relative to this.
+
+        v0001 recorded workspace-relative source paths; this must keep
+        meaning the same thing or a later release stops comparing.
+        """
+        from eigsep_data import geometry_release as gr
+
+        paths.set_campaign_root(campaign_dir)
+        src = campaign_dir.parent / "terrain" / "meta.json"
+        assert gr.relative(src) == "terrain/meta.json"
