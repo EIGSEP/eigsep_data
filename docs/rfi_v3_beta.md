@@ -7,6 +7,23 @@ in coherent emission. Stable coherent structure is absorbed by a robust,
 time-smooth cross background rather than being flagged solely because its
 absolute coherence is bright.
 
+The background model combines two jointly fitted components. The original
+50 ns frequency by 1 mHz time DPSS basis describes the continuum across the
+full analysis band. A second, 300 ns frequency basis covers 35--88 MHz and has
+one constant-in-time coefficient per spectral mode. It follows stable
+low-frequency structure that the broad continuum basis cannot represent,
+without giving narrow structure independent freedom in every integration.
+The correction is tapered over 5 MHz at both band edges and orthogonalized
+against the original frequency basis. Design support and ridge-prior
+diagnostics are calculated for the complete combined design.
+
+The corresponding `RFIConfig` fields are
+`spectral_correction_halfwidth_s`, `spectral_correction_band_mhz`,
+`spectral_correction_taper_mhz`, and
+`spectral_correction_svd_cutoff`. Set
+`spectral_correction_halfwidth_s=0` to disable the correction for a baseline
+comparison.
+
 This interface is beta. Name both products explicitly as `flags@v3-beta` and
 `smooth_model@v3-beta`; no default product version is implied by the readers.
 

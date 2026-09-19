@@ -77,6 +77,10 @@ class RFIConfig:
     tested_band_mhz: tuple[float, float] = (35.0, 235.0)
     sky_state: str = "RFANT"
     freq_halfwidth_s: float = 50e-9
+    spectral_correction_halfwidth_s: float = 300e-9
+    spectral_correction_band_mhz: tuple[float, float] = (35.0, 88.0)
+    spectral_correction_taper_mhz: float = 5.0
+    spectral_correction_svd_cutoff: float = 1e-8
     time_halfwidth_hz: float = 1e-3
     eigenvalue_cutoff: float = 1e-12
     fit_clip: float = 8.0
@@ -173,45 +177,105 @@ class _TensorFit:
         baseline = np.nan_to_num(baseline, nan=1e4)
         self.scale = np.maximum(median_filter(baseline, size=31), 1e4)
         self.qf = np.linalg.qr(af / self.scale[:, None])[0]
-        self.shape = (self.qt.shape[1], self.qf.shape[1])
         self.config = config
+        self.cross_qt = self.qt.copy()
+        base_nt, base_nf = self.qt.shape[1], self.qf.shape[1]
+        extra = self._spectral_correction_modes(freqs)
+        if extra.shape[1]:
+            constant = np.ones(len(times)) / np.sqrt(len(times))
+            self.qt = np.column_stack([self.qt, constant])
+            self.qf = np.column_stack([self.qf, extra])
+        self.shape = (self.qt.shape[1], self.qf.shape[1])
+        self.active_mask = np.zeros(self.shape, dtype=bool)
+        self.active_mask[:base_nt, :base_nf] = True
+        if extra.shape[1]:
+            self.active_mask[base_nt, base_nf:] = True
+        self.active = np.flatnonzero(self.active_mask.ravel())
+        self.ncoeff = len(self.active)
+        self.stationary_frequency_modes = extra.shape[1]
         self.history = []
+
+    def _spectral_correction_modes(self, freqs):
+        config = self.config
+        width = config.spectral_correction_halfwidth_s
+        lo, hi = config.spectral_correction_band_mhz
+        selected = (freqs >= lo) & (freqs < hi)
+        if width <= 0 or selected.sum() < 3:
+            return np.empty((len(freqs), 0))
+        modes = dpss_operator(
+            freqs[selected] * 1e6,
+            [0],
+            [width],
+            eigenval_cutoff=[config.eigenvalue_cutoff],
+        )[0].real
+        taper_width = config.spectral_correction_taper_mhz
+        if taper_width > 0:
+            edge = np.minimum(
+                np.clip((freqs[selected] - lo) / taper_width, 0, 1),
+                np.clip((hi - freqs[selected]) / taper_width, 0, 1),
+            )
+            modes *= np.sin(np.pi * edge / 2)[:, None] ** 2
+        extra = np.zeros((len(freqs), modes.shape[1]))
+        extra[selected] = modes / self.scale[selected, None]
+        for _ in range(2):
+            extra -= self.qf @ (self.qf.T @ extra)
+        left, values, _ = np.linalg.svd(extra, full_matrices=False)
+        if not len(values) or values[0] == 0:
+            return np.empty((len(freqs), 0))
+        keep = values > values[0] * config.spectral_correction_svd_cutoff
+        return left[:, keep]
+
+    def _expand(self, coefficients):
+        full = np.zeros(np.prod(self.shape))
+        full[self.active] = coefficients
+        return full.reshape(self.shape)
 
     def solve(self, data, keep):
         started = time.perf_counter()
         qt, qf = self.qt, self.qf
         weights = np.asarray(keep, dtype=float)
-        if weights.sum() <= np.prod(self.shape):
+        if weights.sum() <= self.ncoeff:
             raise ValueError(
                 "insufficient sky samples for the supported-DPSS fit: "
-                f"{int(weights.sum())} samples for {np.prod(self.shape)} "
+                f"{int(weights.sum())} samples for {self.ncoeff} "
                 "coefficients"
             )
         y = np.where(keep, data / self.scale, 0.0)
-        rhs = qt.T @ y @ qf
+        rhs = (qt.T @ y @ qf).ravel()[self.active]
         ridge = self.config.ridge
 
-        def matvec(a):
-            a = a.reshape(self.shape)
-            return (
-                qt.T @ (weights * (qt @ a @ qf.T)) @ qf + ridge * a
-            ).ravel()
+        def matvec(coefficients):
+            block = self._expand(coefficients)
+            normal = qt.T @ (weights * (qt @ block @ qf.T)) @ qf
+            return normal.ravel()[self.active] + ridge * coefficients
 
-        op = LinearOperator((rhs.size, rhs.size), matvec=matvec, dtype=float)
-        ct = cho_factor(
-            qt.T @ (weights.mean(1)[:, None] * qt) / weights.mean()
-            + ridge * np.eye(self.shape[0])
+        op = LinearOperator(
+            (self.ncoeff, self.ncoeff), matvec=matvec, dtype=float
         )
-        cf = cho_factor(
-            qf.T @ (weights.mean(0)[:, None] * qf)
-            + ridge * np.eye(self.shape[1])
-        )
+        if self.stationary_frequency_modes:
+            diagonal = ((qt**2).T @ weights @ (qf**2)).ravel()[
+                self.active
+            ] + ridge
+            pre = LinearOperator(
+                op.shape, matvec=lambda value: value / diagonal, dtype=float
+            )
+            factorizations = 0
+        else:
+            ct = cho_factor(
+                qt.T @ (weights.mean(1)[:, None] * qt) / weights.mean()
+                + ridge * np.eye(self.shape[0])
+            )
+            cf = cho_factor(
+                qf.T @ (weights.mean(0)[:, None] * qf)
+                + ridge * np.eye(self.shape[1])
+            )
 
-        def precondition(a):
-            block = cho_solve(ct, a.reshape(self.shape))
-            return cho_solve(cf, block.T).T.ravel()
+            def precondition(value):
+                block = cho_solve(ct, value.reshape(self.shape))
+                return cho_solve(cf, block.T).T.ravel()
 
-        pre = LinearOperator(op.shape, matvec=precondition, dtype=float)
+            pre = LinearOperator(op.shape, matvec=precondition, dtype=float)
+            factorizations = 2
         iterations = []
         coeff, info = cg(
             op,
@@ -229,15 +293,17 @@ class _TensorFit:
             "iterations": len(iterations),
             "info": int(info),
             "relative_normal_residual": float(relative),
-            "factorizations": 2,
+            "factorizations": factorizations,
             "kept_fraction": float(weights.mean()),
+            "coefficients": self.ncoeff,
+            "stationary_frequency_modes": self.stationary_frequency_modes,
         }
         self.history.append(record)
         if info != 0:
             raise RuntimeError(
                 f"DPSS conjugate-gradient solve failed: {record}"
             )
-        return (qt @ coeff.reshape(self.shape) @ qf.T) * self.scale
+        return (qt @ self._expand(coeff) @ qf.T) * self.scale
 
 
 def residual_z(data, model, normalization):
@@ -277,9 +343,11 @@ def _support(solver, keep):
     nt, nf = solver.shape
     tt = np.einsum("ta,tb->abt", qt, qt).reshape(nt * nt, -1)
     moments = (tt @ keep.astype(float)).reshape(nt, nt, -1)
-    info = np.einsum(
+    full_info = np.einsum(
         "abf,fi,fj->aibj", moments, qf, qf, optimize=True
     ).reshape(nt * nf, nt * nf)
+    active = np.ix_(solver.active, solver.active)
+    info = full_info[active]
     values, vectors = eigh((info + info.T) * 0.5)
     values = np.maximum(values, 0)
     ridge = solver.config.ridge
@@ -287,9 +355,11 @@ def _support(solver, keep):
     inverse2 = (vectors / (values + ridge) ** 2) @ vectors.T
 
     def diagonal(covariance):
+        full = np.zeros((nt * nf, nt * nf))
+        full[active] = covariance
         fc = np.einsum(
             "aibj,fi,fj->abf",
-            covariance.reshape(nt, nf, nt, nf),
+            full.reshape(nt, nf, nt, nf),
             qf,
             qf,
             optimize=True,
@@ -297,7 +367,7 @@ def _support(solver, keep):
         return tt.T @ fc.reshape(nt * nt, -1)
 
     variance = np.maximum(diagonal(inverse), 1e-30)
-    nominal = (qt**2).sum(1)[:, None] * (qf**2).sum(1)[None, :]
+    nominal = (qt**2) @ solver.active_mask.astype(float) @ (qf**2).T
     inflation = np.sqrt(variance / nominal)
     prior = np.clip(ridge * diagonal(inverse2) / variance, 0, 1)
     return inflation, prior, time.perf_counter() - started
@@ -502,7 +572,7 @@ def _one_segment(data, ground, cross, times, freqs, dt, sky, config):
         data, reference, solver, normalization, config
     )
     cross_model, cross_score, cross_stats = _cross_background(
-        cross_z, solver.qt, reference, config
+        cross_z, solver.cross_qt, reference, config
     )
     keep = robust_keep
     refit_trace = []

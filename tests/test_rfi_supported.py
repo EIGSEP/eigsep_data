@@ -13,6 +13,8 @@ from eigsep_data.rfi_supported import (
     BIT_BY_REASON,
     RFIConfig,
     RFIResult,
+    _support,
+    _TensorFit,
     encode_reasons,
     flag_arrays,
     load_selection_inputs,
@@ -20,6 +22,76 @@ from eigsep_data.rfi_supported import (
 )
 
 from conftest import write_corr_file
+
+
+def test_sparse_tensor_solver_and_support_match_dense_design():
+    rng = np.random.default_rng(912)
+    solver = _TensorFit.__new__(_TensorFit)
+    solver.config = RFIConfig()
+    solver.history = []
+    solver.qt = np.linalg.qr(rng.normal(size=(31, 4)))[0]
+    solver.qf = np.linalg.qr(rng.normal(size=(27, 6)))[0]
+    solver.scale = np.ones(27)
+    solver.shape = (4, 6)
+    solver.active_mask = np.zeros(solver.shape, dtype=bool)
+    solver.active_mask[:, :3] = True
+    solver.active_mask[0, 3:] = True
+    solver.active = np.flatnonzero(solver.active_mask.ravel())
+    solver.ncoeff = len(solver.active)
+    solver.stationary_frequency_modes = 3
+
+    data = rng.normal(size=(31, 27))
+    keep = rng.random(data.shape) > 0.35
+    prediction = solver.solve(data, keep)
+    design = np.einsum("ta,fb->tfab", solver.qt, solver.qf).reshape(
+        data.size, -1
+    )[:, solver.active]
+    normal = design[keep.ravel()].T @ design[keep.ravel()]
+    inverse = np.linalg.inv(
+        normal + solver.config.ridge * np.eye(solver.ncoeff)
+    )
+    coefficients = inverse @ (design[keep.ravel()].T @ data[keep])
+    np.testing.assert_allclose(
+        prediction, (design @ coefficients).reshape(data.shape), atol=1e-7
+    )
+
+    inflation, _prior, _seconds = _support(solver, keep)
+    expected = np.sqrt(
+        np.einsum("ni,ij,nj->n", design, inverse, design)
+        / np.sum(design**2, axis=1)
+    ).reshape(data.shape)
+    np.testing.assert_allclose(inflation, expected, rtol=1e-8)
+
+
+def test_stationary_spectral_correction_fits_broad_low_band_structure():
+    times = np.linspace(0, 1200, 100)
+    freqs = np.linspace(35, 235, 256, endpoint=False)
+    smooth = (
+        1e6
+        * (1 + 0.12 * np.cos(2 * np.pi * freqs[None, :] / 150))
+        * (1 + 0.02 * np.cos(2 * np.pi * times[:, None] / 1800))
+    )
+    truth = smooth * (
+        1 + 0.05 * np.exp(-0.5 * ((freqs[None, :] - 60) / 4) ** 2)
+    )
+    keep = np.ones_like(truth, dtype=bool)
+    without = _TensorFit(
+        times,
+        freqs,
+        truth,
+        replace(RFIConfig(), spectral_correction_halfwidth_s=0),
+    ).solve(truth, keep)
+    solver = _TensorFit(times, freqs, truth, RFIConfig())
+    corrected = solver.solve(truth, keep)
+    low = (freqs >= 50) & (freqs < 70)
+    baseline_error = np.sqrt(
+        np.mean((without[:, low] / truth[:, low] - 1) ** 2)
+    )
+    corrected_error = np.sqrt(
+        np.mean((corrected[:, low] / truth[:, low] - 1) ** 2)
+    )
+    assert solver.stationary_frequency_modes > 0
+    assert corrected_error < baseline_error / 20
 
 
 def _synthetic():
