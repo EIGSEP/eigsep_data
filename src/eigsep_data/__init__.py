@@ -41,6 +41,7 @@ _SUBMODULES = {
     "products",
     "quicklook",
     "rfi",
+    "rfi_supported",
     "s11",
     "sim",
     "sph_fit",
