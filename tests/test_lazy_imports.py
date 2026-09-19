@@ -30,8 +30,6 @@ class TestNamesStillResolve:
             "Bundle",
             "Campaign",
             "load_bundle",
-            "S11",
-            "RawS11",
             "ImuCalibrator",
             "ImuDataset",
             "ImuSnapshot",

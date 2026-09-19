@@ -67,8 +67,6 @@ _ATTRS = {
     "campaign_data_dir": "paths",
     "get_campaign_root": "paths",
     "set_campaign_root": "paths",
-    "RawS11": "s11",
-    "S11": "s11",
     "Selection": "index",
     "format_time": "clock",
     "to_unix_time": "clock",
