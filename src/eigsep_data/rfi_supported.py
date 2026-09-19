@@ -736,24 +736,23 @@ def flag_arrays(
     )
 
 
-def run_selection(
+def load_selection_inputs(
     selection,
     *,
-    air_key="4",
-    ground_key="0",
-    cross_key="04",
+    air_antenna="box-air",
+    ground_antenna="box-gnd",
     config=None,
 ):
-    """Load three literal correlator keys from a Selection and flag them."""
+    """Load physical antennas, resolving their input keys in every file."""
     config = RFIConfig() if config is None else config
     bundles = {
         name: selection.load_bundle(
-            key=key, band_mhz=config.band_mhz, missing="raise"
+            antenna=antenna, band_mhz=config.band_mhz, missing="raise"
         )
-        for name, key in {
-            "air": air_key,
-            "ground": ground_key,
-            "cross": cross_key,
+        for name, antenna in {
+            "air": air_antenna,
+            "ground": ground_antenna,
+            "cross": (ground_antenna, air_antenna),
         }.items()
     }
     air = bundles["air"]
@@ -768,6 +767,25 @@ def run_selection(
             raise ValueError(
                 f"{name} file/row keys do not align with the air auto"
             )
+    return bundles
+
+
+def run_selection(
+    selection,
+    *,
+    air_antenna="box-air",
+    ground_antenna="box-gnd",
+    config=None,
+):
+    """Resolve physical antennas per file and run supported-DPSS flagging."""
+    config = RFIConfig() if config is None else config
+    bundles = load_selection_inputs(
+        selection,
+        air_antenna=air_antenna,
+        ground_antenna=ground_antenna,
+        config=config,
+    )
+    air = bundles["air"]
     if "rfswitch" not in air.meta or "integration_time" not in air.meta:
         raise ValueError(
             "selection metadata lacks rfswitch or integration_time"
@@ -783,11 +801,23 @@ def run_selection(
         config=config,
         meta=air.meta.copy(),
     )
-    result.diagnostics["keys"] = {
-        "air": str(air_key),
-        "ground": str(ground_key),
-        "cross": str(cross_key),
+    result.diagnostics["antennas"] = {
+        "air": str(air_antenna),
+        "ground": str(ground_antenna),
     }
+    resolved = {}
+    for fname in air.meta.file.unique():
+        resolved[fname] = {}
+        for name, bundle in bundles.items():
+            rows = bundle.meta.file == fname
+            keys = bundle.meta.loc[rows, "input_key"].unique().tolist()
+            resolved[fname][name] = str(keys[0])
+            if name == "cross":
+                orientations = (
+                    bundle.meta.loc[rows, "conjugated"].astype(bool).unique()
+                )
+                resolved[fname]["cross_conjugated"] = bool(orientations[0])
+    result.diagnostics["resolved_inputs"] = resolved
     return result
 
 
@@ -840,10 +870,23 @@ def _atomic_h5_update(path, update):
             temporary.unlink()
 
 
-def _whole_files(result, campaign_root, input_key):
+def _input_key(group):
+    if "input_key" not in group:
+        raise ValueError(
+            "writing requires per-row input_key metadata from "
+            "load_bundle(antenna=...)"
+        )
+    keys = group.input_key.astype(str).unique()
+    if len(keys) != 1:
+        raise ValueError(f"one raw file resolved to multiple air keys: {keys}")
+    return keys[0]
+
+
+def _whole_files(result, campaign_root):
     if result.meta is None:
         raise ValueError("writing requires Selection metadata")
     for fname, group in result.meta.groupby("file", sort=False):
+        input_key = _input_key(group)
         rows = group.row.to_numpy(dtype=int)
         source = Path(campaign_root) / "data" / fname
         with h5py.File(source, "r") as h5:
@@ -855,11 +898,10 @@ def _whole_files(result, campaign_root, input_key):
             )
 
 
-def _preflight_writes(
-    result, root, input_key, flags_version, model_version, overwrite
-):
+def _preflight_writes(result, root, flags_version, model_version, overwrite):
     """Refuse incompatible/existing payloads before changing any file."""
-    for fname in result.meta.file.unique():
+    for fname, rows in result.meta.groupby("file", sort=False):
+        input_key = _input_key(rows)
         day_path = root / "flags" / flags_version / f"flags_{fname[5:13]}.h5"
         if day_path.exists():
             with h5py.File(day_path, "r") as h5:
@@ -886,7 +928,6 @@ def write_products(
     result,
     campaign_root,
     *,
-    input_key="4",
     flags_version=DEFAULT_VERSION,
     model_version=DEFAULT_VERSION,
     overwrite=False,
@@ -898,10 +939,8 @@ def write_products(
     those hashes back to the full parameter set and source file.
     """
     root = Path(campaign_root).resolve()
-    _whole_files(result, root, input_key)
-    _preflight_writes(
-        result, root, input_key, flags_version, model_version, overwrite
-    )
+    _whole_files(result, root)
+    _preflight_writes(result, root, flags_version, model_version, overwrite)
     config = asdict(result.config)
     config_json = json.dumps(_jsonable(config), sort_keys=True)
     parameter_hash = hashlib.sha256(config_json.encode()).hexdigest()
@@ -910,6 +949,7 @@ def write_products(
     flags_root = root / "flags" / flags_version
     model_root = root / "derived" / "smooth_model" / model_version
     for fname, group in result.meta.groupby("file", sort=False):
+        input_key = _input_key(group)
         # Bundle metadata normally has a RangeIndex. Resolve by file/row to
         # keep the writer correct if a caller preserved another index.
         positions = np.flatnonzero(result.meta.file.to_numpy() == fname)

@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 
 from eigsep_data.bundle import Campaign
+from eigsep_data import MetadataIndex
 from eigsep_data.products import get
 from eigsep_data.rfi_supported import (
     BIT_BY_REASON,
@@ -14,8 +15,11 @@ from eigsep_data.rfi_supported import (
     RFIResult,
     encode_reasons,
     flag_arrays,
+    load_selection_inputs,
     write_products,
 )
+
+from conftest import write_corr_file
 
 
 def _synthetic():
@@ -93,6 +97,47 @@ def test_encode_reasons_allows_overlapping_uint16_bits():
     assert flags[0, 1] == (1 << 2) | (1 << 5)
 
 
+def test_selection_resolves_antennas_and_cross_orientation_per_file(tmp_path):
+    data = tmp_path / "data"
+    data.mkdir()
+    names = ["corr_20260716_000000Z.h5", "corr_20260716_000100Z.h5"]
+    mappings = [
+        {"0": "box-gnd", "2": "box-air"},
+        {"0": "box-air", "2": "box-gnd"},
+    ]
+    for i, (name, mapping) in enumerate(zip(names, mappings)):
+        write_corr_file(
+            data / name,
+            ntimes=8,
+            sync_time=1.7843e9 + 100 * i,
+            keys=("0", "2", "02"),
+            input_to_ant=mapping,
+            rfswitch=["RFANT"] * 8,
+            seed=i,
+        )
+    selection = MetadataIndex(data, cache=False).select()
+    bundles = load_selection_inputs(selection)
+    for bundle, expected in (
+        (bundles["air"], ["2", "0"]),
+        (bundles["ground"], ["0", "2"]),
+        (bundles["cross"], ["02", "02"]),
+    ):
+        resolved = [
+            bundle.meta.loc[bundle.meta.file == name, "input_key"].iloc[0]
+            for name in names
+        ]
+        assert resolved == expected
+    orientations = [
+        bool(
+            bundles["cross"]
+            .meta.loc[bundles["cross"].meta.file == name, "conjugated"]
+            .iloc[0]
+        )
+        for name in names
+    ]
+    assert orientations == [False, True]
+
+
 def test_writer_round_trips_through_product_readers(tmp_path):
     root = tmp_path
     (root / "data").mkdir()
@@ -118,7 +163,9 @@ def test_writer_round_trips_through_product_readers(tmp_path):
         cross_score=np.zeros_like(model),
         freqs_mhz=freqs,
         times=np.arange(3.0),
-        meta=pd.DataFrame({"file": [fname] * 3, "row": np.arange(3)}),
+        meta=pd.DataFrame(
+            {"file": [fname] * 3, "row": np.arange(3), "input_key": "4"}
+        ),
         config=RFIConfig(),
         diagnostics={},
     )

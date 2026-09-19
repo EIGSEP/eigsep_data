@@ -56,9 +56,8 @@ def parser():
     out.add_argument("campaign", type=Path)
     select.add_argument("--files", nargs=2, metavar=("FIRST", "LAST"))
     select.add_argument("--time", nargs=2, metavar=("START", "END"))
-    out.add_argument("--air-key", default="4")
-    out.add_argument("--ground-key", default="0")
-    out.add_argument("--cross-key", default="04")
+    out.add_argument("--air-antenna", default="box-air")
+    out.add_argument("--ground-antenna", default="box-gnd")
     out.add_argument(
         "--set", action="append", default=[], metavar="NAME=VALUE"
     )
@@ -83,9 +82,8 @@ def main(argv=None):
         raise ValueError("the requested range selected no rows")
     result = run_selection(
         selection,
-        air_key=args.air_key,
-        ground_key=args.ground_key,
-        cross_key=args.cross_key,
+        air_antenna=args.air_antenna,
+        ground_antenna=args.ground_antenna,
         config=config,
     )
     summary = {
@@ -100,7 +98,6 @@ def main(argv=None):
         written = write_products(
             result,
             args.campaign,
-            input_key=args.air_key,
             flags_version=args.flags_version,
             model_version=args.model_version,
             overwrite=args.overwrite,

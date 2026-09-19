@@ -15,10 +15,13 @@ This interface is beta. Name both products explicitly as `flags@v3-beta` and
 ```sh
 eigsep-rfi-v3-beta /path/to/campaign \
   --files corr_20260716_031155Z.h5 corr_20260716_033323Z.h5 \
-  --air-key 4 --ground-key 0 --cross-key 04
+  --air-antenna box-air --ground-antenna box-gnd
 ```
 
-The endpoint filenames are inclusive. Use `--set NAME=VALUE` repeatedly to
+The endpoint filenames are inclusive. The physical antennas are resolved from
+each HDF5 file independently, including cross-correlation orientation; the
+runner does not assume that one correlator key has the same meaning throughout
+the range. Use `--set NAME=VALUE` repeatedly to
 override `RFIConfig` fields, and use `--dry-run` to run without writing. The
 writer accepts complete files only, refuses an existing input dataset unless
 `--overwrite` is supplied, and updates files atomically.
