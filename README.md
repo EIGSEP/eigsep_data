@@ -14,6 +14,36 @@ always `eigsep_data`, only the repository was called `data-analysis`.
 pip install -e .
 ```
 
+## First: say where the campaign is
+
+A campaign is a directory holding `data/` beside `flags/`, `derived/`,
+`curation/` and `imgs/`. Point the package at one once, right after
+import, and everything that needs it finds it without being handed a
+path:
+
+```python
+import eigsep_data
+
+eigsep_data.set_campaign_root("~/data/marjum-2026-07")
+```
+
+Either the campaign root or its `data/` subdirectory works — a directory
+named `data` is read as "the campaign is its parent" — so pointing at the
+data itself, which is how people describe the location out loud, does the
+right thing. A path that does not exist is refused on the spot; pass
+`must_exist=False` for a campaign not yet staged on this machine.
+
+Resolution order, most specific first: an explicit `root=` at the call
+site, then `set_campaign_root()`, then the `EIGSEP_CAMPAIGN_ROOT`
+environment variable, then whatever the caller can compute (for an index,
+its `data_dir` parent). The in-process setter deliberately outranks the
+environment variable, which is ambient and easy to forget having
+exported. `eigsep_data.get_campaign_root()` reports what is in effect and
+`campaign_data_dir()` gives the `data/` path.
+
+Nothing about the existing explicit-path API changed: passing paths
+directly still works and still wins.
+
 ## Where to start: the index
 
 Scanning reads headers and metadata only, never spectra. On the 5120-file

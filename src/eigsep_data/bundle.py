@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 
 from . import products as _products
+from .paths import get_campaign_root
 from .products.base import axis_fingerprint, locate_axis
 
 
@@ -29,10 +30,11 @@ class Campaign:
     A campaign directory: ``data/`` beside ``flags/``, ``derived/``,
     ``curation/``.
 
-    Anchored on a path the caller passes or, by default, on the parent
-    of the index's ``data_dir`` -- computed, never a hardcoded literal,
-    per ``PATH_PORTABILITY_PROPOSAL.md``. ``EIGSEP_CAMPAIGN_ROOT``
-    overrides it for a dataset mounted somewhere else.
+    Anchored on a path the caller passes or, failing that, on whatever
+    :mod:`eigsep_data.paths` resolves -- the in-process setting from
+    ``set_campaign_root()``, then ``EIGSEP_CAMPAIGN_ROOT``, then the
+    parent of the index's ``data_dir``. Computed, never a hardcoded
+    literal, per ``PATH_PORTABILITY_PROPOSAL.md``.
     """
 
     def __init__(self, root):
@@ -40,12 +42,10 @@ class Campaign:
 
     @classmethod
     def for_index(cls, index, root=None):
-        import os
-
         if root is None:
-            root = os.environ.get("EIGSEP_CAMPAIGN_ROOT")
-        if root is None:
-            root = Path(index.data_dir).resolve().parent
+            root = get_campaign_root(
+                default=Path(index.data_dir).resolve().parent
+            )
         return cls(root)
 
     def __repr__(self):
