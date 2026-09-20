@@ -67,6 +67,73 @@ def test_sparse_tensor_solver_and_support_match_dense_design():
     np.testing.assert_allclose(inflation, expected, rtol=1e-8)
 
 
+@pytest.mark.parametrize("missing_fraction", [0.0, 0.2, 0.5])
+def test_sparse_stationary_solver_converges_with_unchanged_tolerance(
+    missing_fraction,
+):
+    # Narrow, time-limited support makes the old diagonal preconditioner stall.
+    # Scattered holes also exercise a genuinely nonseparable mask.
+    from scipy.sparse.linalg import LinearOperator, cg
+
+    rng = np.random.default_rng(912)
+    times = np.linspace(0, 1200, 80)
+    freqs = np.linspace(35, 250, 256, endpoint=False)
+    data = np.broadcast_to(
+        1e6 * (1 + 0.1 * np.cos(freqs / 20)), (len(times), len(freqs))
+    ).copy()
+    data *= 1 + 0.001 * rng.normal(size=data.shape)
+    solver = _TensorFit(times, freqs, data, RFIConfig())
+    keep = np.zeros(data.shape, dtype=bool)
+    keep[20:60, 90:148] = True
+    keep &= rng.random(data.shape) >= missing_fraction
+    assert solver.stationary_frequency_modes > 0
+    assert 0.04 < keep.mean() < 0.12
+
+    design = np.einsum("ta,fb->tfab", solver.qt, solver.qf).reshape(
+        data.size, -1
+    )[:, solver.active]
+    selected = design[keep.ravel()]
+    normal = selected.T @ selected + solver.config.ridge * np.eye(
+        solver.ncoeff
+    )
+    rhs = selected.T @ (data / solver.scale)[keep]
+    # Verify this fixture catches the previous failure, at the same defaults.
+    _, old_info = cg(
+        normal,
+        rhs,
+        M=LinearOperator(normal.shape, matvec=lambda x: x / normal.diagonal()),
+        rtol=solver.config.cg_rtol,
+        maxiter=solver.config.cg_maxiter,
+    )
+    assert old_info == solver.config.cg_maxiter
+
+    prediction = solver.solve(data, keep)
+    record = solver.history[-1]
+    assert record["info"] == 0
+    assert record["relative_normal_residual"] < solver.config.cg_rtol
+    assert record["iterations"] < 50
+    assert record["factorizations"] == 1
+    expected = (design @ np.linalg.solve(normal, rhs)).reshape(data.shape)
+    # Check observed pixels tightly; unsupported extrapolation amplifies the
+    # coefficient error allowed by the unchanged normal-residual tolerance.
+    np.testing.assert_allclose(
+        (prediction / solver.scale)[keep], expected[keep], rtol=0, atol=1e-6
+    )
+    np.testing.assert_allclose(
+        prediction / solver.scale, expected, rtol=0, atol=3e-5
+    )
+    if missing_fraction == 0:
+        assert record["iterations"] <= 2
+    else:
+        # Exhausting the budget still raises: the fix does not accept a
+        # nonconverged model or silently relax the stopping tolerance.
+        solver.config = replace(solver.config, cg_maxiter=1)
+        with pytest.raises(
+            RuntimeError, match="conjugate-gradient solve failed"
+        ):
+            solver.solve(data, keep)
+
+
 def test_stationary_spectral_correction_fits_broad_low_band_structure():
     times = np.linspace(0, 1200, 100)
     freqs = np.linspace(35, 235, 256, endpoint=False)

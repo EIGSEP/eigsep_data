@@ -135,3 +135,15 @@ in-memory `model_raw` result for diagnosis, but is not published as the model.
 Selections are split at time gaps and integration-time changes, and each block
 is fitted independently. A block containing no sky-state row is returned with
 bits 0 and 7 set and a fully NaN model.
+
+The stationary spectral-correction solve uses a Cholesky preconditioner built
+from separable mask marginals, restricted to the active tensor and stationary
+coefficients. It retains coupling between those coefficients and adds the
+existing ridge after restriction. This replaces diagonal preconditioning for
+sparse support without changing the fitted objective, `cg_rtol`, `cg_maxiter`,
+parameter hash, or numerical algorithm revision. Products record the updated
+source hash; already converged products remain resume-compatible. Results need
+not be bitwise identical because the iterative solve follows a different path.
+Nonconvergence still raises; no relaxed residual threshold is used. The matrix
+is coefficient-sized (quadratic storage and cubic Cholesky cost), not a full
+time-frequency design matrix.

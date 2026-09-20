@@ -262,13 +262,24 @@ class _TensorFit:
             (self.ncoeff, self.ncoeff), matvec=matvec, dtype=float
         )
         if self.stationary_frequency_modes:
-            diagonal = ((qt**2).T @ weights @ (qf**2)).ravel()[
-                self.active
-            ] + ridge
+            # Approximate the mask by its separable time/frequency marginals.
+            # Restrict the resulting Kronecker Gram matrix to active terms:
+            # base tensor modes plus stationary spectral corrections. Keeping
+            # their off-diagonal coupling matters when support is sparse.
+            # Add the SAME ridge as the normal operator after restriction.
+            # Only a coefficient-sized matrix is built, never a pixel design.
+            gt = qt.T @ (weights.mean(1)[:, None] * qt) / weights.mean()
+            gf = qf.T @ (weights.mean(0)[:, None] * qf)
+            ti, fi = np.unravel_index(self.active, self.shape)
+            approximate = gt[ti[:, None], ti] * gf[fi[:, None], fi]
+            approximate.flat[:: self.ncoeff + 1] += ridge
+            factor = cho_factor(approximate)
             pre = LinearOperator(
-                op.shape, matvec=lambda value: value / diagonal, dtype=float
+                op.shape,
+                matvec=lambda value: cho_solve(factor, value),
+                dtype=float,
             )
-            factorizations = 0
+            factorizations = 1
         else:
             ct = cho_factor(
                 qt.T @ (weights.mean(1)[:, None] * qt) / weights.mean()
