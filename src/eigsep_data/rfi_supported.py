@@ -14,8 +14,10 @@ product layouts understood by :meth:`Selection.load_bundle`.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+import fcntl
 import hashlib
 import json
 import os
@@ -911,6 +913,13 @@ def _jsonable(value):
     return value
 
 
+def parameter_sha256(config):
+    """Stable hash used to identify a complete :class:`RFIConfig`."""
+    value = asdict(config)
+    encoded = json.dumps(_jsonable(value), sort_keys=True)
+    return hashlib.sha256(encoded.encode()).hexdigest()
+
+
 def _atomic_json(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
@@ -952,13 +961,13 @@ def _input_key(group):
     return keys[0]
 
 
-def _whole_files(result, campaign_root):
+def _whole_files(result, data_dir):
     if result.meta is None:
         raise ValueError("writing requires Selection metadata")
     for fname, group in result.meta.groupby("file", sort=False):
         input_key = _input_key(group)
         rows = group.row.to_numpy(dtype=int)
-        source = Path(campaign_root) / "data" / fname
+        source = Path(data_dir) / fname
         with h5py.File(source, "r") as h5:
             expected = np.arange(h5["data"][str(input_key)].shape[0])
         if not np.array_equal(rows, expected):
@@ -994,10 +1003,11 @@ def _preflight_writes(result, root, flags_version, model_version, overwrite):
                     raise FileExistsError(f"{model_path}:{group}")
 
 
-def write_products(
+def _write_products_unlocked(
     result,
     campaign_root,
     *,
+    data_dir=None,
     flags_version=DEFAULT_VERSION,
     model_version=DEFAULT_VERSION,
     overwrite=False,
@@ -1009,11 +1019,13 @@ def write_products(
     those hashes back to the full parameter set and source file.
     """
     root = Path(campaign_root).resolve()
-    _whole_files(result, root)
+    source_dir = (
+        root / "data" if data_dir is None else Path(data_dir).resolve()
+    )
+    _whole_files(result, source_dir)
     _preflight_writes(result, root, flags_version, model_version, overwrite)
     config = asdict(result.config)
-    config_json = json.dumps(_jsonable(config), sort_keys=True)
-    parameter_hash = hashlib.sha256(config_json.encode()).hexdigest()
+    parameter_hash = parameter_sha256(result.config)
     generated = datetime.now(timezone.utc).isoformat()
     files_record = {}
     flags_root = root / "flags" / flags_version
@@ -1023,10 +1035,12 @@ def write_products(
         # Bundle metadata normally has a RangeIndex. Resolve by file/row to
         # keep the writer correct if a caller preserved another index.
         positions = np.flatnonzero(result.meta.file.to_numpy() == fname)
-        source = root / "data" / fname
+        source = source_dir / fname
         source_hash = _sha256(source)
         files_record[fname] = {
-            "source": f"data/{fname}",
+            "source": (
+                f"data/{fname}" if source_dir == root / "data" else str(source)
+            ),
             "source_sha256": source_hash,
             "parameter_sha256": parameter_hash,
             "input_key": str(input_key),
@@ -1142,3 +1156,44 @@ def write_products(
         "files": sorted(files_record),
         "parameter_sha256": parameter_hash,
     }
+
+
+@contextmanager
+def _write_lock(path):
+    """Serialize product updates across local campaign-runner processes."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a+") as stream:
+        fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+
+def write_products(
+    result,
+    campaign_root,
+    *,
+    data_dir=None,
+    flags_version=DEFAULT_VERSION,
+    model_version=DEFAULT_VERSION,
+    overwrite=False,
+):
+    """Atomically write flags and smooth models for complete raw files.
+
+    ``data_dir`` defaults to ``campaign_root / "data"``. It may point at
+    separately mounted raw data while products are written below
+    ``campaign_root``. A POSIX advisory lock covers preflight, payload, and
+    manifest updates so campaign workers cannot lose one another's updates.
+    """
+    root = Path(campaign_root).resolve()
+    lock = root / "flags" / flags_version / ".write.lock"
+    with _write_lock(lock):
+        return _write_products_unlocked(
+            result,
+            root,
+            data_dir=data_dir,
+            flags_version=flags_version,
+            model_version=model_version,
+            overwrite=overwrite,
+        )

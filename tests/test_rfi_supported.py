@@ -1,10 +1,13 @@
 """Behavior and product-contract tests for supported-DPSS v3-beta."""
 
 from dataclasses import replace
+import json
+from pathlib import Path
 
 import h5py
 import numpy as np
 import pandas as pd
+import pytest
 
 from eigsep_data.bundle import Campaign
 from eigsep_data import MetadataIndex
@@ -92,6 +95,44 @@ def test_stationary_spectral_correction_fits_broad_low_band_structure():
     )
     assert solver.stationary_frequency_modes > 0
     assert corrected_error < baseline_error / 20
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["low_band_overflag_case1.npz", "low_band_overflag_case2.npz"],
+)
+def test_real_low_band_regressions_recover_good_data(name):
+    path = Path(__file__).parent / "data" / "rfi_v3_beta" / name
+    with np.load(path, allow_pickle=False) as fixture:
+        arguments = (
+            fixture["air"],
+            fixture["ground"],
+            fixture["cross"],
+            fixture["times"],
+            fixture["freqs_mhz"],
+            fixture["integration_times"],
+            fixture["switch_states"],
+        )
+        freqs = fixture["freqs_mhz"]
+        provenance = json.loads(str(fixture["provenance_json"]))
+    assert provenance["campaign"] == "marjum-2026-07"
+    assert provenance["selection"]["offset_s"] == 10 * 3600
+    assert all(
+        len(digest) == 64 for digest in provenance["source_sha256"].values()
+    )
+    old = flag_arrays(
+        *arguments,
+        config=replace(RFIConfig(), spectral_correction_halfwidth_s=0),
+    )
+    corrected = flag_arrays(*arguments, config=RFIConfig())
+    low = (freqs >= 50) & (freqs < 70)
+    old_retained = (~old.mask[:, low]).mean()
+    corrected_retained = (~corrected.mask[:, low]).mean()
+    old_residual = np.nanmedian(np.abs(old.residual_z[:, low]))
+    corrected_residual = np.nanmedian(np.abs(corrected.residual_z[:, low]))
+    assert corrected.support_ok[:, low].mean() > 0.99
+    assert corrected_retained > old_retained + 0.15
+    assert corrected_residual < 0.4 * old_residual
 
 
 def _synthetic():
@@ -210,12 +251,14 @@ def test_selection_resolves_antennas_and_cross_orientation_per_file(tmp_path):
     assert orientations == [False, True]
 
 
-def test_writer_round_trips_through_product_readers(tmp_path):
-    root = tmp_path
-    (root / "data").mkdir()
+@pytest.mark.parametrize("external_data", [False, True])
+def test_writer_round_trips_through_product_readers(tmp_path, external_data):
+    root = tmp_path / "campaign"
+    data_dir = tmp_path / "raw" if external_data else root / "data"
+    data_dir.mkdir(parents=True)
     fname = "corr_20260716_031155Z.h5"
     freqs = np.linspace(35, 235, 8, endpoint=False)
-    with h5py.File(root / "data" / fname, "w") as h5:
+    with h5py.File(data_dir / fname, "w") as h5:
         h5.create_group("data").create_dataset("4", data=np.ones((3, 8)))
     reasons = {name: np.zeros((3, 8), dtype=bool) for name in BIT_BY_REASON}
     reasons["positive_auto_excess"][1, 2] = True
@@ -241,7 +284,7 @@ def test_writer_round_trips_through_product_readers(tmp_path):
         config=RFIConfig(),
         diagnostics={},
     )
-    write_products(result, root)
+    write_products(result, root, data_dir=data_dir if external_data else None)
     campaign = Campaign(root)
     got_flags, got_freqs = get("flags").read_file(
         campaign, "v3-beta", fname, "4"

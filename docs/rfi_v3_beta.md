@@ -27,21 +27,48 @@ comparison.
 This interface is beta. Name both products explicitly as `flags@v3-beta` and
 `smooth_model@v3-beta`; no default product version is implied by the readers.
 
-## Running a file range
+## Planning and running a campaign
 
 ```sh
-eigsep-rfi-v3-beta /path/to/campaign \
+eigsep-rfi-v3-beta --data-dir /path/to/campaign/data \
   --files corr_20260716_031155Z.h5 corr_20260716_033323Z.h5 \
-  --air-antenna box-air --ground-antenna box-gnd
+  --plan
 ```
 
-The endpoint filenames are inclusive. The physical antennas are resolved from
-each HDF5 file independently, including cross-correlation orientation; the
-runner does not assume that one correlator key has the same meaning throughout
-the range. Use `--set NAME=VALUE` repeatedly to
-override `RFIConfig` fields, and use `--dry-run` to run without writing. The
-writer accepts complete files only, refuses an existing input dataset unless
-`--overwrite` is supplied, and updates files atomically.
+`--data-dir` can be omitted when `eigsep_data.set_campaign_root(...)` or
+`EIGSEP_CAMPAIGN_ROOT` configures the campaign. The older positional campaign
+root remains accepted. A separately mounted raw directory defaults to writing
+`flags/` and `derived/` beside that directory; use `--output-root` to put those
+products elsewhere.
+
+The selection is explicit: use inclusive `--files` endpoints, a `--time`
+range, or `--all`. `--plan` indexes and prints every pending complete-file
+batch without fitting or writing. Inspect that JSON on the processing machine,
+then run, for example:
+
+```sh
+eigsep-rfi-v3-beta --data-dir /data/marjum-2026-07/data --all \
+  --output-root /data/marjum-2026-07 \
+  --flags-version v3-beta --model-version v3-beta \
+  --files-per-batch 10 --workers 6 --resume
+```
+
+Files are batched only within one UTC filename day, contiguous visit,
+integration time, filter phase, and raw-key set. One process owns all batches
+for a day, while different days run in parallel. BLAS thread counts default to
+one per process to avoid oversubscription. The writer also takes a POSIX file
+lock around its atomic payload and manifest updates, so worker completion order
+cannot lose records.
+
+The physical antennas are resolved from each HDF5 file independently,
+including cross-correlation orientation; the runner does not assume that one
+correlator key has the same meaning throughout the range. Use `--set
+NAME=VALUE` repeatedly to override `RFIConfig` fields. `--dry-run` fits without
+writing. `--resume` skips only files recorded in both product manifests with
+the same complete parameter hash; partial or mismatched products stop with an
+error. `--overwrite` is the explicit alternative. Time selections expand the
+two endpoint files to their complete row sets because published companions are
+whole-file products.
 
 The runner writes the product layouts already consumed by
 `Selection.load_bundle`:
