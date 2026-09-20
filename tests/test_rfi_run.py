@@ -11,7 +11,11 @@ from eigsep_data.rfi_run import (
     build_batches,
     resolve_locations,
 )
-from eigsep_data.rfi_supported import RFIConfig, parameter_sha256
+from eigsep_data.rfi_supported import (
+    RFIConfig,
+    algorithm_source_sha256,
+    parameter_sha256,
+)
 
 
 def _selection():
@@ -67,15 +71,28 @@ def test_explicit_data_dir_defaults_products_to_its_parent(tmp_path):
 def test_resume_requires_both_products_with_matching_parameters(tmp_path):
     fname = "corr_20260716_000000Z.h5"
     digest = parameter_sha256(RFIConfig())
-    record = {fname: {"parameter_sha256": digest}}
+    algorithm = algorithm_source_sha256()
+    record = {
+        fname: {
+            "parameter_sha256": digest,
+            "algorithm_source_sha256": algorithm,
+        }
+    }
     for path in (
         tmp_path / "flags" / "v3-beta" / "manifest.json",
         tmp_path / "derived" / "smooth_model" / "v3-beta" / "manifest.json",
     ):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"files": record}))
-    assert _resume_files(tmp_path, "v3-beta", "v3-beta", [fname], digest) == {
-        fname
-    }
+    assert _resume_files(
+        tmp_path, "v3-beta", "v3-beta", [fname], digest, algorithm
+    ) == {fname}
     with pytest.raises(ValueError, match="another parameter set"):
-        _resume_files(tmp_path, "v3-beta", "v3-beta", [fname], "different")
+        _resume_files(
+            tmp_path,
+            "v3-beta",
+            "v3-beta",
+            [fname],
+            "different",
+            algorithm,
+        )

@@ -920,6 +920,11 @@ def parameter_sha256(config):
     return hashlib.sha256(encoded.encode()).hexdigest()
 
 
+def algorithm_source_sha256():
+    """Hash the exact flagger source used to generate a product."""
+    return _sha256(Path(__file__).resolve())
+
+
 def _atomic_json(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
@@ -1026,6 +1031,7 @@ def _write_products_unlocked(
     _preflight_writes(result, root, flags_version, model_version, overwrite)
     config = asdict(result.config)
     parameter_hash = parameter_sha256(result.config)
+    algorithm_hash = algorithm_source_sha256()
     generated = datetime.now(timezone.utc).isoformat()
     files_record = {}
     flags_root = root / "flags" / flags_version
@@ -1043,6 +1049,7 @@ def _write_products_unlocked(
             ),
             "source_sha256": source_hash,
             "parameter_sha256": parameter_hash,
+            "algorithm_source_sha256": algorithm_hash,
             "input_key": str(input_key),
             "generated_utc": generated,
         }
@@ -1065,6 +1072,7 @@ def _write_products_unlocked(
                 key, data=result.flags[positions], compression="gzip"
             )
             dataset.attrs["parameter_sha256"] = parameter_hash
+            dataset.attrs["algorithm_source_sha256"] = algorithm_hash
             dataset.attrs["source_sha256"] = source_hash
 
         _atomic_h5_update(day_path, update_flags)
@@ -1098,6 +1106,7 @@ def _write_products_unlocked(
                 compression="gzip",
             )
             out.attrs["parameter_sha256"] = parameter_hash
+            out.attrs["algorithm_source_sha256"] = algorithm_hash
             out.attrs["source_sha256"] = source_hash
 
         _atomic_h5_update(model_path, update_model)
@@ -1140,6 +1149,7 @@ def _write_products_unlocked(
                 "version": version,
                 "status": "beta",
                 "algorithm": "supported separable DPSS v3-beta",
+                "algorithm_source_sha256": algorithm_hash,
                 "axes": {
                     "rows": "raw file integration row",
                     "frequency": "MHz",
@@ -1155,6 +1165,7 @@ def _write_products_unlocked(
         "smooth_model": model_root,
         "files": sorted(files_record),
         "parameter_sha256": parameter_hash,
+        "algorithm_source_sha256": algorithm_hash,
     }
 
 

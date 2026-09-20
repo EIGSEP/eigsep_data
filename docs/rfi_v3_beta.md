@@ -65,10 +65,10 @@ including cross-correlation orientation; the runner does not assume that one
 correlator key has the same meaning throughout the range. Use `--set
 NAME=VALUE` repeatedly to override `RFIConfig` fields. `--dry-run` fits without
 writing. `--resume` skips only files recorded in both product manifests with
-the same complete parameter hash; partial or mismatched products stop with an
-error. `--overwrite` is the explicit alternative. Time selections expand the
-two endpoint files to their complete row sets because published companions are
-whole-file products.
+the same complete parameter hash and exact flagger source hash; partial or
+mismatched products stop with an error. `--overwrite` is the explicit
+alternative. Time selections expand the two endpoint files to their complete
+row sets because published companions are whole-file products.
 
 The runner writes the product layouts already consumed by
 `Selection.load_bundle`:

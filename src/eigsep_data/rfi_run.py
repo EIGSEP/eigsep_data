@@ -31,6 +31,7 @@ from .paths import campaign_data_dir, get_campaign_root
 from .rfi_supported import (
     DEFAULT_VERSION,
     RFIConfig,
+    algorithm_source_sha256,
     parameter_sha256,
     run_selection,
     write_products,
@@ -180,7 +181,9 @@ def _read_manifest(path):
         return json.load(stream).get("files", {})
 
 
-def _resume_files(root, flags_version, model_version, wanted, config_hash):
+def _resume_files(
+    root, flags_version, model_version, wanted, config_hash, algorithm_hash
+):
     flags = _read_manifest(root / "flags" / flags_version / "manifest.json")
     models = _read_manifest(
         root / "derived" / "smooth_model" / model_version / "manifest.json"
@@ -194,6 +197,7 @@ def _resume_files(root, flags_version, model_version, wanted, config_hash):
         if all(
             record is not None
             and record.get("parameter_sha256") == config_hash
+            and record.get("algorithm_source_sha256") == algorithm_hash
             for record in pair
         ):
             completed.add(fname)
@@ -202,8 +206,9 @@ def _resume_files(root, flags_version, model_version, wanted, config_hash):
     if partial:
         preview = ", ".join(partial[:3])
         raise ValueError(
-            "--resume found partial products or another parameter set for "
-            f"{preview}; choose a new version or use --overwrite"
+            "--resume found partial products, another parameter set, or a "
+            f"different flagger source for {preview}; choose a new version "
+            "or use --overwrite"
         )
     return completed
 
@@ -330,6 +335,7 @@ def main(argv=None):
     )
     config = config_with_overrides(args.set)
     config_hash = parameter_sha256(config)
+    algorithm_hash = algorithm_source_sha256()
     index = MetadataIndex(data_dir)
     selected = _selection(index, args)
     original_files = selected.files
@@ -341,6 +347,7 @@ def main(argv=None):
             args.model_version,
             original_files,
             config_hash,
+            algorithm_hash,
         )
     pending = [name for name in original_files if name not in completed]
     if pending:
@@ -359,6 +366,7 @@ def main(argv=None):
         "flags_version": args.flags_version,
         "model_version": args.model_version,
         "parameter_sha256": config_hash,
+        "algorithm_source_sha256": algorithm_hash,
         "parameters": asdict(config),
         "selected_files": len(original_files),
         "completed_files": len(completed),

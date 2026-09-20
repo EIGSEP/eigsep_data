@@ -18,6 +18,7 @@ from eigsep_data.rfi_supported import (
     RFIResult,
     _support,
     _TensorFit,
+    algorithm_source_sha256,
     encode_reasons,
     flag_arrays,
     load_selection_inputs,
@@ -304,3 +305,10 @@ def test_writer_round_trips_through_product_readers(tmp_path, external_data):
     metadata = get("flags").bits(campaign, "v3-beta")
     assert metadata["dtype"] == "uint16"
     assert metadata["bits"][4]["name"] == "cross_change"
+    manifest = json.loads(
+        (root / "flags" / "v3-beta" / "manifest.json").read_text()
+    )
+    assert (
+        manifest["files"][fname]["algorithm_source_sha256"]
+        == algorithm_source_sha256()
+    )
