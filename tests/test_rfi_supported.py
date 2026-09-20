@@ -504,3 +504,81 @@ def test_writer_restores_real_permuted_files_to_raw_row_order(tmp_path):
                     (np.arange(nrows) % 3 != 0)[:, None], len(freqs), axis=1
                 ),
             )
+
+
+def test_insufficient_initial_samples_flags_only_affected_segment():
+    times = np.r_[np.arange(20.0), 1000 + np.arange(20.0)]
+    freqs = np.linspace(35, 235, 256, endpoint=False)
+    data = np.full((40, 256), 1e6)
+    data[:20] = 0
+    data[1, :3] = 1e6
+    states = np.full(40, "RFANT", dtype=object)
+    states[0] = "RLOAD"
+    result = flag_arrays(
+        data,
+        np.full_like(data, 1e6),
+        np.zeros_like(data, dtype=complex),
+        times,
+        freqs,
+        np.ones(40),
+        states,
+    )
+    assert result.mask[:20].all()
+    assert result.reasons["unsupported_background"][:20].all()
+    assert result.reasons["non_sky_switch_state"][0].all()
+    assert not result.reasons["non_sky_switch_state"][1:20].any()
+    assert not result.reasons["invalid_input_or_domain"][1, :3].any()
+    assert np.isnan(result.model[:20]).all()
+    assert np.isnan(result.model_raw[:20]).all()
+    assert np.isnan(result.residual_z[:20]).all()
+    assert not result.fit_keep[:20].any()
+    assert not result.support_ok[:20].any()
+    assert result.support_ok[20:].any()
+    diagnostic = result.diagnostics["segments"][0]
+    assert diagnostic["samples"] == 3
+    assert diagnostic["coefficients"] > 3
+    assert diagnostic["skipped"] == "insufficient fit samples"
+    assert diagnostic["solver"] == []
+
+
+def test_refit_exhaustion_is_unsupported_but_numerical_errors_propagate(
+    monkeypatch,
+):
+    import eigsep_data.rfi_supported as rfi
+
+    times = np.arange(20.0)
+    freqs = np.linspace(35, 235, 256, endpoint=False)
+    data = np.full((20, 256), 1e6)
+    args = (
+        data,
+        data.copy(),
+        np.zeros_like(data, dtype=complex),
+        times,
+        freqs,
+        np.ones(20),
+        np.full(20, "RFANT", dtype=object),
+    )
+    original = rfi._detect
+
+    def reject_all(*args, **kwargs):
+        reasons, z, stats = original(*args, **kwargs)
+        reasons["positive_auto_excess"][:] = True
+        return reasons, z, stats
+
+    monkeypatch.setattr(rfi, "_detect", reject_all)
+    result = flag_arrays(*args)
+    assert result.reasons["unsupported_background"].all()
+    assert not result.reasons["non_sky_switch_state"].any()
+    assert np.isnan(result.model).all()
+    diagnostic = result.diagnostics["segments"][0]
+    assert diagnostic["samples"] == 0
+    assert (
+        len(diagnostic["solver"]) > 0
+    )  # A fit existed before refit trimming.
+
+    def numerical_failure(*args, **kwargs):
+        raise RuntimeError("CG did not converge")
+
+    monkeypatch.setattr(rfi._TensorFit, "solve", numerical_failure)
+    with pytest.raises(RuntimeError, match="CG did not converge"):
+        flag_arrays(*args)

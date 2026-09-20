@@ -147,3 +147,25 @@ not be bitwise identical because the iterative solve follows a different path.
 Nonconvergence still raises; no relaxed residual threshold is used. The matrix
 is coefficient-sized (quadratic storage and cubic Cholesky cost), not a full
 time-frequency design matrix.
+
+If initial selection or subsequent robust/refit trimming leaves no more samples
+than active fit coefficients, the affected time segment is returned with bit 7
+(`unsupported_background`) set everywhere and NaN model/residual arrays.
+Switch-state and invalid-input reasons remain explicit; valid sky rows are not
+relabeled as non-sky. Diagnostics record the sample count, coefficient count,
+and completed solver history. No earlier fit is substituted after support is
+lost. Adjacent segments continue normally. Only this specific insufficient-fit
+condition is handled: CG nonconvergence and unrelated errors still raise.
+This adds outputs for previously failing segments and preserves parameters,
+numerical revision, and results of previously successful segments, including
+the established no-sky output. Existing successful products remain resumable.
+
+Bounded campaign replay validation (no product writes): batch 0,
+`corr_20260714_041043Z.h5` through `corr_20260714_041327Z.h5`, completed
+with a maximum of 127 CG iterations; batch 204, `corr_20260716_002210Z.h5`
+through `corr_20260716_004130Z.h5`, completed with a maximum of 64. Both
+met the existing 1e-8 tolerance on every solve. Batch 98,
+`corr_20260715_003217Z.h5` through `corr_20260715_004157Z.h5`, reproduced
+the 108-samples/275-coefficients exception during refitting and now returns
+an explicitly unsupported segment. These are bounded failure-case checks,
+not evidence that every campaign batch will complete.

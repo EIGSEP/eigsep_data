@@ -173,6 +173,19 @@ def _bases(times, freqs, config):
     return at, af
 
 
+class _InsufficientFitSamples(ValueError):
+    """A segment cannot constrain a background after selection or trimming."""
+
+    def __init__(self, samples, coefficients, history):
+        self.samples = samples
+        self.coefficients = coefficients
+        self.history = list(history)
+        super().__init__(
+            "insufficient sky samples for the supported-DPSS fit: "
+            f"{samples} samples for {coefficients} coefficients"
+        )
+
+
 class _TensorFit:
     def __init__(self, times, freqs, data, config):
         at, af = _bases(times, freqs, config)
@@ -244,10 +257,8 @@ class _TensorFit:
         qt, qf = self.qt, self.qf
         weights = np.asarray(keep, dtype=float)
         if weights.sum() <= self.ncoeff:
-            raise ValueError(
-                "insufficient sky samples for the supported-DPSS fit: "
-                f"{int(weights.sum())} samples for {self.ncoeff} "
-                "coefficients"
+            raise _InsufficientFitSamples(
+                int(weights.sum()), self.ncoeff, self.history
             )
         y = np.where(keep, data / self.scale, 0.0)
         rhs = (qt.T @ y @ qf).ravel()[self.active]
@@ -720,6 +731,46 @@ def _segments(times, integration_times, gap_factor):
     return [slice(int(a), int(b)) for a, b in zip(starts, stops)]
 
 
+def _unfitted_segment(
+    data, ground, cross, times, freqs, dt, sky, config, *, diagnostics
+):
+    """Represent unavailable background as explicit flags and NaNs."""
+    shape = data.shape
+    domain = (freqs >= config.tested_band_mhz[0]) & (
+        freqs < config.tested_band_mhz[1]
+    )
+    valid_input = (
+        np.isfinite(data)
+        & np.isfinite(ground)
+        & np.isfinite(cross)
+        & (data > 0)
+        & (ground > 0)
+        & domain[None, :]
+    )
+    reasons = {name: np.zeros(shape, dtype=bool) for name in BIT_BY_REASON}
+    reasons["non_sky_switch_state"] = np.broadcast_to(
+        ~sky[:, None], shape
+    ).copy()
+    # Preserve the established two-bit output for wholly non-sky segments.
+    if sky.any():
+        reasons["invalid_input_or_domain"] = ~valid_input
+    reasons["unsupported_background"][:] = True
+    return {
+        "flags": encode_reasons(reasons),
+        "model": np.full(shape, np.nan),
+        "model_raw": np.full(shape, np.nan),
+        "residual_z": np.full(shape, np.nan),
+        "support_ok": np.zeros(shape, dtype=bool),
+        "fit_keep": np.zeros(shape, dtype=bool),
+        "reasons": reasons,
+        "inflation": np.full(shape, np.inf),
+        "prior_fraction": np.ones(shape),
+        "cross_background": np.full(shape, np.nan, dtype=complex),
+        "cross_score": np.full(shape, np.nan),
+        "diagnostics": diagnostics,
+    }
+
+
 def flag_arrays(
     data,
     ground,
@@ -734,9 +785,9 @@ def flag_arrays(
 ):
     """Run v3-beta on aligned air auto, ground auto, and cross arrays.
 
-    Gaps and integration-time changes are fitted independently.  Every segment
-    must contain at least one sky row; non-sky rows remain in the output and
-    are flagged a priori.
+    Gaps and integration-time changes are fitted independently. A segment
+    with no sky rows or insufficient fit samples returns a fully flagged,
+    unavailable background. Non-sky rows are flagged a priori.
     """
     config = RFIConfig() if config is None else config
     data = np.asarray(data, dtype=float)
@@ -758,43 +809,34 @@ def flag_arrays(
     pieces = []
     diagnostics = []
     for segment in _segments(times, dt, config.gap_factor):
+        arguments = (
+            data[segment],
+            ground[segment],
+            cross[segment],
+            times[segment],
+            freqs,
+            dt[segment],
+            sky[segment],
+            config,
+        )
         if not sky[segment].any():
-            ntime = segment.stop - segment.start
-            shape = (ntime, len(freqs))
-            reasons = {
-                name: np.zeros(shape, dtype=bool) for name in BIT_BY_REASON
-            }
-            reasons["non_sky_switch_state"][:] = True
-            reasons["unsupported_background"][:] = True
-            pieces.append(
-                {
-                    "flags": encode_reasons(reasons),
-                    "model": np.full(shape, np.nan),
-                    "model_raw": np.full(shape, np.nan),
-                    "residual_z": np.full(shape, np.nan),
-                    "support_ok": np.zeros(shape, dtype=bool),
-                    "fit_keep": np.zeros(shape, dtype=bool),
-                    "reasons": reasons,
-                    "inflation": np.full(shape, np.inf),
-                    "prior_fraction": np.ones(shape),
-                    "cross_background": np.full(shape, np.nan, dtype=complex),
-                    "cross_score": np.full(shape, np.nan),
-                    "diagnostics": {"skipped": "no sky-state rows"},
-                }
+            piece = _unfitted_segment(
+                *arguments, diagnostics={"skipped": "no sky-state rows"}
             )
         else:
-            pieces.append(
-                _one_segment(
-                    data[segment],
-                    ground[segment],
-                    cross[segment],
-                    times[segment],
-                    freqs,
-                    dt[segment],
-                    sky[segment],
-                    config,
+            try:
+                piece = _one_segment(*arguments)
+            except _InsufficientFitSamples as exc:
+                piece = _unfitted_segment(
+                    *arguments,
+                    diagnostics={
+                        "skipped": "insufficient fit samples",
+                        "samples": exc.samples,
+                        "coefficients": exc.coefficients,
+                        "solver": exc.history,
+                    },
                 )
-            )
+        pieces.append(piece)
         diagnostics.append(pieces[-1]["diagnostics"])
     concatenate = (
         "flags",
