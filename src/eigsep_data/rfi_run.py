@@ -23,6 +23,9 @@ import multiprocessing
 from pathlib import Path
 import re
 import sys
+import traceback
+from datetime import datetime, timezone
+from uuid import uuid4
 
 import numpy as np
 
@@ -284,28 +287,83 @@ def _day_tasks(batches, **settings):
     ]
 
 
+def _report_failure(task, exc, *, stage, batch=None):
+    batches = task["batches"] if batch is None else [batch]
+    record = {
+        "day": task["day"],
+        "batch_ids": [item["id"] for item in batches],
+        "files": [name for item in batches for name in item["files"]],
+        "stage": stage,
+        "exception_type": type(exc).__name__,
+        "message": str(exc),
+        "traceback": traceback.format_exc(),
+        "time_utc": datetime.now(timezone.utc).isoformat(),
+        "parameter_sha256": parameter_sha256(task["config"]),
+        "parameters": asdict(task["config"]),
+        "resolution_policy_sha256": task.get("resolution_policy_hash"),
+        "data_dir": task["data_dir"],
+        "algorithm_source_sha256": algorithm_source_sha256(),
+        "resolution_policy": task["resolution_policy"],
+        "flags_version": task["flags_version"],
+        "model_version": task["model_version"],
+    }
+    print(json.dumps({"failed": record}), file=sys.stderr, flush=True)
+    if task.get("failure_report_dir"):
+        path = Path(task["failure_report_dir"]) / f"{task['day']}.jsonl"
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a") as stream:
+                stream.write(json.dumps(record) + "\n")
+                stream.flush()
+        except OSError as report_error:
+            # Preserve progress even if the output volume itself has failed.
+            print(
+                f"cannot write failure report {path}: {report_error}",
+                file=sys.stderr,
+                flush=True,
+            )
+    return record
+
+
+def _failed_day(task, exc):
+    return {
+        "day": task["day"],
+        "batches": [],
+        "failures": [_report_failure(task, exc, stage="worker")],
+    }
+
+
 def _run_day(task):
     index = MetadataIndex(Path(task["data_dir"]))
     policy = AntennaResolutionPolicy.load(task["resolution_policy"])
     summaries = []
+    failures = []
     for batch in task["batches"]:
-        selection = index.select(files=batch["files"])
-        result = run_selection(
-            selection,
-            air_antenna=task["air_antenna"],
-            ground_antenna=task["ground_antenna"],
-            config=task["config"],
-            resolution_policy=policy,
-        )
-        if not task["dry_run"]:
-            write_products(
-                result,
-                task["output_root"],
-                data_dir=task["data_dir"],
-                flags_version=task["flags_version"],
-                model_version=task["model_version"],
-                overwrite=task["overwrite"],
+        stage = "fit"
+        try:
+            selection = index.select(files=batch["files"])
+            result = run_selection(
+                selection,
+                air_antenna=task["air_antenna"],
+                ground_antenna=task["ground_antenna"],
+                config=task["config"],
+                resolution_policy=policy,
             )
+            if not task["dry_run"]:
+                stage = "write"
+                write_products(
+                    result,
+                    task["output_root"],
+                    data_dir=task["data_dir"],
+                    flags_version=task["flags_version"],
+                    model_version=task["model_version"],
+                    overwrite=task["overwrite"],
+                )
+        except Exception as exc:
+            failures.append(
+                _report_failure(task, exc, stage=stage, batch=batch)
+            )
+            continue
         summaries.append(
             {
                 "id": batch["id"],
@@ -318,7 +376,7 @@ def _run_day(task):
                 "supported": int(result.support_ok.sum()),
             }
         )
-    return {"day": task["day"], "batches": summaries}
+    return {"day": task["day"], "batches": summaries, "failures": failures}
 
 
 def parser():
@@ -499,6 +557,17 @@ def main(argv=None):
         print(json.dumps(dict(plan, status="already complete"), indent=2))
         return
 
+    failure_report_dir = (
+        None
+        if args.dry_run
+        else str(
+            output_root
+            / "flags"
+            / args.flags_version
+            / "run_reports"
+            / uuid4().hex
+        )
+    )
     tasks = _day_tasks(
         batches,
         data_dir=str(data_dir),
@@ -507,27 +576,34 @@ def main(argv=None):
         ground_antenna=args.ground_antenna,
         config=config,
         resolution_policy=(None if policy is None else policy.source),
+        resolution_policy_hash=policy_hash,
         flags_version=args.flags_version,
         model_version=args.model_version,
         overwrite=args.overwrite,
         dry_run=args.dry_run,
+        failure_report_dir=failure_report_dir,
     )
     results = []
     workers = min(args.workers, len(tasks))
     if workers == 1:
         for task in tasks:
-            results.append(_run_day(task))
+            try:
+                result = _run_day(task)
+            except Exception as exc:
+                result = _failed_day(task, exc)
+            results.append(result)
             print(f"finished day {task['day']}", file=sys.stderr, flush=True)
     else:
         context = multiprocessing.get_context("spawn")
         with ProcessPoolExecutor(
             max_workers=workers, mp_context=context
         ) as executor:
-            futures = {
-                executor.submit(_run_day, task): task["day"] for task in tasks
-            }
+            futures = {executor.submit(_run_day, task): task for task in tasks}
             for future in as_completed(futures):
-                result = future.result()
+                try:
+                    result = future.result()
+                except Exception as exc:
+                    result = _failed_day(futures[future], exc)
                 results.append(result)
                 print(
                     f"finished day {result['day']}",
@@ -536,18 +612,39 @@ def main(argv=None):
                 )
     summaries = [batch for day in results for batch in day["batches"]]
     cells = sum(item["cells"] for item in summaries)
+    failures = [failure for day in results for failure in day["failures"]]
     output = dict(plan)
     output.update(
         {
-            "status": "dry run" if args.dry_run else "written",
+            "status": (
+                "completed with failures"
+                if failures
+                else "dry run" if args.dry_run else "written"
+            ),
+            "failures": failures,
+            "dry_run": args.dry_run,
+            "failed_files": len(
+                {name for failure in failures for name in failure["files"]}
+            ),
+            "failure_report_dir": failure_report_dir,
             "workers_used": workers,
             "processed_files": sum(len(item["files"]) for item in summaries),
             "rows": sum(item["rows"] for item in summaries),
-            "excluded_fraction": sum(item["excluded"] for item in summaries)
-            / cells,
-            "rfi_fraction": sum(item["rfi"] for item in summaries) / cells,
-            "supported_fraction": sum(item["supported"] for item in summaries)
-            / cells,
+            "excluded_fraction": (
+                sum(item["excluded"] for item in summaries) / cells
+                if cells
+                else None
+            ),
+            "rfi_fraction": (
+                sum(item["rfi"] for item in summaries) / cells
+                if cells
+                else None
+            ),
+            "supported_fraction": (
+                sum(item["supported"] for item in summaries) / cells
+                if cells
+                else None
+            ),
         }
     )
     print(json.dumps(output, indent=2))

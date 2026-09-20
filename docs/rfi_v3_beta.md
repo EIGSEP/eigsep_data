@@ -169,3 +169,29 @@ met the existing 1e-8 tolerance on every solve. Batch 98,
 the 108-samples/275-coefficients exception during refitting and now returns
 an explicitly unsupported segment. These are bounded failure-case checks,
 not evidence that every campaign batch will complete.
+
+The campaign runner continues after batch exceptions (including CG, cross-fit,
+and irregular-time-axis errors). A failed fit writes no new flags or models,
+so missing products indicate unprocessed data, never clean data. Remaining
+batches in that day and other day workers continue. This runner change does
+not repair irregular time axes or relax any numerical tolerance. Successful
+products and their parameter/revision compatibility are unchanged.
+
+Each failure is immediately printed to stderr and appended to
+`flags/VERSION/run_reports/RUN_ID/YYYYMMDD.jsonl`. Records contain exact
+filenames, batch IDs, exception type/message/traceback, stage (`fit`, `write`,
+or `worker`), UTC time, parameters and source/policy provenance. Each invocation
+has a new run ID; old reports are historical attempts, not completion markers.
+The final JSON reports `completed with failures`, failed filenames/counts, and
+successful counts; fractions are null when no batch succeeded. Dry runs print
+diagnostics but do not write reports or products. Failure-report write errors
+also go to stderr without stopping remaining work.
+
+Resume with the same versions and parameters to skip completed products and
+retry missing files. Write-stage failures can leave some products already
+written; the existing strict resume checks still reject partial product pairs
+and require inspection/repair rather than treating them as complete. Worker
+failures report the day's assigned files as unconfirmed; existing manifests
+remain the authority for successfully written files. Ordinary worker exceptions
+are isolated, but a killed process or exhausted machine can break the process
+pool itself; this is not automatic process-pool recovery.
