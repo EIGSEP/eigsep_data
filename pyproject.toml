@@ -41,17 +41,17 @@ dependencies = [
     "eigsep_redis",
     "eigsep-vna",
     "picohost",
-    "eigsep_terrain @ git+https://github.com/AaronParsons/eigsep_terrain.git@main",
-    "healjax @ git+https://github.com/AaronParsons/healjax.git@main",
+    "eigsep_terrain",
+    "healjax",
     "hera_filters @ git+https://github.com/HERA-Team/hera_filters.git@main",
     "hera_qm @ git+https://github.com/HERA-Team/hera_qm.git@main",
     "hera_sim @ git+https://github.com/HERA-Team/hera_sim.git@main",
     "pygdsm",
 ]
 
-# eigsep_base and healjax are not on PyPI yet. Until they are, install them
-# from the sibling checkouts with:
-#     pip install -e ../eigsep_base -e ../healjax
+# eigsep_base, eigsep_terrain and healjax are not on PyPI yet. Until they
+# are, install them from the sibling checkouts with:
+#     pip install -e ../eigsep_base -e ../eigsep_terrain -e ../healjax
 # then `pip install -e .` here (or add them to [tool.uv.sources] below if
 # you drive the workspace with uv).
 
@@ -62,6 +62,9 @@ eigsep_base = { path = "../eigsep_base", editable = true }
 eigsep_redis = { path = "../eigsep_redis", editable = true }
 eigsep-vna = { path = "../cmt_vna", editable = true }
 picohost = { path = "../pico-firmware/picohost", editable = true }
+# Not on PyPI; resolved from the sibling checkouts, non-editable.
+eigsep_terrain = { path = "../eigsep_terrain" }
+healjax = { path = "../healjax" }
 
 [project.scripts]
 eigsep-quicklook = "eigsep_data.quicklook:main"
