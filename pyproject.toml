@@ -69,6 +69,9 @@ healjax = { path = "../healjax" }
 [project.scripts]
 eigsep-quicklook = "eigsep_data.quicklook:main"
 eigsep-rfi-v3-beta = "eigsep_data.rfi_run:main"
+eigsep-select-files = "eigsep_data.select_files:main"
+eigsep-build-masks = "eigsep_data.flagging.build_masks:main"
+eigsep-publish-geometry-release = "eigsep_data.geometry_release:main"
 
 [project.optional-dependencies]
 vis = [
