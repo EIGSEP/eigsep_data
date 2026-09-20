@@ -12,6 +12,8 @@ from eigsep_data.rfi_run import (
     resolve_locations,
 )
 from eigsep_data.rfi_supported import (
+    ALGORITHM_REVISION,
+    LEGACY_COMPATIBLE_SOURCE_SHA256,
     RFIConfig,
     algorithm_source_sha256,
     parameter_sha256,
@@ -76,6 +78,7 @@ def test_resume_requires_both_products_with_matching_parameters(tmp_path):
         fname: {
             "parameter_sha256": digest,
             "algorithm_source_sha256": algorithm,
+            "algorithm_revision": ALGORITHM_REVISION,
         }
     }
     for path in (
@@ -84,9 +87,9 @@ def test_resume_requires_both_products_with_matching_parameters(tmp_path):
     ):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"files": record}))
-    assert _resume_files(
-        tmp_path, "v3-beta", "v3-beta", [fname], digest, algorithm
-    ) == {fname}
+    assert _resume_files(tmp_path, "v3-beta", "v3-beta", [fname], digest) == {
+        fname
+    }
     with pytest.raises(ValueError, match="another parameter set"):
         _resume_files(
             tmp_path,
@@ -94,5 +97,33 @@ def test_resume_requires_both_products_with_matching_parameters(tmp_path):
             "v3-beta",
             [fname],
             "different",
-            algorithm,
         )
+
+
+def test_resume_accepts_known_writer_only_legacy_source(tmp_path):
+    fname = "corr_20260716_000000Z.h5"
+    digest = parameter_sha256(RFIConfig())
+    legacy = next(iter(LEGACY_COMPATIBLE_SOURCE_SHA256))
+    record = {
+        fname: {
+            "parameter_sha256": digest,
+            "algorithm_source_sha256": legacy,
+        }
+    }
+    for path in (
+        tmp_path / "flags" / "v3-beta" / "manifest.json",
+        tmp_path / "derived" / "smooth_model" / "v3-beta" / "manifest.json",
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"files": record}))
+    assert _resume_files(tmp_path, "v3-beta", "v3-beta", [fname], digest) == {
+        fname
+    }
+    record[fname]["algorithm_source_sha256"] = "0" * 64
+    for path in (
+        tmp_path / "flags" / "v3-beta" / "manifest.json",
+        tmp_path / "derived" / "smooth_model" / "v3-beta" / "manifest.json",
+    ):
+        path.write_text(json.dumps({"files": record}))
+    with pytest.raises(ValueError, match="different flagger source"):
+        _resume_files(tmp_path, "v3-beta", "v3-beta", [fname], digest)

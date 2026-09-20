@@ -312,3 +312,107 @@ def test_writer_round_trips_through_product_readers(tmp_path, external_data):
         manifest["files"][fname]["algorithm_source_sha256"]
         == algorithm_source_sha256()
     )
+
+
+def test_writer_restores_real_permuted_files_to_raw_row_order(tmp_path):
+    fixture_path = (
+        Path(__file__).parent
+        / "data"
+        / "rfi_v3_beta"
+        / "permuted_campaign_files.json"
+    )
+    fixture = json.loads(fixture_path.read_text())
+    root = tmp_path / "campaign"
+    data_dir = root / "data"
+    data_dir.mkdir(parents=True)
+    freqs = np.array([50.0, 51.0])
+    metadata = []
+    flags = []
+    models = []
+    support = []
+    fit_keep = []
+    for file_number, record in enumerate(fixture["files"]):
+        fname = record["file"]
+        nrows = record["nrows"]
+        with h5py.File(data_dir / fname, "w") as h5:
+            h5.create_group("data").create_dataset(
+                "4", data=np.ones((nrows, len(freqs)))
+            )
+        rows = np.concatenate(
+            [
+                np.arange(first, last + 1)
+                for first, last in record["selection_runs"]
+            ]
+        )
+        assert len(rows) == nrows
+        metadata.append(
+            pd.DataFrame({"file": fname, "row": rows, "input_key": "4"})
+        )
+        raw_identity = file_number * 1000 + rows
+        flags.append(np.repeat(raw_identity[:, None], len(freqs), axis=1))
+        models.append(
+            np.repeat((raw_identity + 0.25)[:, None], len(freqs), axis=1)
+        )
+        support.append(np.repeat((rows % 2 == 0)[:, None], len(freqs), axis=1))
+        fit_keep.append(
+            np.repeat((rows % 3 != 0)[:, None], len(freqs), axis=1)
+        )
+    flags = np.concatenate(flags).astype(np.uint16)
+    models = np.concatenate(models)
+    support = np.concatenate(support)
+    fit_keep = np.concatenate(fit_keep)
+    reasons = {
+        name: np.zeros(flags.shape, dtype=bool) for name in BIT_BY_REASON
+    }
+    result = RFIResult(
+        flags=flags,
+        model=models,
+        model_raw=models.copy(),
+        residual_z=np.zeros_like(models),
+        support_ok=support,
+        fit_keep=fit_keep,
+        reasons=reasons,
+        inflation=np.ones_like(models),
+        prior_fraction=np.zeros_like(models),
+        cross_background=np.zeros_like(models, dtype=complex),
+        cross_score=np.zeros_like(models),
+        freqs_mhz=freqs,
+        times=np.arange(len(models), dtype=float),
+        meta=pd.concat(metadata, ignore_index=True),
+        config=RFIConfig(),
+        diagnostics={},
+    )
+    write_products(result, root)
+
+    for file_number, record in enumerate(fixture["files"]):
+        fname = record["file"]
+        nrows = record["nrows"]
+        expected_identity = file_number * 1000 + np.arange(nrows)
+        day_path = root / "flags" / "v3-beta" / f"flags_{fname[5:13]}.h5"
+        with h5py.File(day_path) as h5:
+            written_flags = h5[f"mask/{fname}/4"][:]
+        np.testing.assert_array_equal(
+            written_flags,
+            np.repeat(expected_identity[:, None], len(freqs), axis=1),
+        )
+        model_path = root / "derived" / "smooth_model" / "v3-beta" / fname
+        with h5py.File(model_path) as h5:
+            group = h5["input_4"]
+            np.testing.assert_allclose(
+                group["model"][:],
+                np.repeat(
+                    (expected_identity + 0.25)[:, None], len(freqs), axis=1
+                ),
+            )
+            np.testing.assert_array_equal(
+                group["support_ok"][:],
+                np.repeat(
+                    (np.arange(nrows) % 2 == 0)[:, None], len(freqs), axis=1
+                ),
+            )
+            np.testing.assert_array_equal(
+                group["fit_keep"][:],
+                np.repeat(
+                    (np.arange(nrows) % 3 != 0)[:, None], len(freqs), axis=1
+                ),
+            )

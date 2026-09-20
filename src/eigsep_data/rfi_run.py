@@ -29,7 +29,9 @@ from .clock import to_unix_time
 from .index import MetadataIndex
 from .paths import campaign_data_dir, get_campaign_root
 from .rfi_supported import (
+    ALGORITHM_REVISION,
     DEFAULT_VERSION,
+    LEGACY_COMPATIBLE_SOURCE_SHA256,
     RFIConfig,
     algorithm_source_sha256,
     parameter_sha256,
@@ -181,9 +183,7 @@ def _read_manifest(path):
         return json.load(stream).get("files", {})
 
 
-def _resume_files(
-    root, flags_version, model_version, wanted, config_hash, algorithm_hash
-):
+def _resume_files(root, flags_version, model_version, wanted, config_hash):
     flags = _read_manifest(root / "flags" / flags_version / "manifest.json")
     models = _read_manifest(
         root / "derived" / "smooth_model" / model_version / "manifest.json"
@@ -194,12 +194,19 @@ def _resume_files(
         pair = (flags.get(fname), models.get(fname))
         if pair[0] is None and pair[1] is None:
             continue
-        if all(
-            record is not None
-            and record.get("parameter_sha256") == config_hash
-            and record.get("algorithm_source_sha256") == algorithm_hash
-            for record in pair
-        ):
+
+        def compatible(record):
+            if record is None or record.get("parameter_sha256") != config_hash:
+                return False
+            revision = record.get("algorithm_revision")
+            if revision is not None:
+                return revision == ALGORITHM_REVISION
+            return (
+                record.get("algorithm_source_sha256")
+                in LEGACY_COMPATIBLE_SOURCE_SHA256
+            )
+
+        if all(compatible(record) for record in pair):
             completed.add(fname)
         else:
             partial.append(fname)
@@ -347,7 +354,6 @@ def main(argv=None):
             args.model_version,
             original_files,
             config_hash,
-            algorithm_hash,
         )
     pending = [name for name in original_files if name not in completed]
     if pending:
@@ -367,6 +373,7 @@ def main(argv=None):
         "model_version": args.model_version,
         "parameter_sha256": config_hash,
         "algorithm_source_sha256": algorithm_hash,
+        "algorithm_revision": ALGORITHM_REVISION,
         "parameters": asdict(config),
         "selected_files": len(original_files),
         "completed_files": len(completed),

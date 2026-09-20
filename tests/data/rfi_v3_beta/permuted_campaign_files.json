@@ -1,0 +1,34 @@
+{
+  "campaign": "marjum-2026-07",
+  "description": "Complete raw files whose MetadataIndex time order is a rotation of raw-row order because header/times is non-monotonic across an acquisition-buffer wrap.",
+  "files": [
+    {
+      "file": "corr_20260712_203956Z.h5",
+      "nrows": 240,
+      "selection_runs": [[149, 239], [0, 148]],
+      "source_sha256": "0445d3073c3dbea049a5d01146a437fec398eb319298c7852ec8fc66596c6718"
+    },
+    {
+      "file": "corr_20260712_230430Z.h5",
+      "nrows": 240,
+      "selection_runs": [[88, 239], [0, 87]],
+      "source_sha256": "bb30c0203452368adcb05d60033b87a82fb9ab63f117ee26e45b6d3fba0542f0"
+    },
+    {
+      "file": "corr_20260715_044951Z.h5",
+      "nrows": 240,
+      "selection_runs": [[210, 239], [0, 209]],
+      "source_sha256": "972cb385a1d013108ce0b1851a1caf9df156448886b11e3e4286f41e0ca6f256"
+    },
+    {
+      "file": "corr_20260715_155624Z-1.h5",
+      "nrows": 240,
+      "selection_runs": [[198, 239], [0, 197]],
+      "source_sha256": "ce16894ae7c04584ea580abaf199dcb38d0e483cbe336fad358945b64e3934a5"
+    }
+  ],
+  "provenance": {
+    "derived_from": "MetadataIndex time-ordered row sequences and SHA-256 of the four raw HDF5 files",
+    "verified_utc": "2026-09-19"
+  }
+}

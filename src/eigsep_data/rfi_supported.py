@@ -69,6 +69,13 @@ FLAG_MEANINGS = {
 }
 BIT_BY_REASON = {v["name"]: int(k) for k, v in FLAG_BITS.items()}
 DEFAULT_VERSION = "v3-beta"
+ALGORITHM_REVISION = "supported-dpss-v3-beta-lowband-1"
+# Products generated from this committed source predate the explicit revision
+# field but use the same numerical flagger. The later change only restores raw
+# row order while writing complete, time-permuted files.
+LEGACY_COMPATIBLE_SOURCE_SHA256 = frozenset(
+    {"bf7c0ef99d7019f98c5c91c4dca4add71f4da3fd1232c4cc5e9162a707cb80d8"}
+)
 
 
 @dataclass(frozen=True)
@@ -975,11 +982,21 @@ def _whole_files(result, data_dir):
         source = Path(data_dir) / fname
         with h5py.File(source, "r") as h5:
             expected = np.arange(h5["data"][str(input_key)].shape[0])
-        if not np.array_equal(rows, expected):
+        if not np.array_equal(np.sort(rows), expected):
+            missing = np.setdiff1d(expected, rows)
+            duplicates = len(rows) - len(np.unique(rows))
             raise ValueError(
-                f"{fname}: product writing requires complete files; selected "
-                f"{len(rows)} of {len(expected)} rows"
+                f"{fname}: product writing requires every raw row exactly "
+                f"once; selected {len(rows)} rows for {len(expected)} raw "
+                f"rows, with {len(missing)} missing and {duplicates} duplicate"
             )
+
+
+def _raw_row_positions(result, fname):
+    """Positions in a result ordered by the source file's raw row axis."""
+    positions = np.flatnonzero(result.meta.file.to_numpy() == fname)
+    rows = result.meta.iloc[positions].row.to_numpy(dtype=int)
+    return positions[np.argsort(rows)]
 
 
 def _preflight_writes(result, root, flags_version, model_version, overwrite):
@@ -1038,9 +1055,10 @@ def _write_products_unlocked(
     model_root = root / "derived" / "smooth_model" / model_version
     for fname, group in result.meta.groupby("file", sort=False):
         input_key = _input_key(group)
-        # Bundle metadata normally has a RangeIndex. Resolve by file/row to
-        # keep the writer correct if a caller preserved another index.
-        positions = np.flatnonzero(result.meta.file.to_numpy() == fname)
+        # Results are in time order, which is not raw-row order in four files
+        # containing an acquisition-buffer wrap. Product axis 0 is implicitly
+        # raw row, so restore that order before writing every payload.
+        positions = _raw_row_positions(result, fname)
         source = source_dir / fname
         source_hash = _sha256(source)
         files_record[fname] = {
@@ -1050,6 +1068,7 @@ def _write_products_unlocked(
             "source_sha256": source_hash,
             "parameter_sha256": parameter_hash,
             "algorithm_source_sha256": algorithm_hash,
+            "algorithm_revision": ALGORITHM_REVISION,
             "input_key": str(input_key),
             "generated_utc": generated,
         }
@@ -1073,6 +1092,7 @@ def _write_products_unlocked(
             )
             dataset.attrs["parameter_sha256"] = parameter_hash
             dataset.attrs["algorithm_source_sha256"] = algorithm_hash
+            dataset.attrs["algorithm_revision"] = ALGORITHM_REVISION
             dataset.attrs["source_sha256"] = source_hash
 
         _atomic_h5_update(day_path, update_flags)
@@ -1107,6 +1127,7 @@ def _write_products_unlocked(
             )
             out.attrs["parameter_sha256"] = parameter_hash
             out.attrs["algorithm_source_sha256"] = algorithm_hash
+            out.attrs["algorithm_revision"] = ALGORITHM_REVISION
             out.attrs["source_sha256"] = source_hash
 
         _atomic_h5_update(model_path, update_model)
@@ -1150,6 +1171,7 @@ def _write_products_unlocked(
                 "status": "beta",
                 "algorithm": "supported separable DPSS v3-beta",
                 "algorithm_source_sha256": algorithm_hash,
+                "algorithm_revision": ALGORITHM_REVISION,
                 "axes": {
                     "rows": "raw file integration row",
                     "frequency": "MHz",

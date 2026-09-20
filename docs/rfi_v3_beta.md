@@ -64,9 +64,12 @@ The physical antennas are resolved from each HDF5 file independently,
 including cross-correlation orientation; the runner does not assume that one
 correlator key has the same meaning throughout the range. Use `--set
 NAME=VALUE` repeatedly to override `RFIConfig` fields. `--dry-run` fits without
-writing. `--resume` skips only files recorded in both product manifests with
-the same complete parameter hash and exact flagger source hash; partial or
-mismatched products stop with an error. `--overwrite` is the explicit
+writing. Every product records both the exact flagger source hash and a
+numerical algorithm revision. `--resume` skips only files recorded in both
+product manifests with the same complete parameter hash and numerical revision;
+an explicit compatibility list covers the pre-revision source used by the
+interrupted campaign run because the subsequent change affected writing only.
+Partial or mismatched products stop with an error. `--overwrite` is the explicit
 alternative. Time selections expand the two endpoint files to their complete
 row sets because published companions are whole-file products.
 
