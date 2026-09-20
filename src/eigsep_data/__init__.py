@@ -27,6 +27,7 @@ _EXTRAS = {
 }
 
 _SUBMODULES = {
+    "antenna_policy",
     "beam_mapping",
     "beam_sim",
     "browse",
@@ -53,6 +54,8 @@ _SUBMODULES = {
 
 #: Public name -> the submodule that defines it.
 _ATTRS = {
+    "AntennaResolutionError": "antenna_policy",
+    "AntennaResolutionPolicy": "antenna_policy",
     "Bundle": "bundle",
     "Campaign": "bundle",
     "load_bundle": "bundle",

@@ -15,6 +15,7 @@ for _variable in (
     os.environ.setdefault(_variable, "1")
 
 import argparse
+from collections import Counter
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import asdict, fields, replace
 import json
@@ -25,6 +26,7 @@ import sys
 
 import numpy as np
 
+from .antenna_policy import AntennaResolutionPolicy
 from .clock import to_unix_time
 from .index import MetadataIndex
 from .paths import campaign_data_dir, get_campaign_root
@@ -183,7 +185,55 @@ def _read_manifest(path):
         return json.load(stream).get("files", {})
 
 
-def _resume_files(root, flags_version, model_version, wanted, config_hash):
+def _output_policy_conflicts(
+    root, flags_version, model_version, resolution_policy_hash
+):
+    """Existing product records made under another resolution contract."""
+    conflicts = []
+    paths = (
+        root / "flags" / flags_version / "manifest.json",
+        root / "derived" / "smooth_model" / model_version / "manifest.json",
+    )
+    for path in paths:
+        records = _read_manifest(path)
+        observed = sorted(
+            {
+                record.get("resolution_policy_sha256")
+                for record in records.values()
+            },
+            key=lambda item: "" if item is None else item,
+        )
+        if observed and observed != [resolution_policy_hash]:
+            conflicts.append(
+                {
+                    "manifest": str(path),
+                    "expected": resolution_policy_hash,
+                    "observed": observed,
+                    "files": len(records),
+                }
+            )
+    return conflicts
+
+
+def _rejection_summary(rejected):
+    output = {}
+    for item in rejected:
+        group = output.setdefault(
+            item["rule"], {"reason": item["reason"], "files": [], "rows": 0}
+        )
+        group["files"].append(item["file"])
+        group["rows"] += item["rows"]
+    return output
+
+
+def _resume_files(
+    root,
+    flags_version,
+    model_version,
+    wanted,
+    config_hash,
+    resolution_policy_hash,
+):
     flags = _read_manifest(root / "flags" / flags_version / "manifest.json")
     models = _read_manifest(
         root / "derived" / "smooth_model" / model_version / "manifest.json"
@@ -197,6 +247,11 @@ def _resume_files(root, flags_version, model_version, wanted, config_hash):
 
         def compatible(record):
             if record is None or record.get("parameter_sha256") != config_hash:
+                return False
+            if (
+                record.get("resolution_policy_sha256")
+                != resolution_policy_hash
+            ):
                 return False
             revision = record.get("algorithm_revision")
             if revision is not None:
@@ -213,9 +268,9 @@ def _resume_files(root, flags_version, model_version, wanted, config_hash):
     if partial:
         preview = ", ".join(partial[:3])
         raise ValueError(
-            "--resume found partial products, another parameter set, or a "
-            f"different flagger source for {preview}; choose a new version "
-            "or use --overwrite"
+            "--resume found partial products, another parameter set, a "
+            "different flagger source, or a different antenna-resolution "
+            f"policy for {preview}; choose a new version or use --overwrite"
         )
     return completed
 
@@ -231,6 +286,7 @@ def _day_tasks(batches, **settings):
 
 def _run_day(task):
     index = MetadataIndex(Path(task["data_dir"]))
+    policy = AntennaResolutionPolicy.load(task["resolution_policy"])
     summaries = []
     for batch in task["batches"]:
         selection = index.select(files=batch["files"])
@@ -239,6 +295,7 @@ def _run_day(task):
             air_antenna=task["air_antenna"],
             ground_antenna=task["ground_antenna"],
             config=task["config"],
+            resolution_policy=policy,
         )
         if not task["dry_run"]:
             write_products(
@@ -293,6 +350,20 @@ def parser():
     select.add_argument("--time", nargs=2, metavar=("START", "END"))
     out.add_argument("--air-antenna", default="box-air")
     out.add_argument("--ground-antenna", default="box-gnd")
+    resolution = out.add_mutually_exclusive_group()
+    resolution.add_argument(
+        "--resolution-policy",
+        type=Path,
+        help=(
+            "antenna-resolution JSON (default: "
+            "OUTPUT_ROOT/curation/antenna_resolution.json)"
+        ),
+    )
+    resolution.add_argument(
+        "--header-resolution",
+        action="store_true",
+        help="explicitly use raw input_to_ant headers instead of a policy",
+    )
     out.add_argument(
         "--set", action="append", default=[], metavar="NAME=VALUE"
     )
@@ -333,6 +404,21 @@ def _selection(index, args):
     return index.select(files=selected.files)
 
 
+def _resolution_policy(args, output_root):
+    if args.header_resolution:
+        return None
+    path = args.resolution_policy
+    if path is None:
+        path = output_root / "curation" / "antenna_resolution.json"
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"antenna resolution policy not found: {path}; pass "
+            "--resolution-policy PATH or explicitly opt into raw headers "
+            "with --header-resolution"
+        )
+    return AntennaResolutionPolicy.load(path)
+
+
 def main(argv=None):
     args = parser().parse_args(argv)
     if args.workers < 1:
@@ -343,17 +429,29 @@ def main(argv=None):
     config = config_with_overrides(args.set)
     config_hash = parameter_sha256(config)
     algorithm_hash = algorithm_source_sha256()
+    policy = _resolution_policy(args, output_root)
+    policy_hash = None if policy is None else policy.sha256
     index = MetadataIndex(data_dir)
-    selected = _selection(index, args)
-    original_files = selected.files
+    requested = _selection(index, args)
+    if policy is None:
+        approved_files = requested.files
+        rejected = []
+        decisions = {}
+    else:
+        approved_files, rejected, decisions = policy.partition(requested.meta)
+    original_files = approved_files
+    policy_conflicts = _output_policy_conflicts(
+        output_root, args.flags_version, args.model_version, policy_hash
+    )
     completed = set()
-    if args.resume:
+    if args.resume and not policy_conflicts:
         completed = _resume_files(
             output_root,
             args.flags_version,
             args.model_version,
             original_files,
             config_hash,
+            policy_hash,
         )
     pending = [name for name in original_files if name not in completed]
     if pending:
@@ -374,8 +472,14 @@ def main(argv=None):
         "parameter_sha256": config_hash,
         "algorithm_source_sha256": algorithm_hash,
         "algorithm_revision": ALGORITHM_REVISION,
+        "resolution_policy": (None if policy is None else policy.provenance()),
         "parameters": asdict(config),
-        "selected_files": len(original_files),
+        "requested_files": len(requested.files),
+        "approved_files": len(original_files),
+        "policy_rejected_files": len(rejected),
+        "policy_rejections": _rejection_summary(rejected),
+        "policy_rule_counts": dict(Counter(decisions.values())),
+        "output_policy_conflicts": policy_conflicts,
         "completed_files": len(completed),
         "pending_files": sum(len(batch["files"]) for batch in batches),
         "workers_requested": args.workers,
@@ -385,6 +489,12 @@ def main(argv=None):
     if args.plan:
         print(json.dumps(plan, indent=2))
         return
+    if policy_conflicts:
+        raise ValueError(
+            "the requested output version already contains products made "
+            "under another antenna-resolution policy; choose new flags/model "
+            "versions (recommended for this change)"
+        )
     if not batches:
         print(json.dumps(dict(plan, status="already complete"), indent=2))
         return
@@ -396,6 +506,7 @@ def main(argv=None):
         air_antenna=args.air_antenna,
         ground_antenna=args.ground_antenna,
         config=config,
+        resolution_policy=(None if policy is None else policy.source),
         flags_version=args.flags_version,
         model_version=args.model_version,
         overwrite=args.overwrite,

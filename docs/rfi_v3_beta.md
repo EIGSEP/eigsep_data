@@ -49,9 +49,30 @@ then run, for example:
 ```sh
 eigsep-rfi-v3-beta --data-dir /data/marjum-2026-07/data --all \
   --output-root /data/marjum-2026-07 \
-  --flags-version v3-beta --model-version v3-beta \
+  --resolution-policy /data/marjum-2026-07/curation/antenna_resolution.json \
+  --flags-version v3-beta.1 --model-version v3-beta.1 \
   --files-per-batch 10 --workers 6 --resume
 ```
+
+The Marjum filtered files explicitly warn that `header/input_to_ant` is stale.
+The runner therefore requires an antenna-resolution policy by default,
+discovering `OUTPUT_ROOT/curation/antenna_resolution.json` when no path is
+given. The approved `marjum-2026-07-rfi-safe-v1` policy selects ground/air/cross
+as 3/4/35 for the 974 phase-B files with a valid 4-to-5 mux copy, and 0/4/04
+for all 2,421 phase-C files. It explicitly excludes 1,588 unresolved phase-A
+files and 137 phase-B files without a valid cross. The plan reports each rule's
+counts and the exact excluded filenames. Policy rejection is never converted
+to `missing="skip"`.
+
+`load_bundle(..., resolution_policy=...)` exposes the same behavior to other
+consumers while retaining header resolution when no policy is supplied. Passing
+`--header-resolution` to the runner is the explicit opt-in to that generic
+fallback; it is unsafe for this campaign.
+
+Use a new product version such as `v3-beta.1`. Existing `v3-beta` records were
+made under the stale-header contract and cannot be mixed with policy-resolved
+records. Both the runner and writer reject a version directory containing a
+different or absent policy hash, even with `--overwrite`.
 
 Files are batched only within one UTC filename day, contiguous visit,
 integration time, filter phase, and raw-key set. One process owns all batches
@@ -64,14 +85,14 @@ The physical antennas are resolved from each HDF5 file independently,
 including cross-correlation orientation; the runner does not assume that one
 correlator key has the same meaning throughout the range. Use `--set
 NAME=VALUE` repeatedly to override `RFIConfig` fields. `--dry-run` fits without
-writing. Every product records both the exact flagger source hash and a
-numerical algorithm revision. `--resume` skips only files recorded in both
-product manifests with the same complete parameter hash and numerical revision;
-an explicit compatibility list covers the pre-revision source used by the
-interrupted campaign run because the subsequent change affected writing only.
-Partial or mismatched products stop with an error. `--overwrite` is the explicit
-alternative. Time selections expand the two endpoint files to their complete
-row sets because published companions are whole-file products.
+writing. Every product records the exact flagger source hash, numerical
+algorithm revision, antenna-resolution policy hash, resolved keys, and matched
+rules. `--resume` skips only files recorded in both product manifests with the
+same parameters, numerical revision, and resolution policy. Partial or
+mismatched products stop with an error. `--overwrite` replaces payloads only
+within a policy-compatible product version. Time selections expand the two
+endpoint files to their complete row sets because published companions are
+whole-file products.
 
 The runner writes the product layouts already consumed by
 `Selection.load_bundle`:

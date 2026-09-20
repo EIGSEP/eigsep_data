@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 from eigsep_data.rfi_run import (
+    _output_policy_conflicts,
     _resume_files,
     build_batches,
     resolve_locations,
@@ -87,9 +88,9 @@ def test_resume_requires_both_products_with_matching_parameters(tmp_path):
     ):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"files": record}))
-    assert _resume_files(tmp_path, "v3-beta", "v3-beta", [fname], digest) == {
-        fname
-    }
+    assert _resume_files(
+        tmp_path, "v3-beta", "v3-beta", [fname], digest, None
+    ) == {fname}
     with pytest.raises(ValueError, match="another parameter set"):
         _resume_files(
             tmp_path,
@@ -97,6 +98,7 @@ def test_resume_requires_both_products_with_matching_parameters(tmp_path):
             "v3-beta",
             [fname],
             "different",
+            None,
         )
 
 
@@ -116,9 +118,9 @@ def test_resume_accepts_known_writer_only_legacy_source(tmp_path):
     ):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"files": record}))
-    assert _resume_files(tmp_path, "v3-beta", "v3-beta", [fname], digest) == {
-        fname
-    }
+    assert _resume_files(
+        tmp_path, "v3-beta", "v3-beta", [fname], digest, None
+    ) == {fname}
     record[fname]["algorithm_source_sha256"] = "0" * 64
     for path in (
         tmp_path / "flags" / "v3-beta" / "manifest.json",
@@ -126,4 +128,22 @@ def test_resume_accepts_known_writer_only_legacy_source(tmp_path):
     ):
         path.write_text(json.dumps({"files": record}))
     with pytest.raises(ValueError, match="different flagger source"):
-        _resume_files(tmp_path, "v3-beta", "v3-beta", [fname], digest)
+        _resume_files(tmp_path, "v3-beta", "v3-beta", [fname], digest, None)
+
+
+def test_existing_header_resolved_products_conflict_with_policy(tmp_path):
+    fname = "corr_20260716_000000Z.h5"
+    for path in (
+        tmp_path / "flags" / "v3-beta" / "manifest.json",
+        tmp_path / "derived" / "smooth_model" / "v3-beta" / "manifest.json",
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"files": {fname: {}}}))
+
+    conflicts = _output_policy_conflicts(
+        tmp_path, "v3-beta", "v3-beta", "a" * 64
+    )
+
+    assert len(conflicts) == 2
+    assert all(item["observed"] == [None] for item in conflicts)
+    assert all(item["expected"] == "a" * 64 for item in conflicts)

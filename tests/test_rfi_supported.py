@@ -283,7 +283,20 @@ def test_writer_round_trips_through_product_readers(tmp_path, external_data):
             {"file": [fname] * 3, "row": np.arange(3), "input_key": "4"}
         ),
         config=RFIConfig(),
-        diagnostics={},
+        diagnostics={
+            "resolution_policy": {
+                "name": "test-safe-v1",
+                "schema_version": 1,
+                "sha256": "a" * 64,
+                "source": "/campaign/curation/antenna_resolution.json",
+            },
+            "resolved_inputs": {
+                fname: {
+                    "air": "4",
+                    "air_resolution_rule": "phase-c",
+                }
+            },
+        },
     )
     write_products(result, root, data_dir=data_dir if external_data else None)
     campaign = Campaign(root)
@@ -311,6 +324,14 @@ def test_writer_round_trips_through_product_readers(tmp_path, external_data):
     assert (
         manifest["files"][fname]["algorithm_source_sha256"]
         == algorithm_source_sha256()
+    )
+    assert manifest["files"][fname]["resolution_policy_sha256"] == "a" * 64
+    assert manifest["files"][fname]["resolved_inputs"] == {
+        "air": "4",
+        "air_resolution_rule": "phase-c",
+    }
+    assert manifest["resolution_policies"]["a" * 64]["name"] == (
+        "test-safe-v1"
     )
 
 

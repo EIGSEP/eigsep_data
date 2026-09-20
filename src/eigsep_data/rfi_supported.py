@@ -821,12 +821,16 @@ def load_selection_inputs(
     air_antenna="box-air",
     ground_antenna="box-gnd",
     config=None,
+    resolution_policy=None,
 ):
     """Load physical antennas, resolving their input keys in every file."""
     config = RFIConfig() if config is None else config
     bundles = {
         name: selection.load_bundle(
-            antenna=antenna, band_mhz=config.band_mhz, missing="raise"
+            antenna=antenna,
+            band_mhz=config.band_mhz,
+            missing="raise",
+            resolution_policy=resolution_policy,
         )
         for name, antenna in {
             "air": air_antenna,
@@ -855,6 +859,7 @@ def run_selection(
     air_antenna="box-air",
     ground_antenna="box-gnd",
     config=None,
+    resolution_policy=None,
 ):
     """Resolve physical antennas per file and run supported-DPSS flagging."""
     config = RFIConfig() if config is None else config
@@ -863,6 +868,7 @@ def run_selection(
         air_antenna=air_antenna,
         ground_antenna=ground_antenna,
         config=config,
+        resolution_policy=resolution_policy,
     )
     air = bundles["air"]
     if "rfswitch" not in air.meta or "integration_time" not in air.meta:
@@ -884,6 +890,9 @@ def run_selection(
         "air": str(air_antenna),
         "ground": str(ground_antenna),
     }
+    result.diagnostics["resolution_policy"] = air.provenance.get(
+        "resolution_policy"
+    )
     resolved = {}
     for fname in air.meta.file.unique():
         resolved[fname] = {}
@@ -891,6 +900,9 @@ def run_selection(
             rows = bundle.meta.file == fname
             keys = bundle.meta.loc[rows, "input_key"].unique().tolist()
             resolved[fname][name] = str(keys[0])
+            rule = bundle.provenance.get("resolution_rules", {}).get(fname)
+            if rule is not None:
+                resolved[fname][f"{name}_resolution_rule"] = rule
             if name == "cross":
                 orientations = (
                     bundle.meta.loc[rows, "conjugated"].astype(bool).unique()
@@ -1025,6 +1037,29 @@ def _preflight_writes(result, root, flags_version, model_version, overwrite):
                     raise FileExistsError(f"{model_path}:{group}")
 
 
+def _preflight_policy(root, flags_version, model_version, policy_hash):
+    """Refuse to mix antenna-resolution contracts in one product version."""
+    manifests = (
+        root / "flags" / flags_version / "manifest.json",
+        root / "derived" / "smooth_model" / model_version / "manifest.json",
+    )
+    for path in manifests:
+        if not path.exists():
+            continue
+        with open(path) as stream:
+            records = json.load(stream).get("files", {})
+        observed = {
+            record.get("resolution_policy_sha256")
+            for record in records.values()
+        }
+        if observed and observed != {policy_hash}:
+            raise ValueError(
+                f"{path}: existing product records use antenna-resolution "
+                f"policy hashes {observed}, not {policy_hash!r}; choose a new "
+                "product version"
+            )
+
+
 def _write_products_unlocked(
     result,
     campaign_root,
@@ -1044,11 +1079,14 @@ def _write_products_unlocked(
     source_dir = (
         root / "data" if data_dir is None else Path(data_dir).resolve()
     )
-    _whole_files(result, source_dir)
-    _preflight_writes(result, root, flags_version, model_version, overwrite)
     config = asdict(result.config)
     parameter_hash = parameter_sha256(result.config)
     algorithm_hash = algorithm_source_sha256()
+    policy = result.diagnostics.get("resolution_policy") or {}
+    policy_hash = policy.get("sha256")
+    _whole_files(result, source_dir)
+    _preflight_policy(root, flags_version, model_version, policy_hash)
+    _preflight_writes(result, root, flags_version, model_version, overwrite)
     generated = datetime.now(timezone.utc).isoformat()
     files_record = {}
     flags_root = root / "flags" / flags_version
@@ -1069,7 +1107,11 @@ def _write_products_unlocked(
             "parameter_sha256": parameter_hash,
             "algorithm_source_sha256": algorithm_hash,
             "algorithm_revision": ALGORITHM_REVISION,
+            "resolution_policy_sha256": policy_hash,
             "input_key": str(input_key),
+            "resolved_inputs": result.diagnostics.get(
+                "resolved_inputs", {}
+            ).get(fname),
             "generated_utc": generated,
         }
         day_path = flags_root / f"flags_{fname[5:13]}.h5"
@@ -1093,6 +1135,8 @@ def _write_products_unlocked(
             dataset.attrs["parameter_sha256"] = parameter_hash
             dataset.attrs["algorithm_source_sha256"] = algorithm_hash
             dataset.attrs["algorithm_revision"] = ALGORITHM_REVISION
+            if policy_hash is not None:
+                dataset.attrs["resolution_policy_sha256"] = policy_hash
             dataset.attrs["source_sha256"] = source_hash
 
         _atomic_h5_update(day_path, update_flags)
@@ -1128,6 +1172,8 @@ def _write_products_unlocked(
             out.attrs["parameter_sha256"] = parameter_hash
             out.attrs["algorithm_source_sha256"] = algorithm_hash
             out.attrs["algorithm_revision"] = ALGORITHM_REVISION
+            if policy_hash is not None:
+                out.attrs["resolution_policy_sha256"] = policy_hash
             out.attrs["source_sha256"] = source_hash
 
         _atomic_h5_update(model_path, update_model)
@@ -1179,6 +1225,10 @@ def _write_products_unlocked(
             }
         )
         manifest.setdefault("parameter_sets", {})[parameter_hash] = config
+        if policy_hash is not None:
+            manifest.setdefault("resolution_policies", {})[
+                policy_hash
+            ] = policy
         manifest.setdefault("files", {}).update(files_record)
         manifest["updated_utc"] = generated
         _atomic_json(manifest_path, manifest)

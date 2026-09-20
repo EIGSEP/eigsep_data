@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 
 from . import products as _products
+from .antenna_policy import AntennaResolutionPolicy
 from .paths import get_campaign_root
 from .products.base import axis_fingerprint, locate_axis
 
@@ -274,6 +275,7 @@ def load_bundle(
     band_mhz=None,
     root=None,
     missing="skip",
+    resolution_policy=None,
 ):
     """
     Read *selection*'s rows for one antenna, with companion products.
@@ -311,6 +313,10 @@ def load_bundle(
     missing : {"skip", "raise"}
         What to do with a file that has no payload for a requested
         product, or no key for the requested antenna.
+    resolution_policy : AntennaResolutionPolicy, mapping, or path, optional
+        Explicit file-metadata rules mapping physical antennas and crosses to
+        raw keys. When omitted, retain the generic header-based resolver.
+        Policy rejection and ambiguous/incomplete rules always raise.
 
     Returns
     -------
@@ -322,6 +328,7 @@ def load_bundle(
         raise ValueError("missing must be 'skip' or 'raise'")
 
     campaign = Campaign.for_index(selection.index, root)
+    policy = AntennaResolutionPolicy.load(resolution_policy)
     specs = [_products.parse_spec(s) for s in products]
     for kind, version in specs:
         product = _products.get(kind)
@@ -340,6 +347,7 @@ def load_bundle(
     pair = _as_pair(antenna) if antenna is not None else None
     keys_by_file = {}
     conj_by_file = {}
+    rule_by_file = {}
     no_key = []
     for fname in meta.file.unique():
         conj_by_file[fname] = False
@@ -349,7 +357,19 @@ def load_bundle(
         available = set(
             str(meta.loc[meta.file == fname, "data_keys"].iloc[0]).split(",")
         )
-        if pair is not None:
+        file_meta = meta.loc[meta.file == fname].iloc[0]
+        if policy is not None and pair is not None:
+            resolved, conj, rule = policy.resolve_cross(
+                file_meta, pair, available, fname=fname
+            )
+            conj_by_file[fname] = conj
+            rule_by_file[fname] = rule
+        elif policy is not None:
+            resolved, rule = policy.resolve_auto(
+                file_meta, antenna, available, fname=fname
+            )
+            rule_by_file[fname] = rule
+        elif pair is not None:
             got = _resolve_cross(data_dir / fname, pair, available)
             resolved, conj = got if got is not None else (None, False)
             conj_by_file[fname] = conj
@@ -512,6 +532,10 @@ def load_bundle(
             "band_mhz": band_mhz,
             "used_files": list(rows_meta.file.unique()),
             "skipped_files": no_key,
+            "resolution_policy": (
+                None if policy is None else policy.provenance()
+            ),
+            "resolution_rules": rule_by_file,
             "products": prov_products,
             "selection": selection.summary(),
         },
