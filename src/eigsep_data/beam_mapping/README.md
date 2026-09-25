@@ -12,7 +12,7 @@ re-exports the common entry points; it contains no logic of its own.
 
 | Module | Purpose |
 |---|---|
-| `beam_rotations.py` | The one pointing convention: body -> ENU is `Rz(psi) Rx(el) Rz(az)` (boresight +z, dipole arm +x; az rolls about the boresight; el tips about the axle, 0 = zenith; psi = axle direction ccw from East, always passed in). |
+| `beam_rotations.py` | Re-exports `eigsep_base.rotations`, the one pointing convention shared with `eigsep_sim.Beam.top2body`: body -> ENU is `Rz(psi) Rx(el) Rz(az)` (boresight +z, dipole arm +x; az rolls about the boresight; el tips about the axle, 0 = zenith; psi = axle direction ccw from East, always passed in). |
 | `geometry.py` | Pointing fusion from motor, potentiometer, and IMU streams. |
 | `tx_coupling.py` | Transmitter geometry (ENU heading, polarization), HFSS field normalization and frequency interpolation, the `|E* . e_tx|^2` coupling, per-tooth gains. |
 | `tx_background.py` | Background under the comb teeth: local DPSS fit (`method='dpss'`, default) or gap averaging (`method='gap'`). |
@@ -26,6 +26,9 @@ re-exports the common entry points; it contains no logic of its own.
 
 ## Recent changes
 
+- 2026-09-25 (Claude Code, for Aaron): `beam_rotations` now re-exports
+  `eigsep_base.rotations` (merged to eigsep_base main as `d6db0c0`); the
+  implementation and its tests live there.
 - 2026-09-25 (Claude Code, for Aaron; branch `beam-mapping-promotion`, phase 1 of
   promoting `data-analysis/scripts/marjum-2026-07/fit_beam.py`): added
   `beam_rotations`, `tx_coupling`, `tx_background` and `tx_teeth`. **Breaking.**
