@@ -16,19 +16,29 @@ Layers, roughly in dependency order:
   recovery from alternating transmitter arms.
 * :mod:`~eigsep_data.beam_mapping.tx_model` -- HFSS-backed forward model of
   the transmitter coupling and correlator waterfall.
-* :mod:`~eigsep_data.beam_mapping.basis` -- low-rank template banks (PCA
-  eigen-beams) packed as an ``HFSSBeamSet`` for linear fitting.
+* :mod:`~eigsep_data.beam_mapping.beam_basis` -- the empirical-beam basis:
+  real spherical harmonics x a spectral basis (PCA or DPSS).
 * :mod:`~eigsep_data.beam_mapping.rfi` -- data-space RFI flagging using
   out-of-band monitor channels.
-* :mod:`~eigsep_data.beam_mapping.fit` -- transmitter position and
-  polarization fitting (JAX).
+* :mod:`~eigsep_data.beam_mapping.tx_fit` -- the beam fit to transmitter
+  teeth: az-offset/polarization scan, geometry fit, joint empirical-beam fit
+  (JAX), scoring.
+* :mod:`~eigsep_data.beam_mapping.tx_export` -- write a fitted beam in the
+  HFSS beam-map format.
 * :mod:`~eigsep_data.beam_mapping.diagnostics` -- v007 campaign loading,
   joint fits and standard diagnostic figures.
 
 This module re-exports the common entry points; it contains no logic.
 """
 
-from .basis import BeamPCA, compute_beam_pca
+from .beam_basis import (
+    DPSSSpectralBasis,
+    fit_spherical_harmonics,
+    initial_coefficients,
+    pca_basis,
+    real_spherical_harmonics,
+    select_lmax,
+)
 from .beam_rotations import (
     body_to_enu,
     enu_to_body,
@@ -54,9 +64,24 @@ from .tx_coupling import (
     heading_between,
     interpolate_fields,
     normalize_fields,
+    sample_fields,
     tooth_gains,
     transmitter_coupling,
+    transmitter_frame,
     transmitter_power,
+)
+from .tx_export import export_beam
+from .tx_fit import (
+    PARAM_NAMES,
+    JointBeamFit,
+    ToothData,
+    TxGeometryModel,
+    coarse_offset_alpha,
+    fit_geometry,
+    hfss_power,
+    score,
+    stripe_split,
+    tooth_fields,
 )
 from .tx_model import (
     HFSSBeamSet,
@@ -69,5 +94,6 @@ from .tx_model import (
 )
 from .tx_teeth import isolation, neighbour_coherence, select_teeth, tooth_arms
 
-# diagnostics and fit pull in matplotlib / JAX; import them explicitly as
-# eigsep_data.beam_mapping.diagnostics / .fit rather than re-exporting here.
+# diagnostics pulls in matplotlib; import it explicitly as
+# eigsep_data.beam_mapping.diagnostics rather than re-exporting here. tx_fit
+# imports JAX only inside JointBeamFit.fit.

@@ -17,15 +17,28 @@ re-exports the common entry points; it contains no logic of its own.
 | `tx_coupling.py` | Transmitter geometry (ENU heading, polarization), HFSS field normalization and frequency interpolation, the `|E* . e_tx|^2` coupling, per-tooth gains. |
 | `tx_background.py` | Background under the comb teeth: local DPSS fit (`method='dpss'`, default) or gap averaging (`method='gap'`). |
 | `tx_teeth.py` | Model-free tooth selection: isolation and iterative neighbour coherence. |
+| `beam_basis.py` | Empirical-beam basis: real spherical harmonics (`select_lmax`) x a spectral basis, PCA (`pca_basis`, an `eigsep_base.spectral_basis.SpectralBasis`) or delay-limited DPSS with sinc continuation (`DPSSSpectralBasis`). |
+| `tx_fit.py` | The beam fit to transmitter teeth: `ToothData`, `stripe_split`, `TxGeometryModel`, `coarse_offset_alpha` (az offset x polarization grid), `fit_geometry` (nested geometry corrections), `JointBeamFit` (empirical beam + positive tooth gains, JAX float64 + L-BFGS-B), `score`. |
+| `tx_export.py` | `export_beam`: a fitted beam in the HFSS beam-map format (`read_beam`-compatible). |
 | `mapper.py` | Non-negative theta/phi gain recovery from alternating transmitter arms (`PolarizationBeamMapper`). |
 | `tx_model.py` | HFSS-backed simulation of transmitter spikes and correlator waterfalls (`HFSSBeamSet`, consumes Dominic's `hfss_beam_maps/bowtie_beam.npz` format), built on `tx_coupling`. |
-| `basis.py` | Low-rank template banks (PCA eigen-beams, `BeamPCA`) packed as an `HFSSBeamSet` for linear fitting. |
 | `rfi.py` | Model-independent RFI flagging from raw correlator data (not beam residuals) — flags outlier times using off-comb monitor channels. |
-| `fit.py` | Transmitter position and polarization fitting (JAX). |
 | `diagnostics.py` | v007 campaign loading, joint fits, and the standard diagnostic figures. `load_v007_data` is **frozen**: `Selection.load_bundle` supersedes it for new work, but v007 is withdrawn and ~35 call sites in `data-analysis/notebooks/arp/marjum-2026-07/` published numbers out of exactly that code path. Keep it working, do not build on it. |
 
 ## Recent changes
 
+- 2026-09-25 (Claude Code, for Aaron; phase 2 of the `fit_beam` promotion):
+  added `beam_basis`, `tx_fit` and `tx_export`. The package reproduces beam
+  fit v0011 to machine precision from its own inputs
+  (`tests/test_beam_mapping_v0011_regression.py`, skipped without the
+  campaign checkout). An end-to-end synthetic test simulates a comb seen
+  through the HFSS beam on a Marjum-like raster, over a rippled sky with noise
+  and leakage, and recovers HFSS from a distorted starting beam (held-out error
+  24% -> 1%). **Removed**: `fit.py` (`fit_multi_freq_joint`, on
+  `beam_sim`'s separate rotation; its one known caller,
+  `notebooks/dominic/test_beam_mapping_module.ipynb`, already imported it from a
+  path that no longer exists) and `basis.py` (`BeamPCA`, replaced by
+  `beam_basis.pca_basis`).
 - 2026-09-25 (Claude Code, for Aaron): `beam_rotations` now re-exports
   `eigsep_base.rotations` (merged to eigsep_base main as `d6db0c0`); the
   implementation and its tests live there.
@@ -42,8 +55,6 @@ re-exports the common entry points; it contains no logic of its own.
   `tx_background` keeps DPSS modes to a concentration of 1e-6.
   `concentration_min=None` reproduces the floor(2NW)+1 rule of beam fits
   v0009-v0011, which cannot represent a constant near the window edges.
-  Still to come: `beam_basis`, the joint fit and export (phase 2);
-  `fit.py`/`beam_sim.TransmitterAntenna` still carry their own rotation.
 
 - 2026-09-17 (`agent:eigsep-67`): marked `diagnostics.load_v007_data`
   frozen rather than migrating it onto the new `eigsep_data.bundle`

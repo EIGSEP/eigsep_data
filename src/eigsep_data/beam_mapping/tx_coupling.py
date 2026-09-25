@@ -16,6 +16,8 @@ ground_heading
 heading_between
 normalize_fields
 interpolate_fields
+transmitter_frame
+sample_fields
 transmitter_coupling
 transmitter_power
 tooth_gains
@@ -88,6 +90,45 @@ def interpolate_fields(fields, freqs_mhz, target_mhz):
     return interp1d(np.asarray(freqs_mhz, float), fields, axis=0)(np.asarray(target_mhz, float))
 
 
+def transmitter_frame(rotations, geometry, arms):
+    """The transmitter as seen from the antenna body frame, for each pointing.
+
+    Returns ``(theta, phi, rhat, e)``: the transmitter direction (radians and
+    unit vector, ``(n, 3)``) and the transverse unit-less field direction of the
+    arm driven at each pointing, ``(n, 3)``. ``arms`` is an int or ``(n,)``;
+    pass ``arms=None`` to get both arms, ``e`` then ``(2, n, 3)``.
+    """
+    rotations = np.asarray(rotations, float)
+    n = rotations.shape[0]
+    rhat = enu_to_body(geometry.heading_enu, rotations)                       # (n, 3)
+    theta, phi = vector_to_spherical(rhat)
+
+    def transverse(e_enu):
+        e = enu_to_body(e_enu, rotations)
+        return e - np.sum(e * rhat, axis=-1, keepdims=True) * rhat
+
+    if arms is None:
+        e = np.stack([transverse(geometry.field_enu(a)) for a in (0, 1)])
+    else:
+        arms = np.broadcast_to(np.asarray(arms, int), (n,))
+        e = transverse(np.where(arms[:, None] == 0, geometry.field_enu(0)[None, :],
+                                geometry.field_enu(1)[None, :]))
+    return theta, phi, rhat, e
+
+
+def sample_fields(fields, theta, phi, interpolation='bilinear'):
+    """Beam fields ``(nfreq, 3, npix)`` toward (theta, phi): ``(nfreq, n, 3)``."""
+    import healpy as hp
+
+    nside = hp.npix2nside(fields.shape[-1])
+    if interpolation == 'bilinear':
+        pix, weight = hp.get_interp_weights(nside, theta, phi)                # (4, n)
+        return np.einsum('fckn,kn->fnc', fields[:, :, pix], weight)
+    if interpolation == 'nearest':
+        return np.moveaxis(fields[:, :, hp.ang2pix(nside, theta, phi)], 1, -1)
+    raise ValueError("interpolation must be 'bilinear' or 'nearest'")
+
+
 def transmitter_coupling(fields, rotations, geometry, arms, interpolation='bilinear'):
     """Complex coupling ``E_beam* . e_tx`` for every frequency slice and pointing.
 
@@ -108,25 +149,9 @@ def transmitter_coupling(fields, rotations, geometry, arms, interpolation='bilin
     coupling : (nfreq, n) complex
     theta, phi : (n,) radians, the transmitter direction in the body frame.
     """
-    import healpy as hp
-
     fields = np.asarray(fields)
-    rotations = np.asarray(rotations, float)
-    n = rotations.shape[0]
-    arms = np.broadcast_to(np.asarray(arms, int), (n,))
-    rhat = enu_to_body(geometry.heading_enu, rotations)                       # (n, 3)
-    theta, phi = vector_to_spherical(rhat)
-    nside = hp.npix2nside(fields.shape[-1])
-    if interpolation == 'bilinear':
-        pix, weight = hp.get_interp_weights(nside, theta, phi)                # (4, n)
-        beam = np.einsum('fckn,kn->fnc', fields[:, :, pix], weight)          # (nfreq, n, 3)
-    elif interpolation == 'nearest':
-        beam = np.moveaxis(fields[:, :, hp.ang2pix(nside, theta, phi)], 1, -1)
-    else:
-        raise ValueError("interpolation must be 'bilinear' or 'nearest'")
-    e_enu = np.where(arms[:, None] == 0, geometry.field_enu(0)[None, :], geometry.field_enu(1)[None, :])
-    e = enu_to_body(e_enu, rotations)
-    e = e - np.sum(e * rhat, axis=1, keepdims=True) * rhat                   # transverse part
+    theta, phi, rhat, e = transmitter_frame(rotations, geometry, arms)
+    beam = sample_fields(fields, theta, phi, interpolation)                   # (nfreq, n, 3)
     w = beam - np.sum(beam * rhat[None], axis=2, keepdims=True) * rhat[None]
     return np.einsum('fni,ni->fn', np.conj(w), e), theta, phi
 
