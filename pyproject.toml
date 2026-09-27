@@ -32,7 +32,6 @@ dependencies = [
     "eigsep_redis",
     "eigsep-vna",
     "picohost",
-    "eigsep_terrain",
     # beam_mapping.{diagnostics,rfi} read corr files through
     # eigsep_observing.io, and tests/conftest.py writes its fixtures with
     # it. Imported lazily in src/, at module scope in the tests.
@@ -56,7 +55,6 @@ eigsep_redis = { path = "../eigsep_redis", editable = true }
 eigsep-vna = { path = "../cmt_vna", editable = true }
 picohost = { path = "../pico-firmware/picohost", editable = true }
 # Not on PyPI; resolved from the sibling checkouts, non-editable.
-eigsep_terrain = { path = "../eigsep_terrain" }
 healjax = { path = "../healjax" }
 eigsep_observing = { path = "../eigsep_observing", editable = true }
 
