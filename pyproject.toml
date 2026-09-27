@@ -29,9 +29,6 @@ dependencies = [
     # hpm.py uses scipy.special.sph_harm_y, added in 1.15
     "scipy>=1.15",
     "eigsep_base",
-    "eigsep_redis",
-    "eigsep-vna",
-    "picohost",
     # beam_mapping.{diagnostics,rfi} read corr files through
     # eigsep_observing.io, and tests/conftest.py writes its fixtures with
     # it. Imported lazily in src/, at module scope in the tests.
@@ -48,12 +45,12 @@ dependencies = [
 # path sources are ignored.
 #
 # Field setup: the eigsep stack comes from local editable checkouts so
-# code can be updated on-site without network access.
+# code can be updated on-site without network access. uv applies these
+# sources to direct dependencies only; picohost, eigsep-vna and
+# eigsep_redis arrive through eigsep_observing, so install those
+# editable from their own checkouts first.
 [tool.uv.sources]
 eigsep_base = { path = "../eigsep_base", editable = true }
-eigsep_redis = { path = "../eigsep_redis", editable = true }
-eigsep-vna = { path = "../cmt_vna", editable = true }
-picohost = { path = "../pico-firmware/picohost", editable = true }
 # Not on PyPI; resolved from the sibling checkouts, non-editable.
 healjax = { path = "../healjax" }
 eigsep_observing = { path = "../eigsep_observing", editable = true }
