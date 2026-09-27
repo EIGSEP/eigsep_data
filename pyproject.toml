@@ -19,52 +19,45 @@ classifiers = [
     "Programming Language :: Python :: 3",
 ]
 dependencies = [
-    "astropy",
-    "croissant-sim",
-    # croissant-sim imports spiceypy but doesn't declare it
-    "spiceypy",
-    "fftvis",
     "h5py",
-    "hdf5plugin",
     "healpy",
     "jax",
     "jax-healpy",
     "matplotlib",
-    "matvis",
     "numpy",
-    "optax",
     "pandas<3",
     # hpm.py uses scipy.special.sph_harm_y, added in 1.15
     "scipy>=1.15",
-    "tqdm",
     "eigsep_base",
-    "eigsep_redis",
-    "eigsep-vna",
-    "picohost",
-    "eigsep_terrain @ git+https://github.com/AaronParsons/eigsep_terrain.git@main",
-    "healjax @ git+https://github.com/AaronParsons/healjax.git@main",
+    # beam_mapping.{diagnostics,rfi} read corr files through
+    # eigsep_observing.io, and tests/conftest.py writes its fixtures with
+    # it. Imported lazily in src/, at module scope in the tests.
+    "eigsep_observing",
+    "healjax @ git+https://github.com/EIGSEP/healjax.git@main",
     "hera_filters @ git+https://github.com/HERA-Team/hera_filters.git@main",
-    "hera_qm @ git+https://github.com/HERA-Team/hera_qm.git@main",
-    "hera_sim @ git+https://github.com/HERA-Team/hera_sim.git@main",
-    "pygdsm",
 ]
 
-# eigsep_base and healjax are not on PyPI yet. Until they are, install them
-# from the sibling checkouts with:
-#     pip install -e ../eigsep_base -e ../healjax
-# then `pip install -e .` here (or add them to [tool.uv.sources] below if
-# you drive the workspace with uv).
-
-# Field setup: eigsep stack comes from local editable checkouts so code
-# can be updated on-site without network access.
+# eigsep_base and eigsep_observing are not on PyPI. Until they are,
+# install them from the sibling checkouts with:
+#     pip install -e ../eigsep_base -e ../eigsep_observing
+# then `pip install -e .` here. CI installs them from GitHub instead --
+# see .github/workflows/ci.yml, which uses `uv pip install` so these
+# path sources are ignored.
+#
+# Field setup: the eigsep stack comes from local editable checkouts so
+# code can be updated on-site without network access. uv applies these
+# sources to direct dependencies only; picohost, eigsep-vna and
+# eigsep_redis arrive through eigsep_observing, so install those
+# editable from their own checkouts first.
 [tool.uv.sources]
 eigsep_base = { path = "../eigsep_base", editable = true }
-eigsep_redis = { path = "../eigsep_redis", editable = true }
-eigsep-vna = { path = "../cmt_vna", editable = true }
-picohost = { path = "../pico-firmware/picohost", editable = true }
+# Not on PyPI; resolved from the sibling checkouts, non-editable.
+healjax = { path = "../healjax" }
+eigsep_observing = { path = "../eigsep_observing", editable = true }
 
 [project.scripts]
 eigsep-quicklook = "eigsep_data.quicklook:main"
+eigsep-rfi-v3-beta = "eigsep_data.rfi_run:main"
 eigsep-select-files = "eigsep_data.select_files:main"
 eigsep-build-masks = "eigsep_data.flagging.build_masks:main"
 eigsep-publish-geometry-release = "eigsep_data.geometry_release:main"
@@ -85,6 +78,19 @@ dev = [
     "flake8",
     "pre-commit",
     "nbstripout",
+    # test_browse builds StateBrowser with controls=True and patches
+    # IPython.display, so these are test requirements, not just `vis`.
+    "ipywidgets",
+    "ipython",
+]
+
+# s11.py is the only consumer of the VNA driver, and it is on its way
+# out to eigsep_cal (refactor/s11-moves-to-eigsep-cal). Kept as an extra
+# so the module still works on main without making a VNA driver a hard
+# dependency of every install. Resolved from PyPI: the ../cmt_vna path
+# source the old declaration used does not exist on this machine.
+s11 = [
+    "eigsep-vna",
 ]
 # Archived upstream (github.com/EIGSEP/eigsep_corr). Nothing in src/
 # imports it — only the deployment-1/2/3 notebooks, which predate

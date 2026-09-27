@@ -4,12 +4,10 @@ from eigsep_data.beam_mapping import (
     MOTOR_DEG_PER_STEP,
     PolarizationBeamMapper,
     TransmitterGeometry,
-    rotation_matrix,
     fuse_pointing,
     imu_elevation_deg,
     estimate_motor_slip_steps,
     simulate_pointing_streams,
-    TransmitterGeometry,
 )
 
 
@@ -26,7 +24,7 @@ def test_pointing_fusion_matches_notebook_conventions():
 
 
 def test_heading_and_alpha_recovered_from_off_axis_synthetic_data():
-    mapper = PolarizationBeamMapper(None, None, sampler=beam)
+    mapper = PolarizationBeamMapper(None, None, psi_deg=142.164, sampler=beam)
     az = np.linspace(-175, 175, 180)
     el = 20 * np.sin(np.linspace(0, 3 * np.pi, az.size))
     arms = np.arange(az.size) % 2
@@ -34,7 +32,7 @@ def test_heading_and_alpha_recovered_from_off_axis_synthetic_data():
     truth = TransmitterGeometry(heading, 27)
     y, _ = mapper.predict(az, el, truth, arms, scale=1.8, offset=0.03)
     fit = mapper.fit_heading(az, el, arms, y, [25, -15, 20])
-    assert np.linalg.norm(fit.geometry.heading_top - heading) < 1e-5
+    assert np.linalg.norm(fit.geometry.heading_enu - heading) < 1e-5
     assert abs(fit.geometry.alpha_deg - 27) < 1e-5
     assert abs(fit.scale - 1.8) < 1e-5
     assert abs(fit.offset - 0.03) < 1e-5
@@ -56,12 +54,5 @@ def test_noisy_pointing_streams_expose_encoder_slip():
 
 def test_transmitter_arms_match_dominic_e2_convention():
     tx = TransmitterGeometry([0, 0, -1], alpha_deg=60)
-    np.testing.assert_allclose(tx.field_top(0), [-np.sin(np.deg2rad(60)), 0.5, 0])
-    np.testing.assert_allclose(tx.field_top(1), [-0.5, -np.sin(np.deg2rad(60)), 0])
-
-
-def test_directed_azimuth_shaft_axis():
-    np.testing.assert_allclose(
-        rotation_matrix(90, 0, az_axis=(0, 0, -1)) @ [1, 0, 0],
-        [0, -1, 0], atol=1e-12,
-    )
+    np.testing.assert_allclose(tx.field_enu(0), [-np.sin(np.deg2rad(60)), 0.5, 0])
+    np.testing.assert_allclose(tx.field_enu(1), [-0.5, -np.sin(np.deg2rad(60)), 0])

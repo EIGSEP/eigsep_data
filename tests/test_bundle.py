@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from eigsep_data import MetadataIndex
-from eigsep_data.bundle import Campaign, _resolve_key
+from eigsep_data.bundle import Campaign, _resolve_cross, _resolve_key
 
 from conftest import NCHAN, write_corr_file
 
@@ -386,3 +386,94 @@ class TestFlagsWholeFileRead:
         root, names, _f, _b = campaign
         with pytest.raises(KeyError, match=r"\['0', '4'\]"):
             get("flags").read_file(Campaign(root), "v2", names[0], "9")
+
+
+SWAPPED = {"0": "box-air", "1": "box-air", "4": "box-gnd", "5": "box-gnd"}
+
+
+@pytest.fixture
+def cross_campaign(tmp_path):
+    """Two files carrying the "04" cross, with the antennas swapped
+    between them -- the 07-12 vs 07-17 situation in miniature."""
+    data = tmp_path / "data"
+    data.mkdir()
+    names = ["corr_20260717_150041Z.h5", "corr_20260717_151041Z.h5"]
+    for i, (name, ants) in enumerate(zip(names, (ANTS, SWAPPED))):
+        write_corr_file(
+            data / name,
+            ntimes=6,
+            keys=("0", "4", "04"),
+            sync_time=1.7843e9 + 600 * i,
+            input_to_ant=ants,
+            seed=i,
+        )
+    return tmp_path, names
+
+
+class TestResolveCross:
+    def test_lower_input_first_is_not_conjugated(self, cross_campaign):
+        root, names = cross_campaign
+        path = root / "data" / names[0]
+        assert _resolve_cross(
+            path, ("box-gnd", "box-air"), {"0", "4", "04"}
+        ) == ("04", False)
+
+    def test_swapped_wiring_is_conjugated(self, cross_campaign):
+        root, names = cross_campaign
+        path = root / "data" / names[1]
+        assert _resolve_cross(
+            path, ("box-gnd", "box-air"), {"0", "4", "04"}
+        ) == ("04", True)
+
+    def test_missing_cross_key_is_none(self, cross_campaign):
+        root, names = cross_campaign
+        path = root / "data" / names[0]
+        assert _resolve_cross(path, ("box-gnd", "box-air"), {"0", "4"}) is None
+
+    def test_mux_copy_of_one_antenna_is_not_a_cross(self, cross_campaign):
+        # "01" is box-gnd against its own mux copy, not a gnd x air cross.
+        root, names = cross_campaign
+        path = root / "data" / names[0]
+        assert _resolve_cross(path, ("box-gnd", "box-air"), {"01"}) is None
+
+
+class TestCrossBundle:
+    def test_cross_alias_orients_every_file_the_same_way(self, cross_campaign):
+        root, names = cross_campaign
+        index = MetadataIndex(root / "data", cache=False)
+        plain = index.select().load(keys=["04"])
+        bundle = index.select().load_bundle(antenna="cross", root=root)
+        stored = np.asarray(plain.data["04"])
+        swapped = (plain.meta.file == names[1]).to_numpy()
+        expect = np.where(swapped[:, None], np.conj(stored), stored)
+        assert np.iscomplexobj(bundle.data)
+        np.testing.assert_array_equal(bundle.data, expect)
+        np.testing.assert_array_equal(bundle.meta.conjugated, swapped)
+        assert bundle.provenance["cross"] == ["box-gnd", "box-air"]
+        assert bundle.provenance["keys"] == ["04"]
+
+    def test_explicit_pair_reversed_is_the_conjugate(self, cross_campaign):
+        root, _names = cross_campaign
+        index = MetadataIndex(root / "data", cache=False)
+        ga = index.select().load_bundle(antenna="cross", root=root)
+        ag = index.select().load_bundle(
+            antenna=("box-air", "box-gnd"), root=root
+        )
+        np.testing.assert_array_equal(ag.data, np.conj(ga.data))
+
+    def test_pair_of_one_antenna_is_rejected(self, cross_campaign):
+        root, _names = cross_campaign
+        index = MetadataIndex(root / "data", cache=False)
+        with pytest.raises(ValueError, match="two different"):
+            index.select().load_bundle(
+                antenna=("box-gnd", "box-gnd"), root=root
+            )
+
+    def test_file_without_the_cross_raises_like_a_missing_antenna(
+        self, campaign
+    ):
+        # The plain campaign fixture carries only autos.
+        root, _names, _f, _b = campaign
+        index = MetadataIndex(root / "data", cache=False)
+        with pytest.raises(ValueError, match="no selected file"):
+            index.select().load_bundle(antenna="cross", root=root)

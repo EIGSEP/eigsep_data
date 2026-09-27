@@ -1,0 +1,48 @@
+name: Build and test Python package
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # requires-python is >=3.11. 3.14 is deliberately left off until
+        # healpy and jax ship wheels for it; add it once they do.
+        python-version: ["3.11", "3.12", "3.13"]
+
+    env:
+      # plot.py and quicklook.py build figures during the test run; the
+      # runner has no display. test_browse sets Agg itself, the rest
+      # rely on this.
+      MPLBACKEND: Agg
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v8.3.2
+        with:
+          enable-cache: true
+          cache-dependency-glob: "pyproject.toml"
+          python-version: ${{ matrix.python-version }}
+      # `uv pip install --no-sources` rather than `uv sync`: the
+      # [tool.uv.sources] entries point at sibling checkouts
+      # (../eigsep_base and friends) that exist in the field and on
+      # Aaron's machine but not on a runner, and uv honours them even in
+      # pip mode unless --no-sources is passed. The two non-PyPI packages
+      # come from GitHub instead; everything else resolves from PyPI.
+      #
+      # Editable, because beam_sim.DEFAULT_BEAM_PATH resolves
+      # hfss_beam_maps/bowtie_beam.npz by walking up from __file__ to the
+      # repo root, which only exists in a source checkout. A non-editable
+      # install fails test_beam_sim.py::test_default_path_exists_and_loads.
+      # Ship the npz as package data and this can drop the -e.
+      - name: Install
+        run: |
+          uv venv
+          uv pip install --no-sources \
+            "eigsep_base @ git+https://github.com/EIGSEP/eigsep_base" \
+            "eigsep_observing @ git+https://github.com/EIGSEP/eigsep_observing" \
+            -e ".[dev]"
+      - name: Test with pytest
+        run: .venv/bin/python -m pytest tests

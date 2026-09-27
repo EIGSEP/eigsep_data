@@ -869,6 +869,7 @@ class Selection:
         band_mhz=None,
         root=None,
         missing="skip",
+        resolution_policy=None,
     ):
         """Read these rows for one antenna, with companion products
         aligned to them; see :func:`eigsep_data.bundle.load_bundle`."""
@@ -882,6 +883,7 @@ class Selection:
             band_mhz=band_mhz,
             root=root,
             missing=missing,
+            resolution_policy=resolution_policy,
         )
 
     def load(self, keys=None, time_avg=1, missing="raise"):

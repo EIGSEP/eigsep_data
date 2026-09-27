@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 
 from . import products as _products
+from .antenna_policy import AntennaResolutionPolicy
 from .paths import get_campaign_root
 from .products.base import axis_fingerprint, locate_axis
 
@@ -54,7 +55,8 @@ class Campaign:
 
 @dataclass
 class Bundle:
-    """Aligned raw data and companions for one antenna over one window."""
+    """Aligned raw data and companions for one antenna (or one antenna
+    pair's cross correlation) over one window."""
 
     #: Frequency axis shared by every array here, in MHz.
     freqs_mhz: np.ndarray
@@ -199,6 +201,59 @@ def _resolve_key(path, antenna, available):
     return sorted(candidates, key=lambda k: (int(k) % 2, int(k)))[0]
 
 
+#: ``antenna=`` shorthand for the one cross this campaign is built
+#: around. Order matters: the first antenna is unconjugated.
+CROSS_ALIASES = {"cross": ("box-gnd", "box-air")}
+
+
+def _resolve_cross(path, pair, available):
+    """
+    The cross key carrying *pair* in this file, and whether to conjugate
+    it, or ``None``.
+
+    A cross key is two input digits, lower first; nominally
+    ``V_lo * conj(V_hi)``, though that sign convention is not verified
+    against the gateware here. Which antenna is on the lower input is
+    per-file -- box-air is input 0 and box-gnd input 2 on 2026-07-12,
+    the other way round on 07-17 -- so the stored key alone does not
+    say which way round the product is. The returned flag is True when
+    *pair*'s first antenna sits on the higher input, i.e. when the
+    stored product must be conjugated so that every file reads in the
+    same orientation, *pair*[0] in the unconjugated slot.
+
+    Wired (even) inputs are preferred over their mux copies, as in
+    :func:`_resolve_key`.
+    """
+    a, b = pair
+    mapping = _input_to_ant(path)
+
+    def inputs(ant):
+        ks = [k for k, v in mapping.items() if v == ant]
+        return sorted(ks, key=lambda k: (int(k) % 2, int(k)))
+
+    for ia in inputs(a):
+        for ib in inputs(b):
+            if ia == ib:
+                continue
+            lo, hi = sorted((ia, ib), key=int)
+            if lo + hi in available:
+                return lo + hi, int(ia) > int(ib)
+    return None
+
+
+def _as_pair(antenna):
+    """``(ant_a, ant_b)`` if *antenna* names a cross, else ``None``."""
+    if isinstance(antenna, str):
+        return CROSS_ALIASES.get(antenna)
+    pair = tuple(antenna)
+    if len(pair) != 2 or pair[0] == pair[1]:
+        raise ValueError(
+            f"a cross antenna= must name two different antennas, "
+            f"got {antenna!r}"
+        )
+    return pair
+
+
 def _band_slice(freqs, band_mhz):
     if band_mhz is None:
         return 0, int(freqs.size)
@@ -220,6 +275,7 @@ def load_bundle(
     band_mhz=None,
     root=None,
     missing="skip",
+    resolution_policy=None,
 ):
     """
     Read *selection*'s rows for one antenna, with companion products.
@@ -232,10 +288,16 @@ def load_bundle(
         vocabulary: time windows and metadata filters work too, which
         filename ranges cannot express and which matter because corr
         filenames are file *close* times.
-    antenna : str, optional
+    antenna : str or (str, str), optional
         Physical antenna name (``"box-gnd"``, ``"box-air"``), resolved
         to an input key per file from that file's own header. Exactly
-        one of *antenna* or *key* is required.
+        one of *antenna* or *key* is required. A pair of names, or
+        ``"cross"`` for ``("box-gnd", "box-air")``, selects their cross
+        correlation instead, resolved to a cross key (``"04"``,
+        ``"02"``, ...) per file and conjugated where needed so that
+        every row has the same orientation, nominally ``V_a * conj(V_b)``. ``meta.conjugated``
+        says which rows were flipped. Companion products are stored
+        per input, so a cross bundle will usually report them skipped.
     key : str, optional
         A literal correlator input key, when you mean one input rather
         than one antenna.
@@ -251,6 +313,10 @@ def load_bundle(
     missing : {"skip", "raise"}
         What to do with a file that has no payload for a requested
         product, or no key for the requested antenna.
+    resolution_policy : AntennaResolutionPolicy, mapping, or path, optional
+        Explicit file-metadata rules mapping physical antennas and crosses to
+        raw keys. When omitted, retain the generic header-based resolver.
+        Policy rejection and ambiguous/incomplete rules always raise.
 
     Returns
     -------
@@ -262,6 +328,7 @@ def load_bundle(
         raise ValueError("missing must be 'skip' or 'raise'")
 
     campaign = Campaign.for_index(selection.index, root)
+    policy = AntennaResolutionPolicy.load(resolution_policy)
     specs = [_products.parse_spec(s) for s in products]
     for kind, version in specs:
         product = _products.get(kind)
@@ -277,16 +344,37 @@ def load_bundle(
         )
 
     # --- which key carries the antenna, per file -------------------
+    pair = _as_pair(antenna) if antenna is not None else None
     keys_by_file = {}
+    conj_by_file = {}
+    rule_by_file = {}
     no_key = []
     for fname in meta.file.unique():
+        conj_by_file[fname] = False
         if key is not None:
             keys_by_file[fname] = key
             continue
         available = set(
             str(meta.loc[meta.file == fname, "data_keys"].iloc[0]).split(",")
         )
-        resolved = _resolve_key(data_dir / fname, antenna, available)
+        file_meta = meta.loc[meta.file == fname].iloc[0]
+        if policy is not None and pair is not None:
+            resolved, conj, rule = policy.resolve_cross(
+                file_meta, pair, available, fname=fname
+            )
+            conj_by_file[fname] = conj
+            rule_by_file[fname] = rule
+        elif policy is not None:
+            resolved, rule = policy.resolve_auto(
+                file_meta, antenna, available, fname=fname
+            )
+            rule_by_file[fname] = rule
+        elif pair is not None:
+            got = _resolve_cross(data_dir / fname, pair, available)
+            resolved, conj = got if got is not None else (None, False)
+            conj_by_file[fname] = conj
+        else:
+            resolved = _resolve_key(data_dir / fname, antenna, available)
         if resolved is None:
             no_key.append(fname)
         else:
@@ -310,14 +398,22 @@ def load_bundle(
     # phases, so the selection is split by resolved key, each part read
     # with the key it actually has, and the parts re-sorted into one
     # time-ordered block.
+    # A cross key is further split by orientation: the same "04" can be
+    # gnd x air* in one phase and air x gnd* in another.
     blocks, metas = [], []
     freqs_full = None
-    for this_key in sorted(set(keys_by_file.values())):
-        files = [f for f, k in keys_by_file.items() if k == this_key]
+    groups = sorted({(k, conj_by_file[f]) for f, k in keys_by_file.items()})
+    for this_key, conj in groups:
+        files = [
+            f
+            for f, k in keys_by_file.items()
+            if k == this_key and conj_by_file[f] == conj
+        ]
         sub = selection.select(files=sorted(files))
         loaded = sub.load(keys=[this_key])
-        blocks.append(np.asarray(loaded.data[this_key]))
-        metas.append(loaded.meta.assign(input_key=this_key))
+        block = np.asarray(loaded.data[this_key])
+        blocks.append(np.conj(block) if conj else block)
+        metas.append(loaded.meta.assign(input_key=this_key, conjugated=conj))
         freqs_full = np.asarray(loaded.freq, dtype=float)
 
     raw = np.concatenate(blocks, axis=0)
@@ -430,11 +526,16 @@ def load_bundle(
         provenance={
             "campaign_root": str(campaign.root),
             "antenna": antenna,
+            "cross": list(pair) if pair is not None else None,
             "key": key,
             "keys": sorted(set(keys_by_file.values())),
             "band_mhz": band_mhz,
             "used_files": list(rows_meta.file.unique()),
             "skipped_files": no_key,
+            "resolution_policy": (
+                None if policy is None else policy.provenance()
+            ),
+            "resolution_rules": rule_by_file,
             "products": prov_products,
             "selection": selection.summary(),
         },

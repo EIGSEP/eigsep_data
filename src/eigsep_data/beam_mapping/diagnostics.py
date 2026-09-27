@@ -27,8 +27,8 @@ import numpy as np
 from scipy.optimize import minimize
 from scipy.spatial import cKDTree
 
-from .geometry import TransmitterGeometry
-from .tx_model import HFSSBeamSet, ground_heading, simulate_hfss
+from .tx_coupling import TransmitterGeometry, ground_heading
+from .tx_model import HFSSBeamSet, simulate_hfss
 
 
 MOTOR_CAL = 180.0 / 1.13e4
@@ -161,12 +161,16 @@ def _beam_channel_indices(data, beam):
 
 
 def model_v007_points(data, beam_file, height_m=92.5, alpha_deg=60.0,
-                      east_m=0.0, north_m=0.0):
-    """Evaluate every HFSS slice at the exact v007 motor pointings."""
+                      east_m=0.0, north_m=0.0, *, psi_deg):
+    """Evaluate every HFSS slice at the exact v007 motor pointings.
+
+    ``psi_deg`` is the elevation-axle direction (deg ccw from East); see
+    :mod:`~eigsep_data.beam_mapping.beam_rotations`.
+    """
     beam = beam_file if isinstance(beam_file, HFSSBeamSet) else HFSSBeamSet.from_npz(beam_file)
     geom = TransmitterGeometry(ground_heading(east_m, north_m, height_m), alpha_deg)
     arm = np.arange(beam.beam_cart.shape[0]) % 2
-    model, _ = simulate_hfss(beam, data["az_deg"], data["el_deg"], geom, arm)
+    model, _ = simulate_hfss(beam, data["az_deg"], data["el_deg"], geom, arm, psi_deg)
     fi, _ = _beam_channel_indices(data, beam)
     return model[fi], fi, beam.freqs_mhz[fi]
 
@@ -354,7 +358,7 @@ def gross_power_time_flags(data, channels, reference_percentile=99.0,
 
 def _fit_v007_beam_joint_once(data, beam, threshold, height_m, initial,
                                beam_channels, sample_mask=None,
-                               normalization_rms=None):
+                               normalization_rms=None, *, psi_deg):
     """Fit shared pointing/polarization parameters with one gain per channel."""
     channels = np.asarray(beam_channels, dtype=int)
     target_frequencies = np.asarray(data["freqs"])[channels].astype(float)
@@ -396,7 +400,7 @@ def _fit_v007_beam_joint_once(data, beam, threshold, height_m, initial,
         for arm, (indices, grouped_beam) in arm_groups.items():
             group_model, _ = simulate_hfss(
                 grouped_beam, data["az_deg"], data["el_deg"], geom,
-                np.full(data["az_deg"].size, arm, dtype=int))
+                np.full(data["az_deg"].size, arm, dtype=int), psi_deg)
             models[indices] = group_model
         if full:
             return models
@@ -444,8 +448,11 @@ def fit_v007_beam_joint(data, beam_file, threshold=None, height_m=92.5,
                         beam_channels=(536, 544, 552), clip_sigma=5.0,
                         max_clip_iterations=0,
                         gross_outlier_factor=5.0,
-                        gross_reference_percentile=99.0):
-    """Jointly fit channels with local validity and shared residual time flags."""
+                        gross_reference_percentile=99.0, *, psi_deg):
+    """Jointly fit channels with local validity and shared residual time flags.
+
+    ``psi_deg``: elevation-axle direction, deg ccw from East (site constant).
+    """
     beam = beam_file if isinstance(beam_file, HFSSBeamSet) else HFSSBeamSet.from_npz(beam_file)
     channels = np.asarray(beam_channels, dtype=int)
     y_full = data["measured_tx"][:, channels].astype(float)
@@ -470,7 +477,7 @@ def fit_v007_beam_joint(data, beam_file, threshold=None, height_m=92.5,
     for iteration in range(max_clip_iterations + 1):
         fit = _fit_v007_beam_joint_once(
             data, beam, threshold, height_m, current, channels,
-            sample_mask=~flagged, normalization_rms=normalization_rms)
+            sample_mask=~flagged, normalization_rms=normalization_rms, psi_deg=psi_deg)
         current = np.r_[fit.heading, fit.alpha_deg]
         modeled = fit.model.T * fit.gains
         standardized = np.full_like(y_full, np.nan, dtype=float)
@@ -533,20 +540,20 @@ def fit_v007_beam_joint(data, beam_file, threshold=None, height_m=92.5,
 
 def fit_v007_beam(data, beam_file, threshold=None, height_m=92.5,
                   initial=(0.0, 0.0, -1.0, 60.0), beam_channel=BEAM_CHANNEL,
-                  clip_sigma=5.0, max_clip_iterations=0):
+                  clip_sigma=5.0, max_clip_iterations=0, *, psi_deg):
     """Backward-compatible single-channel wrapper around the joint fitter."""
     return fit_v007_beam_joint(
         data, beam_file, threshold, height_m, initial, (beam_channel,),
-        clip_sigma, max_clip_iterations)
+        clip_sigma, max_clip_iterations, psi_deg=psi_deg)
 
 
 def make_diagnostic(data_path, beam_file, output, threshold=None,
                     height_m=92.5, alpha_deg=60.0, beam_channel=BEAM_CHANNEL,
-                    clip_sigma=5.0):
+                    clip_sigma=5.0, *, psi_deg):
     data = load_v007_data(data_path)
     beam = HFSSBeamSet.from_npz(beam_file)
     fit = fit_v007_beam(data, beam, threshold, height_m, (0, 0, -1, alpha_deg),
-                        beam_channel=beam_channel, clip_sigma=clip_sigma)
+                        beam_channel=beam_channel, clip_sigma=clip_sigma, psi_deg=psi_deg)
     display = 0
     channel = int(fit.data_cols[display])
     valid = fit.used_mask
@@ -599,7 +606,7 @@ def make_diagnostic(data_path, beam_file, output, threshold=None,
 def make_joint_diagnostics(data_path, beam_file, output_prefix,
                            beam_channels=(536, 544, 552), threshold=None,
                            height_m=92.5, alpha_deg=60.0, clip_sigma=5.0,
-                           max_clip_iterations=0, initial=None):
+                           max_clip_iterations=0, initial=None, *, psi_deg):
     """Fit two or more channels jointly and write one diagnostic per channel."""
     data = load_v007_data(data_path)
     beam = HFSSBeamSet.from_npz(beam_file)
@@ -608,7 +615,7 @@ def make_joint_diagnostics(data_path, beam_file, output_prefix,
     fit = fit_v007_beam_joint(
         data, beam, threshold, height_m, initial,
         beam_channels=beam_channels, clip_sigma=clip_sigma,
-        max_clip_iterations=max_clip_iterations)
+        max_clip_iterations=max_clip_iterations, psi_deg=psi_deg)
     outputs = []
     for display, channel in enumerate(fit.data_cols):
         channel = int(channel)
@@ -679,15 +686,17 @@ if __name__ == "__main__":
                     help="optional experimental residual clipping; default disabled")
     ap.add_argument("--channel", type=int, default=None)
     ap.add_argument("--channels", type=int, nargs="+", default=[536, 544, 552])
+    ap.add_argument("--psi-deg", type=float, required=True,
+                    help="elevation-axle direction, deg ccw from East (Marjum 2026-07: 142.164)")
     args = ap.parse_args()
     channels = [args.channel] if args.channel is not None else args.channels
     if len(channels) == 1:
         output = args.output if args.output.endswith(".png") else args.output + ".png"
         print(make_diagnostic(args.data_path, args.beam_file, output,
                               args.threshold, args.height_m, args.alpha_deg,
-                              channels[0], args.clip_sigma))
+                              channels[0], args.clip_sigma, psi_deg=args.psi_deg))
     else:
         print(make_joint_diagnostics(args.data_path, args.beam_file, args.output,
                                      channels, args.threshold, args.height_m,
                                      args.alpha_deg, args.clip_sigma,
-                                     args.clip_iterations))
+                                     args.clip_iterations, psi_deg=args.psi_deg))
