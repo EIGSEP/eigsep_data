@@ -33,7 +33,7 @@ dependencies = [
     # eigsep_observing.io, and tests/conftest.py writes its fixtures with
     # it. Imported lazily in src/, at module scope in the tests.
     "eigsep_observing",
-    "healjax @ git+https://github.com/EIGSEP/healjax.git@main",
+    "healjax>=0.2.3",
     "hera_filters @ git+https://github.com/HERA-Team/hera_filters.git@main",
 ]
 
@@ -51,7 +51,7 @@ dependencies = [
 # editable from their own checkouts first.
 [tool.uv.sources]
 eigsep_base = { path = "../eigsep_base", editable = true }
-# Not on PyPI; resolved from the sibling checkouts, non-editable.
+# On PyPI; the sibling checkout is used for local development (non-editable).
 healjax = { path = "../healjax" }
 eigsep_observing = { path = "../eigsep_observing", editable = true }
 
