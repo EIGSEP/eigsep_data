@@ -104,6 +104,45 @@ class Bundle:
         return self.data - self.smooth_model
 
     @property
+    def t_star(self):
+        """Three-state Y factor T* in K, from the ``tcal`` product.
+
+        ``tcal`` applied to :attr:`data`, which stays raw counts. Valid
+        for every switch state: on load and noise-source rows it returns
+        the load and load-plus-noise-source temperatures, which is the
+        check that a calibration is self-consistent. NaN wherever no
+        calibration was close enough in time.
+        """
+        return (
+            self._one("tcal", "tstar_scale") * self.data
+            + self._one("tcal", "tstar_offset")
+        )
+
+    @property
+    def calibrated(self):
+        """Antenna temperature in K at reference plane P, from ``tcal``.
+
+        T* with the antenna, load and receiver S11 corrections, applied
+        to :attr:`data`, which stays raw counts. The correction belongs
+        to the antenna, so rows whose ``rfswitch`` state is not
+        ``RFANT`` are NaN, as are rows with no calibration close enough
+        in time. Includes the balun, coax and switch path; see the
+        product's README.
+        """
+        t = (
+            self._one("tcal", "scale") * self.data
+            + self._one("tcal", "offset")
+        )
+        if "rfswitch" not in self.meta:
+            raise KeyError(
+                "calibrated needs the rfswitch column to keep the antenna "
+                "correction off non-antenna rows; load with an index that "
+                "carries rfswitch"
+            )
+        t[(self.meta.rfswitch != "RFANT").to_numpy()] = np.nan
+        return t
+
+    @property
     def pointing(self):
         """Per-row pointing columns as a DataFrame."""
         return pd.DataFrame(self.products["pointing"], index=self.meta.index)

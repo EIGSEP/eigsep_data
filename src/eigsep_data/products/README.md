@@ -20,6 +20,7 @@ others. See `DATASET_LOADER_PLAN.md` in the parent meta-repo.
 | `smooth_model.py` | DPSS smooth-band model, one companion HDF5 per raw file. |
 | `pointing.py` | Calibrated pointing, one Parquet table, joined on `(file, sample_idx)`. |
 | `gain.py` | Receiver gain / noise temperature, solutions on their own cadence, joined by nearest time within an explicit tolerance. |
+| `tcal.py` | Temperature calibration from nearby field measurements: load/noise-source visits and S11 interpolated in time, nearest load thermistor. Returns per-row coefficients; `Bundle.calibrated` and `Bundle.t_star` apply them, leaving `Bundle.data` raw. |
 
 ## Join shapes
 
@@ -29,7 +30,11 @@ Three exist, which is what the contract has to cover:
   or per day keyed by raw filename (`flags`). Row-sliced, band-matched.
 - **Per-row scalars** keyed by `(file, row)` (`pointing`). An exact join,
   so no tolerance has to be chosen or defended.
-- **Nearest-in-time within a bound** (`gain`, and S11 when it lands).
+- **Interpolated in time between bracketing measurements** (`tcal`).
+  Each ingredient has its own cadence and its own limit, and rows that
+  no pair brackets within the limit, or whose pair straddles a
+  receiver-regime boundary, are NaN rather than extrapolated.
+- **Nearest-in-time within a bound** (`gain`).
   This is the one that goes quietly wrong: a solution carried across a
   switch cycle attaches a calibration to a different receiver state. The
   window is explicit, out-of-window rows are NaN rather than reaching
@@ -59,7 +64,8 @@ Two rules the contract enforces rather than trusts:
 ## Status
 
 `flags`, `smooth_model` and `pointing` are verified against real
-campaign data. **`gain` is tested on synthetic fixtures only** — the
+campaign data. `tcal` is tested on synthetic fixtures; its first real
+version is `derived/tcal/v0000/`, whose README holds the validation. **`gain` is tested on synthetic fixtures only** — the
 real `abscal` solutions are still loose `.npz` in the meta-repo's
 `abscal/` rather than at `derived/gain/v0/solutions.npz`, deferred until
 someone is actually calibrating with it (Aaron, 2026-09-17). Its
@@ -67,6 +73,12 @@ tolerance default and column set are untested guesses about real data;
 the join logic is tested.
 
 ## Recent changes
+
+- 2026-10-01: added `tcal`, the field temperature calibration of
+  box-air at reference plane P, and `Bundle.calibrated` / `Bundle.t_star`
+  to apply it. Raw data stay in `Bundle.data`, so rows with no nearby
+  calibration are NaN only in the calibrated views. Needs `eigsep_cal`
+  (imported when a `tcal` row is fetched).
 
 - 2026-09-17 (`agent:eigsep-67`): added `read_file` to `flags`, so the
   campaign's `flagging/read_flags.py` could become a shim instead of a

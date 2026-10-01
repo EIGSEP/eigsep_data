@@ -30,6 +30,7 @@ class TestRegistry:
             "gain",
             "pointing",
             "smooth_model",
+            "tcal",
         ]
 
     def test_get_returns_an_instance_not_the_class(self):
