@@ -1,7 +1,7 @@
 # hfss_beam_maps
 
-`bowtie_beam.npz` — Dominic's HFSS simulation of the bowtie transmitter
-beam, 52 frequency slices on a HEALPix grid. Read it with
+`bowtie_beam.npz` — Dominic's HFSS simulation of the beam of box-air's
+bowtie antenna (the receiving antenna, not the transmitter), 52 frequency slices on a HEALPix grid. Read it with
 `eigsep_data.beam_sim.read_beam()`; `beam_mapping.tx_model.HFSSBeamSet`
 consumes the same format.
 
@@ -43,6 +43,8 @@ does not survive a non-editable install. See the repo root README.
 
 ## Recent changes
 
+- 2026-10-02: corrected the description: this is box-air's bowtie antenna, not the
+  transmitter's (Aaron). The file is unchanged.
 - 2026-09-17 (`agent:eigsep-67`): added this file; recorded the
   canonical-copy rule after the repo split copied rather than moved the
   directory.
