@@ -106,6 +106,19 @@ Both version directories contain `manifest.json`. Each raw filename maps to
 its source SHA-256 and the SHA-256 of the full parameter set. The flags
 directory also contains `flag_bits.json`.
 
+## Point threshold (`point_scale`)
+
+`positive_auto_excess` compares the radiometer-normalized residual
+`z = (data/model - 1) sqrt(2 dt df)` with `point_cut` (6 in the report bands,
+`other_point_cut` 8 elsewhere). Since revision
+`supported-dpss-v3-beta-lowband-2-empirical-point`, `point_scale="empirical"`
+(the default) divides `z` by each channel's measured temporal scatter (robust,
+from reference cells with `z < fit_clip`, never below 1) before thresholding.
+On Marjum data the scatter of `z` on unflagged cells is 1.4-3.4 times the
+radiometer level, so the fixed radiometer threshold flagged smooth-model error
+as RFI (13-50% of sky cells in `flags@v3-beta.1`; memo 006).
+`point_scale="radiometer"` reproduces the earlier behaviour.
+
 ## Flag meanings
 
 Every nonzero value means that the cell is excluded. Bits can overlap.

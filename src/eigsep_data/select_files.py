@@ -29,8 +29,15 @@ From the shell (``--campaign`` overrides the configured root)::
 
 This module lived at ``marjum-2026-07/curation/select_files.py`` until
 2026-09-19 and anchored on its own ``__file__``; it now resolves the
-campaign through :mod:`eigsep_data.paths`. The mask catalog and the
-meaning of every mask are unchanged.
+campaign through :mod:`eigsep_data.paths`.
+
+2026-10-03: the two comb masks and the comb observing mode were renamed
+after memo 001 identified the combs. ``digital-self-comb`` is now
+``tx-comb-teeth`` (it is the beam-mapping transmitter);
+``comb-rfi-1p25mhz`` is now ``boxair-emi-1mhz`` (box-air's 1.000 MHz
+self-EMI, with its measured window). The old mask names still resolve,
+with a warning. The ``tx-comb`` mode is gone: use ``boxair-emi`` or
+``transmitter``.
 
 Exit status is 0 even when the selection is empty; check the report.
 
@@ -47,6 +54,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import warnings as _warnings
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -183,25 +191,29 @@ CONDITIONAL_MASKS = [
         "reason": "ADC mux configuration actively being iterated",
     },
     {
-        "name": "comb-rfi-1p25mhz",
-        "windows": [("2026-07-16T01:00:00Z", "2026-07-16T01:30:00Z")],
-        "inputs": None,
-        "reason": "RF resonance: comb of spikes every 1.25 MHz plus half-spacing spurs",
+        "name": "boxair-emi-1mhz",
+        # File close times of the first and last comb files,
+        # corr_20260716_011800Z and corr_20260716_165110Z (memo 001).
+        "windows": [("2026-07-16T01:18:00Z", "2026-07-16T16:51:10Z")],
+        "inputs": {"4", "5"},
+        "reason": "box-air's own 1.000 MHz comb EMI (teeth at integer MHz, "
+                  "~10 dB, walks across the channel grid; box-air only, "
+                  "07-16 01:16:57-16:49:03, gone after the Panda power "
+                  "cycle). Self-generated, NOT the beam-mapping transmitter "
+                  "(memo 001). There is no 1.25 MHz comb; this mask "
+                  "replaces comb-rfi-1p25mhz",
     },
     {
-        "name": "digital-self-comb",
+        "name": "tx-comb-teeth",
         "windows": [("2026-07-17T15:37:00Z", "2026-07-18T03:24:00Z")],
         "inputs": None,
-        "reason": "Self-generated comb at 1.953125 MHz = exactly 8 channels "
-                  "(250/128 MHz, an ADC-clock subharmonic; tones at channels "
-                  "= 0 mod 8, including DC). Onset is sharp at "
-                  "corr_20260717_153744Z; intermittent until ~17:00 then "
-                  "continuous. Present on internal loads and on BOTH boxes, "
-                  "so it is instrumental, not sky. This is a per-CHANNEL "
-                  "defect -- prefer masking channels = 0 mod 8 over dropping "
-                  "files. NOTE: it is NOT the TX comb (1.000 MHz, 4.096 ch, "
-                  "walks); the TX was off after 07-16 16:51, so anything in "
-                  "this window selected 'every 8th channel' is self-RFI",
+        "reason": "Beam-mapping transmitter comb: teeth at 1.953125 MHz = "
+                  "exactly 8 channels (channels = 0 mod 8; arm 0 on channels = 0 "
+                  "mod 16, arm 1 on = 8 mod 16), on BOTH antennas from 07-17 "
+                  "15:36 to the end of the data (memo 001). Wanted signal "
+                  "for beam mapping; for sky work exclude channels = 0 mod 8 "
+                  "in this window rather than dropping files. Formerly "
+                  "mislabelled 'digital-self-comb'",
     },
     {
         "name": "thunderstorm",
@@ -257,8 +269,23 @@ DEFAULT_CONDITIONAL = {
     "phaseB-mux-off",
     "phaseC-mux-absent",
     "mux-tuning",
-    "comb-rfi-1p25mhz",
+    "boxair-emi-1mhz",
 }
+
+MASK_ALIASES = {
+    "digital-self-comb": "tx-comb-teeth",
+    "comb-rfi-1p25mhz": "boxair-emi-1mhz",
+}
+"""Deprecated mask name -> current name (renamed 2026-10-03, memo 001).
+
+The 8-channel comb is the beam-mapping transmitter, not a digital
+self-comb; the 07-16 comb is box-air's 1.000 MHz self-EMI, not a 1.25 MHz
+resonance. Old names still resolve, with a FutureWarning.
+
+``comb-rfi-1p25mhz`` resolves to the corrected mask, whose window
+(07-16 01:18-16:51, box-air inputs 4/5 only) differs from the old
+01:00-01:30 all-inputs window: the old window was the field-note guess.
+"""
 """Conditional masks applied unless --no-conditional or --skip-mask.
 
 Deliberately excludes thunderstorm, laptop-rfi, end-of-campaign-writestall and
@@ -299,6 +326,25 @@ def phase_of(t: datetime) -> str:
 
 def in_window(t: datetime, start: str, end: str) -> bool:
     return parse_iso(start) <= t <= parse_iso(end)
+
+
+def resolve_mask_names(names):
+    """Map deprecated mask names to current ones, warning for each.
+
+    Returns a set. Unknown names pass through unchanged so the caller can
+    report them.
+    """
+    out = set()
+    for n in names:
+        new = MASK_ALIASES.get(n)
+        if new is not None:
+            _warnings.warn(
+                f"mask {n!r} is deprecated; it is now {new!r} "
+                f"(renamed 2026-10-03 after memo 001 identified the combs)",
+                FutureWarning, stacklevel=3)
+            n = new
+        out.add(n)
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -348,12 +394,54 @@ MODE_FIELDS = {
     "era": "height_era",
     "rotation": "rot_state",
     "orientation": "orient_bin",
-    "tx-comb": "tx_comb",
+    "boxair-emi": "boxair_emi",
+    "transmitter": "transmitter",
     "acc-len": "corr_acc_len",
     "switch": "rfswitch_dominant",
 }
 """CLI name -> mode_table.jsonl field. `--phase` is handled by the existing
-phase logic and is deliberately not duplicated here."""
+phase logic and is deliberately not duplicated here.
+
+``boxair-emi`` is box-air's own 1.000 MHz comb EMI (07-16); ``transmitter``
+is the beam-mapping transmitter (07-17 onward). Both take on/off/partial."""
+
+REMOVED_MODE_FIELDS = {
+    "tx-comb": (
+        "mode 'tx-comb' was removed on 2026-10-03: its column tracked box-air's "
+        "1.000 MHz self-EMI, not the transmitter. Use 'boxair-emi' (--boxair-emi) "
+        "for that comb, or 'transmitter' (--transmitter) for the beam-mapping "
+        "transmitter. There is no alias because the meaning inverts."
+    ),
+}
+
+
+def _check_mode_names(modes):
+    for k in modes:
+        if k in REMOVED_MODE_FIELDS:
+            raise ValueError(REMOVED_MODE_FIELDS[k])
+        if k not in MODE_FIELDS:
+            raise ValueError(
+                f"unknown mode {k!r}; known: {', '.join(MODE_FIELDS)}")
+
+
+def _check_mode_columns(modes, windows):
+    """Refuse a mode whose column the mode table does not carry.
+
+    Without this, a table built before a column existed would silently
+    select nothing.
+    """
+    for k in modes:
+        field = MODE_FIELDS[k]
+        if not any(field in w for w in windows):
+            hint = ""
+            if field in ("boxair_emi", "transmitter") and any(
+                    "tx_comb" in w for w in windows):
+                hint = (" It still has the pre-2026-10-03 'tx_comb' column "
+                        "(which was box-air's 1 MHz self-EMI); rebuild it.")
+            raise SystemExit(
+                f"error: {_mode_table()} has no {field!r} column, needed for "
+                f"--{k}.{hint} Build it with: "
+                f"data-analysis/scripts/marjum-2026-07/build_mode_table.py")
 
 
 def load_mode_windows():
@@ -405,7 +493,10 @@ def select(phase=None, start=None, end=None, inputs=None,
     if not data.is_dir():
         raise SystemExit(f"error: no data directory at {data}")
 
-    conditional = DEFAULT_CONDITIONAL if conditional is None else conditional
+    conditional = (DEFAULT_CONDITIONAL if conditional is None
+                   else resolve_mask_names(conditional))
+    if modes:
+        _check_mode_names(modes)
     inputs = set(inputs) if inputs else None
 
     t_start = parse_iso(start) if start else parse_iso(CAMPAIGN_START)
@@ -424,11 +515,13 @@ def select(phase=None, start=None, end=None, inputs=None,
         windows = load_mode_windows()
         if windows is None:
             raise SystemExit(
-                f"error: --era/--rotation/--orientation/--tx-comb/--acc-len/--switch "
+                f"error: --era/--rotation/--orientation/--boxair-emi/"
+                f"--transmitter/--acc-len/--switch "
                 f"need {_mode_table()}, which is missing.\n"
                 f"       Build it with: "
                 f"data-analysis/scripts/marjum-2026-07/build_mode_table.py"
             )
+        _check_mode_columns(modes, windows)
         mode_of = file_mode_map(windows, all_files)
         unmapped = len(all_files) - len(mode_of)
         if unmapped:
@@ -585,9 +678,11 @@ def main(argv=None):
     p.add_argument("--skip-mask", metavar="LIST", default="",
                    help="comma-separated conditional masks to NOT apply")
     p.add_argument("--add-mask", metavar="LIST", default="",
-                   help="comma-separated non-default conditional masks to apply "
-                        "(thunderstorm, laptop-rfi, end-of-campaign-writestall, "
-                        "bad-header-clock)")
+                   help="comma-separated non-default conditional masks to apply ("
+                        + ", ".join(m["name"] for m in CONDITIONAL_MASKS
+                                    if m["name"] not in DEFAULT_CONDITIONAL)
+                        + "). Old names digital-self-comb and "
+                          "comb-rfi-1p25mhz still work, with a warning")
 
     g = p.add_argument_group(
         "observing mode",
@@ -601,8 +696,13 @@ def main(argv=None):
                    help="parked, az-moving, el-moving, az+el-moving")
     g.add_argument("--orientation", metavar="LIST",
                    help="orientation bin, e.g. ~30m/C/az005")
-    g.add_argument("--tx-comb", metavar="LIST", choices=None,
-                   help="on or off — whether the 4 MHz transmitter comb is present")
+    g.add_argument("--boxair-emi", metavar="LIST",
+                   help="on, off or partial: box-air's own 1.000 MHz comb EMI "
+                        "(07-16; self-generated, not the transmitter)")
+    g.add_argument("--transmitter", metavar="LIST",
+                   help="on, off or partial: the beam-mapping transmitter's "
+                        "8-channel comb (07-17 15:36 onward, both antennas)")
+    g.add_argument("--tx-comb", metavar="LIST", help=argparse.SUPPRESS)
     g.add_argument("--acc-len", metavar="LIST",
                    help="correlator accumulator length, e.g. 67108864")
     g.add_argument("--switch", metavar="LIST",
@@ -617,6 +717,9 @@ def main(argv=None):
     p.add_argument("--list-masks", action="store_true",
                    help="print the mask catalog and exit")
     a = p.parse_args(argv)
+    if a.tx_comb is not None:
+        p.error(REMOVED_MODE_FIELDS["tx-comb"].replace("mode 'tx-comb'",
+                                                      "--tx-comb"))
 
     if a.campaign:
         from .paths import set_campaign_root
@@ -666,8 +769,10 @@ def main(argv=None):
         conditional = set()
     else:
         conditional = set(DEFAULT_CONDITIONAL)
-        conditional |= {s for s in a.add_mask.split(",") if s}
-        conditional -= {s for s in a.skip_mask.split(",") if s}
+        conditional |= resolve_mask_names(
+            s for s in a.add_mask.split(",") if s)
+        conditional -= resolve_mask_names(
+            s for s in a.skip_mask.split(",") if s)
 
     known = {m["name"] for m in CONDITIONAL_MASKS}
     for name in conditional - known:

@@ -60,11 +60,13 @@ def comb_present(spectrum, band=COMB_BAND, min_tones=COMB_MIN_TONES,
     Measured separation on the 07-17/18 beam scan is clean -- comb-on files
     score 29-45, comb-off files 0-16.
 
-    WARNING: this does not identify *which* comb, and in the beam-scan window
-    the answer is not the one you want.  Across all 227 files of 07-17 18:51 ->
-    07-18 03:22 on input 4, the only comb present is the digital self-comb at
-    250/128 MHz (8.000 channels, locked to the channel grid); the transmitter
-    comb is absent everywhere.  Use ``tx_state_detector.py`` to tell them apart.
+    This does not identify *which* comb.  In the beam-scan window (227 files
+    of 07-17 18:51 -> 07-18 03:22 on input 4) the comb present is the
+    8-channel comb at 250/128 MHz, which memo 001 identifies as the
+    beam-mapping transmitter (teeth = 0 mod 8; alternate teeth are its two
+    arms).  The 1.000 MHz comb that earlier comments here called "the
+    transmitter" is box-air's own 07-16 self-EMI and is not in this window.
+    Comments before 2026-10-03 had the two the other way round.
     """
     lo, hi = band
     spectrum = np.asarray(spectrum, float)
@@ -86,13 +88,14 @@ def load_v007_data(data_path, require_comb=True, start=-185, stop=-150):
     more (Aaron, 2026-09-17). Read it as a historical loader: keep it
     working, do not build on it.
 
-    *** The comb in this slice is NOT the transmitter. ***  Measured across all
-    227 beam-scan files on input 4, the transmitter comb (1.000 MHz, offset
-    ~4.03 channels from DC) is absent, and the comb these channels carry is the
-    digital self-comb at 250/128 MHz -- 8.000 channels exactly, phase-locked to
-    the channel grid, i.e. an ADC-clock subharmonic.  A fit built on this slice
-    measures the antenna's response to our own radiated electronics, not a beam
-    toward the ridge transmitter.  See ``tx_state_detector.py``.
+    Which comb this slice carries: the 8-channel comb at 250/128 MHz (8.000
+    channels exactly, locked to the channel grid), present in all 227
+    beam-scan files on input 4.  Memo 001 identifies it as the beam-mapping
+    transmitter.  Until 2026-10-03 this docstring called it a "digital
+    self-comb" and said the transmitter was absent, taking the 07-16
+    1.000 MHz comb (box-air self-EMI) to be the transmitter; that was
+    backwards.  This comment correction does not reinstate v007, which
+    stays withdrawn; the code is unchanged.
 
     ``require_comb`` drops spectra from files where that comb is off.  Three of
     the 35 files in the default slice are comb-off, and they are *not* caught by
