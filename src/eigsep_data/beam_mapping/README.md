@@ -27,6 +27,10 @@ re-exports the common entry points; it contains no logic of its own.
 
 ## Recent changes
 
+- 2026-10-03 (Claude Code, for Aaron): `diagnostics.py` comments no longer
+  say the beam-scan comb is a "digital self-comb" and the transmitter is
+  absent. Memo 001 shows the 8-channel comb in that window IS the
+  transmitter. Comments only; v007 stays withdrawn and frozen.
 - 2026-09-25 (Claude Code, for Aaron; phase 2 of the `fit_beam` promotion):
   added `beam_basis`, `tx_fit` and `tx_export`. The package reproduces beam
   fit v0011 to machine precision from its own inputs

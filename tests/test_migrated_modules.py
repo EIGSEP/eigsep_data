@@ -98,7 +98,12 @@ class TestPathsComeFromTheSetting:
 
 
 class TestDetectorsAreSelfContained:
-    """detectors.py is byte-identical to what produced flags/v0."""
+    """detectors.py computes what produced flags/v0.
+
+    Its comb labels were renamed on 2026-10-03 (``digital_self`` ->
+    ``transmitter``, ``panda_emi`` -> ``boxair_emi``); the logic and the
+    flag bits are unchanged.
+    """
 
     def test_resolves_no_paths_of_its_own(self):
         """Naming the campaign in prose is fine; resolving a path is not."""
@@ -133,6 +138,47 @@ def test_detect_combs_is_known_broken():
     freqs = np.linspace(45.0, 235.0, 1024)
     with pytest.raises(NameError, match="CHANNEL_LOCKED_COMBS"):
         detectors.detect_combs(np.zeros(1024), freqs)
+
+
+class TestCombLabels:
+    """The 2026-10-03 comb rename (memo 001): labels change, bits do not."""
+
+    def test_flag_bits_unchanged(self):
+        from eigsep_data.flagging import detectors as D
+
+        assert (D.CAL, D.TX_COMB, D.SELF_RFI, D.OVERFLOW) == (1, 2, 4, 128)
+        assert D.CATEGORY_NAMES[D.TX_COMB] == "tx_comb"
+
+    def test_identify_combs_uses_new_names(self):
+        import numpy as np
+
+        from eigsep_data.flagging import detectors as D
+
+        freqs = np.arange(1024) * D.CHAN_WIDTH_MHZ
+        med = np.random.default_rng(0).normal(0.0, 0.01, 1024)
+        med[::8] += 1.0  # an 8-channel comb: the transmitter
+        out = D.identify_combs(med, freqs)
+        assert {"transmitter", "boxair_emi"} <= set(out)
+        assert not {"digital_self", "panda_emi"} & set(out)
+        assert out["transmitter"]["detected"]
+        assert not out["boxair_emi"]["detected"]
+
+    def test_comb_states_read_new_columns(self):
+        from eigsep_data.flagging import build_masks as B
+
+        assert B.comb_states(None) == (False, False)
+        assert B.comb_states(
+            {"transmitter": "partial", "boxair_emi": "off"}) == (True, False)
+        # The old column alone must not turn the transmitter on.
+        assert B.comb_states({"tx_comb": "on"}) == (False, False)
+
+    def test_old_mode_table_refused(self):
+        from eigsep_data.flagging import build_masks as B
+
+        with pytest.raises(SystemExit, match="tx_comb.*not the transmitter"):
+            B.check_comb_columns([{"file_first": "a", "tx_comb": "on"}])
+        B.check_comb_columns(
+            [{"file_first": "a", "transmitter": "on", "boxair_emi": "off"}])
 
 
 class TestGeometryRelease:

@@ -24,19 +24,22 @@ bite us -- persistent detections are qualified by band membership and
 by explicit comb matched-detection.
 
 Comb attribution is its own track, and it is where this campaign has
-been hardest to get right.  Two distinct comb episodes exist:
+been hardest to get right.  Two distinct combs exist (memo 001, § Combs):
 
     07-16 01:18-16:51        1.000 MHz, WALKS (4.096 ch), box-air only
-    07-17 15:37-07-18 03:00  1.953125 MHz, LOCKED (8 ch), both boxes
+                             -> ``boxair_emi``: box-air's own EMI
+    07-17 15:36-end of data  1.953125 MHz, LOCKED (8 ch), both antennas
+                             -> ``transmitter``: the beam-mapping transmitter
 
-**Neither is established as the transmitter.**  Neither shows the
-pointing dependence a far-field source must have, once a smooth time
-trend is removed.  The locked/walking axis does NOT carry source
-attribution: the TX is a clock-locked comb by design (PROGRAM.md §5),
-while an internal device with its own oscillator -- the Panda -- emits
-a walking one.  See the COMB_SPACINGS_MHZ block for the measured
-numbers.  The claimed 1.25 MHz LNA-feedback and 2 MHz laptop combs are
-not present in the filtered data at all.
+The 8-channel comb is the transmitter: it switches on in both antennas
+at once, box-gnd (on the ground near the transmitter) sees it at up to
+~27 dB, its alternate teeth (= 0 / 8 mod 16) are the transmitter's two
+arms, and it follows the 07-17 drive-attenuation tests.  The 1.000 MHz
+comb is self-EMI: box-air only, never on box-gnd, gone when the Panda
+was power-cycled.  Labels before 2026-10-03 had these the other way
+round (``digital_self`` / ``panda_emi`` and "neither is the TX").  The
+claimed 1.25 MHz LNA-feedback and 2 MHz laptop combs are not present
+in the filtered data at all.
 
 Times come from filenames.  `header/times` is corrupt in 642/5120
 files (May-2026 dates, negative spans), so it is never read here.
@@ -60,7 +63,7 @@ N_CHAN = 1024
 CLEAN = 0
 CAL = 1 << 0          # receiver on loads/noise/VNA -- not sky, not RFI
 TX_COMB = 1 << 1      # beam-mapping transmitter comb -- wanted signal
-SELF_RFI = 1 << 2     # fan / laptop / LNA feedback / LIDAR / Panda
+SELF_RFI = 1 << 2     # fan / laptop / LNA feedback / LIDAR / box-air EMI
 FM_DTV_MS = 1 << 3    # FM+DTV co-moving: meteor-scatter propagation
 AIRPLANE = 1 << 4     # broadband transient reflection
 ORBCOMM = 1 << 5      # 137-138 MHz satellite downlink
@@ -113,53 +116,47 @@ BAND_FAN = (148.0, 152.0)      # box-fan RFI ~150 MHz
 # and residual statistics stop being meaningful.
 BAND_ANALYSIS = (45.0, 235.0)
 
-# Comb inventory. See flags/v0/COMB_INVENTORY.md for the full evidence.
+# Comb inventory (memo 001, § Combs; flags/v0/COMB_INVENTORY.md predates
+# the identification and uses the old labels).
 #
-# Two episodes exist, and NEITHER is established as the transmitter.
+#   transmitter  1.953125 MHz = 8 channels EXACTLY (250/128 MHz)
+#                07-17 15:36 -> end of data, BOTH antennas; the
+#                beam-mapping transmitter. Teeth = 0 mod 16 are arm 0,
+#                = 8 mod 16 arm 1.
+#   boxair_emi   1.000 MHz, walks (4.096 ch)
+#                07-16 01:18 -> 16:51, box-air ONLY, gone at the Panda
+#                power cycle; box-air's own electronics
 #
-#   digital_self  1.953125 MHz = 8 channels EXACTLY (250/128 MHz)
-#                 07-17 15:37 -> 07-18 03:00, BOTH boxes
-#   panda_emi     1.000 MHz, walks (4.096 ch)
-#                 07-16 01:18 -> 16:51, box-air ONLY, dies at the Panda
-#                 power cycle
-#
-# Attribution rests on BEAM RESPONSE, tested correctly: a far-field
-# source must modulate with pointing. Measured over the 07-17/18 scan,
-# after removing a smooth time trend (which is what an earlier version
-# of this analysis failed to do, and it inverted the answer):
-#
-#   box-air residual vs AZ: var explained -0.139, permutation z = -1.58
-#   box-gnd residual vs AZ: var explained -0.244, z = -0.86 (null control)
-#
-# i.e. NO pointing dependence. A source that does not modulate with
-# pointing is on the platform or conducted -- self-generated. The raw
-# (non-detrended) az correlation of +0.48 was a time-trend confound:
-# variance explained by TIME was 0.855, higher than by AZ (0.642), and
-# the non-rotating ground box showed a spurious AZ dependence of 0.364.
+# Until 2026-10-03 these were labelled `digital_self` and `panda_emi`,
+# and the 8-channel comb was taken to be self-generated because a
+# detrended box-air residual showed no azimuth dependence. Memo 001
+# overturned that: box-gnd, which does not move, sees the 8-channel comb
+# at up to ~27 dB and tracks the transmitter's on/off and drive tests,
+# and on box-air the tooth/gap ratio swings with the raster's elevation
+# sweeps.
 #
 # "Walking" does NOT imply external. It implies "not referenced to OUR
 # ADC clock", which includes internal devices running their own
-# oscillators -- exactly the Panda. That is why panda_emi walks while
-# being self-generated, and it is why the locked/walking axis cannot
-# carry source attribution on its own.
+# oscillators -- which is why boxair_emi walks while being self-generated.
 #
-# Consequence: no comb in this campaign is demonstrated to be the TX,
-# so TX_COMB is defined but never set. This is consistent with
-# beam-analyst's finding that the v007 beam fits track radiated
-# self-RFI rather than the transmitter.
+# Flag bits are unchanged by the rename. TX_COMB (bit 1) is still never
+# set by categorise(): the transmitter teeth are detected as the
+# `transmitter` comb and land in SELF_RFI (bit 2), so on 07-17/18 bit 2
+# holds the transmitter teeth. That is what flags/v0 contains; moving
+# them to bit 1 is a separate decision (it would make them non-RFI).
 COMB_SPACINGS_MHZ = {
-    "digital_self": 250.0 / 128.0,  # 1.953125 MHz = 8 channels exactly
-    "panda_emi": 1.000,     # walks (4.096 ch); box-air only; 07-16 01:18-16:51
+    "transmitter": 250.0 / 128.0,  # 1.953125 MHz = 8 channels exactly
+    "boxair_emi": 1.000,    # walks (4.096 ch); box-air only; 07-16 01:18-16:51
     "lna_feedback": 1.250,  # claimed 07-16 01:00-01:30; NOT FOUND in the data
     "laptop": 2.000,        # claimed 07-13, 145-160 MHz; NOT FOUND in the data
 }
 
 # Spacings that are an exact integer number of channels. For these the
 # teeth sit at fixed channel indices; for the others they walk.
-LOCKED_CHAN = {"digital_self": 8}
+LOCKED_CHAN = {"transmitter": 8}
 
-SELF_SPACING_CHAN = 8
-PANDA_SPACING_MHZ = 1.000
+TRANSMITTER_SPACING_CHAN = 8
+BOXAIR_EMI_SPACING_MHZ = 1.000
 
 
 def tooth_contrast(med_logp, freqs, band=BAND_ANALYSIS, spacing_chan=None,
@@ -208,34 +205,34 @@ def tooth_contrast(med_logp, freqs, band=BAND_ANALYSIS, spacing_chan=None,
 def identify_combs(med_logp, freqs, thresh=3.0):
     """Which combs are present, and which channels each occupies.
 
-    Returns ``{"tx": {...}, "panda_emi": {...}, ...}`` with a
+    Returns ``{"transmitter": {...}, "boxair_emi": {...}, ...}`` with a
     ``contrast``, ``detected`` flag and ``teeth`` mask per comb.
 
     Selection logic. The TX comb at 8 channels also lights up every
     16th, 32nd and 64th channel detector, because those teeth are
     subsets of its own -- so a "3.9 MHz comb" detection is not
     independent evidence of anything. Conversely the walking 1.000 MHz
-    Panda comb lights up a 2.000 MHz detector as its second harmonic.
+    box-air EMI comb lights up a 2.000 MHz detector as its second harmonic.
     Each comb is therefore credited only against its own fundamental,
     and the harmonics are not reported as separate combs.
     """
     out = {}
     c_tx, ph_tx, teeth_tx = tooth_contrast(
-        med_logp, freqs, spacing_chan=SELF_SPACING_CHAN)
-    out["digital_self"] = {
+        med_logp, freqs, spacing_chan=TRANSMITTER_SPACING_CHAN)
+    out["transmitter"] = {
         "contrast": round(c_tx, 3), "phase": ph_tx,
         "detected": bool(c_tx >= thresh), "teeth": teeth_tx,
         "spacing_mhz": 250.0 / 128.0, "channel_locked": True}
     c_p, ph_p, teeth_p = tooth_contrast(
-        med_logp, freqs, spacing_mhz=PANDA_SPACING_MHZ)
+        med_logp, freqs, spacing_mhz=BOXAIR_EMI_SPACING_MHZ)
     # The 8-channel comb's teeth partially coincide with a 1 MHz grid,
-    # so only credit the Panda comb when it is not the other being
+    # so only credit the box-air EMI comb when it is not the other being
     # re-found.
-    panda = bool(c_p >= thresh and c_p > c_tx)
-    out["panda_emi"] = {"contrast": round(c_p, 3), "phase": ph_p,
-                        "detected": panda, "teeth": teeth_p,
-                        "spacing_mhz": PANDA_SPACING_MHZ,
-                        "channel_locked": False}
+    boxair = bool(c_p >= thresh and c_p > c_tx)
+    out["boxair_emi"] = {"contrast": round(c_p, 3), "phase": ph_p,
+                         "detected": boxair, "teeth": teeth_p,
+                         "spacing_mhz": BOXAIR_EMI_SPACING_MHZ,
+                         "channel_locked": False}
     for name in ("lna_feedback", "laptop"):
         c, ph, teeth = tooth_contrast(
             med_logp, freqs, spacing_mhz=COMB_SPACINGS_MHZ[name])
@@ -419,7 +416,7 @@ def comb_snr(med_logp, freqs, spacing_mhz, band=(50.0, 200.0)):
     return float(spec[k0:k1].max() / baseline)
 
 
-def detect_combs(med_logp, freqs, snr_thresh=8.0, tx_on=False):
+def detect_combs(med_logp, freqs, snr_thresh=8.0, boxair_emi_on=False):
     """Matched detection of the campaign's known comb spacings.
 
     Returns ``{name: {"snr":…, "spacing_mhz":…, "detected":bool}}``.
@@ -429,13 +426,18 @@ def detect_combs(med_logp, freqs, snr_thresh=8.0, tx_on=False):
     channel per tone, so matching individual peak positions is not
     enough.
 
-    **Harmonic guard.** The TX comb at 1.000 MHz puts real power at
-    0.500 and 2.000 MHz, and 2.000 MHz is exactly the laptop-comb
-    spacing.  Measured on TX-on Phase-C files the harmonic sits at
-    roughly half the fundamental's SNR (e.g. 1.000 MHz -> 77, 2.000 MHz
-    -> 42).  So when TX is on, a 2 MHz detection is only credited if it
-    is strong *relative to* the fundamental; otherwise we would label
-    the beam-mapping transmitter as somebody's laptop.
+    **Harmonic guard.** The 1.000 MHz comb puts real power at 0.500
+    and 2.000 MHz, and 2.000 MHz is exactly the laptop-comb spacing.
+    Measured on 07-16 Phase-C files the harmonic sits at roughly half
+    the fundamental's SNR (e.g. 1.000 MHz -> 77, 2.000 MHz -> 42).  So
+    when that comb is on, a 2 MHz detection is only credited if it is
+    strong *relative to* the fundamental.  (This text was written when
+    the 1.000 MHz comb was taken to be the transmitter; it is box-air's
+    own EMI -- memo 001.)
+
+    Known broken: ``CHANNEL_LOCKED_COMBS`` is defined nowhere, so this
+    raises NameError on first use. Kept as
+    migrated; only :mod:`.validate` calls it.
     """
     out = {}
     for name, spacing in COMB_SPACINGS_MHZ.items():
@@ -451,31 +453,30 @@ def detect_combs(med_logp, freqs, snr_thresh=8.0, tx_on=False):
         }
     # Harmonic guards. A strong fundamental leaks into its sub- and
     # super-harmonics and into neighbouring periodogram bins; without
-    # these, the TX transmitter gets relabelled as somebody's laptop and
+    # these, the 1 MHz comb gets relabelled as somebody's laptop and
     # an LNA fault gets invented out of a sidelobe.
-    tx_snr = max(out["tx"]["snr"], 1e-9)
-    if tx_on or out["tx"]["detected"]:
+    emi_snr = max(out["boxair_emi"]["snr"], 1e-9)
+    if boxair_emi_on or out["boxair_emi"]["detected"]:
         for child in ("laptop", "lna_feedback"):
-            if out[child]["snr"] < 0.8 * tx_snr:
+            if out[child]["snr"] < 0.8 * emi_snr:
                 out[child]["detected"] = False
-                out[child]["suppressed_as_tx_harmonic"] = True
-    self_snr = max(out["digital_self"]["snr"], 1e-9)
-    if out["digital_self"]["detected"]:
-        # The 8-channel digital comb has Fourier power at periods 8, 4 and
-        # 2 channels, so it leaks into the 1.000 MHz (4.096 ch) TX
+                out[child]["suppressed_as_boxair_emi_harmonic"] = True
+    self_snr = max(out["transmitter"]["snr"], 1e-9)
+    if out["transmitter"]["detected"]:
+        # The 8-channel transmitter comb has Fourier power at periods 8,
+        # 4 and 2 channels, so it leaks into the 1.000 MHz (4.096 ch)
         # statistic and can push it over threshold. Left unguarded this
-        # relabels self-generated RFI as `tx_comb`, which is a *non-RFI*
-        # bit -- i.e. it would quietly un-flag real interference.
+        # relabels the transmitter as the 1 MHz comb.
         # Affects 2/10939 records, both on 07-17/18.
-        if out["tx"]["snr"] < self_snr:
-            out["tx"]["detected"] = False
-            out["tx"]["suppressed_as_digital_harmonic"] = True
+        if out["boxair_emi"]["snr"] < self_snr:
+            out["boxair_emi"]["detected"] = False
+            out["boxair_emi"]["suppressed_as_transmitter_harmonic"] = True
         # 1.953125 and 2.000 MHz differ by <1 periodogram bin over a
         # 150 MHz span, so a channel-locked comb always drags the
         # "laptop" statistic up with it.
         if out["laptop"]["snr"] < 1.2 * self_snr:
             out["laptop"]["detected"] = False
-            out["laptop"]["suppressed_as_digital_harmonic"] = True
+            out["laptop"]["suppressed_as_transmitter_harmonic"] = True
     return out
 
 
@@ -488,6 +489,10 @@ def _in(freqs, band):
 def categorise(pix_flags, chan_flags, freqs, combs, tx_on, broadband_time,
                ms_times=None):
     """Assign a category bit to every flagged pixel.
+
+    ``tx_on`` is whether the beam-mapping transmitter is on for this
+    file (mode_table column ``transmitter``). It is currently unused:
+    see the TX comb block below.
 
     Precedence is deliberate: attributable physical causes first,
     ``unknown`` only as the residue.  A large ``unknown`` fraction is
@@ -506,20 +511,26 @@ def categorise(pix_flags, chan_flags, freqs, combs, tx_on, broadband_time,
     # --- persistent, always full-file in extent -------------------------
     # Comb teeth come from identify_combs(), which returns an explicit
     # channel mask per comb. Never recompute them from a spacing here:
-    # the TX comb is channel-locked and the Panda comb walks, so a
-    # single tone-position rule cannot serve both.
+    # the transmitter comb is channel-locked and the box-air EMI comb
+    # walks, so a single tone-position rule cannot serve both.
+    #
+    # The transmitter's teeth are included here, i.e. labelled SELF_RFI
+    # (bit 2). That is how flags/v0 was built, under the old belief that
+    # the 8-channel comb was self-generated; it is kept so the code still
+    # reproduces v0. See the COMB_SPACINGS_MHZ block.
     self_chan = np.zeros(nch, dtype=bool)
-    for name in ("digital_self", "panda_emi", "lna_feedback", "laptop"):
+    for name in ("transmitter", "boxair_emi", "lna_feedback", "laptop"):
         rec = combs.get(name) or {}
         if rec.get("detected") and rec.get("teeth") is not None:
             self_chan |= np.asarray(rec["teeth"], dtype=bool)
     self_chan |= chan_flags & (laptop | fan)
 
     # --- TX comb --------------------------------------------------------
-    # Deliberately never set. No comb in this campaign shows the beam
-    # response a far-field transmitter must have, so labelling any of
-    # them `tx_comb` -- a NON-RFI bit -- would un-flag real
-    # interference. If a TX comb is later identified, set tx_chan here.
+    # Never set, so the code reproduces flags/v0. It was left unset
+    # because no comb was then believed to be the transmitter; memo 001
+    # has since identified the `transmitter` comb. Setting tx_chan from
+    # combs["transmitter"]["teeth"] when `tx_on` would move those teeth
+    # to the non-RFI bit 1 -- a product change for a new flags version.
     tx_present = False
     tx_chan = np.zeros(nch, dtype=bool)
 
@@ -548,9 +559,9 @@ def categorise(pix_flags, chan_flags, freqs, combs, tx_on, broadband_time,
 def broadband_times(pix_flags, freqs, frac=0.15):
     """Time samples where a large fraction of the band lit up at once.
 
-    Airplane reflections and lightning are broadband and short; the TX
-    comb and the self-RFI combs are narrowband and steady.  This is the
-    morphological discriminator between them.
+    Airplane reflections and lightning are broadband and short; the
+    transmitter comb and the self-RFI combs are narrowband and steady.
+    This is the morphological discriminator between them.
     """
     sel = _in(freqs, BAND_ANALYSIS)
     if sel.sum() == 0:

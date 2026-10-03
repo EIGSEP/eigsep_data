@@ -42,14 +42,18 @@ def _data():
     return str(campaign_data_dir())
 
 # Windows CAMPAIGN.md labels, plus matched controls on the same day.
+# The two comb windows are memo 001's measured ones (renamed 2026-10-03:
+# they were "comb-1.25MHz (claimed)", 07-16 01:00-01:30, and
+# "digital-comb (found)"). There is no 1.25 MHz comb; the 07-16 comb is
+# box-air's 1.000 MHz self-EMI, and the 07-17/18 one is the transmitter.
 
 
 LABELLED = {
-    "comb-1.25MHz (claimed)": ("2026-07-16T01:00", "2026-07-16T01:30"),
+    "boxair-emi 1MHz": ("2026-07-16T01:18", "2026-07-16T16:51"),
     "laptop-comb 145-160": ("2026-07-13T00:00", "2026-07-13T23:59"),
     "thunderstorm": ("2026-07-16T00:00", "2026-07-16T06:00"),
     "lidar-sweep": ("2026-07-18T01:37", "2026-07-18T03:00"),
-    "digital-comb (found)": ("2026-07-17T15:37", "2026-07-18T03:00"),
+    "transmitter comb": ("2026-07-17T15:37", "2026-07-18T03:00"),
 }
 CONTROLS = {
     "control 07-16 midday": ("2026-07-16T12:00", "2026-07-16T15:00"),
@@ -88,24 +92,27 @@ def load_logp(path, key=None):
     return logp, freqs, ant
 
 
-def flag_fraction(logp, freqs, ant, tx_on=False):
+def flag_fraction(logp, freqs, ant, transmitter_on=False,
+                  boxair_emi_on=False):
     """Fraction of in-band samples flagged as *interference*.
 
     Runs the full categorisation, then counts only the RFI bits. The
-    TX comb, calibration states and accumulator overflow are excluded:
-    counting the beam-mapping transmitter as interference would make
-    every TX-on window look catastrophically contaminated, which is
-    how an earlier version of this check reported a quiet control
-    window as dirtier than the thunderstorm.
+    TX_COMB bit, calibration states and accumulator overflow are
+    excluded. Note that categorise() never sets TX_COMB, so the
+    transmitter's teeth (07-17/18) ARE counted here, as SELF_RFI.
+
+    ``transmitter_on`` is the beam-mapping transmitter's state and
+    ``boxair_emi_on`` box-air's 1 MHz self-EMI state (mode_table
+    columns ``transmitter`` and ``boxair_emi``).
     """
     pix, _, _ = D.transient_track(logp, ant)
     chan, _ = D.persistent_track(logp, ant, freqs)
     med = np.median(logp[ant], axis=0) if ant.sum() >= 4 \
         else np.median(logp, axis=0)
-    combs = D.detect_combs(med, freqs, tx_on=tx_on)
+    combs = D.detect_combs(med, freqs, boxair_emi_on=boxair_emi_on)
     bb = D.broadband_times(pix, freqs)
     ms = D.meteor_scatter_times(pix, freqs)
-    cat = D.categorise(pix, chan, freqs, combs, tx_on, bb, ms)
+    cat = D.categorise(pix, chan, freqs, combs, transmitter_on, bb, ms)
     cat[~ant, :] |= D.CAL
     sel = (freqs >= D.BAND_ANALYSIS[0]) & (freqs <= D.BAND_ANALYSIS[1])
     sub = cat[:, sel]

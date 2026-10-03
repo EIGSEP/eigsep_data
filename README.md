@@ -132,6 +132,9 @@ A product is a derived dataset keyed by the raw files —
 - `bundle.py`, `products/` — the raw-plus-companions join.
 - `beam_mapping/` — beam fits, pointing fusion, TX forward model.
 - `rfi.py`, `s11.py`, `quicklook.py`, `browse.py` — analysis utilities.
+- `select_files.py` (`eigsep-select-files`) — file-level campaign masks
+  and observing-mode selection.
+- `flagging/` — writer for the `flags/v0` per-(time, channel) masks.
 - `beam_sim.py`, `sim.py`, `hpm.py`, `sph_fit.py` — simulation and
   spherical-harmonic work (needs the JAX/healjax extras).
 
@@ -147,6 +150,14 @@ A product is a derived dataset keyed by the raw files —
 
 ## Recent changes
 
+- 2026-10-03 (Claude Code, for Aaron): comb labels corrected to memo 001
+  everywhere. The 8-channel comb (07-17 onward) is the beam-mapping
+  transmitter and the 07-16 1.000 MHz comb is box-air's own EMI; the old
+  labels had them backwards. `select_files` masks are now `tx-comb-teeth`
+  and `boxair-emi-1mhz` (old names warn), the `--tx-comb` mode is replaced
+  by `--boxair-emi` and `--transmitter` (old flag errors), and `flagging`
+  reads the mode table's new `transmitter` column. Mode tables built
+  before the rename must be rebuilt.
 - 2026-09-17 (`agent:eigsep-67`): `import eigsep_data` made lazy, 7.05 s
   -> 0.00 s; JAX is no longer pulled to read a flag mask.
 - 2026-09-17 (`agent:eigsep-67`): added `bundle.py` and `products/`, the

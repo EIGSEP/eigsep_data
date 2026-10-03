@@ -68,8 +68,41 @@ def mode_for(modes, fname):
     return None
 
 
+COMB_ON = {"on", "partial"}
+"""mode_table comb values that count as on for a file ("partial" means the
+comb is present for part of the file, so its teeth are still in it)."""
+
+
+def check_comb_columns(modes):
+    """Refuse a mode table that predates the 2026-10-03 comb rename.
+
+    Its ``tx_comb`` column tracks box-air's 1.000 MHz self-EMI, NOT the
+    transmitter, and it has no transmitter column at all; reading it as
+    the transmitter state (as this module did before) inverts the
+    meaning.
+    """
+    have = set().union(*(m.keys() for m in modes)) if modes else set()
+    missing = {"transmitter", "boxair_emi"} - have
+    if missing:
+        hint = (" It has only the old 'tx_comb' column, which is box-air's "
+                "1 MHz self-EMI, not the transmitter."
+                if "tx_comb" in have else "")
+        raise SystemExit(
+            f"error: mode_table.jsonl lacks column(s) {sorted(missing)}.{hint}"
+            f" Rebuild it with "
+            f"data-analysis/scripts/marjum-2026-07/build_mode_table.py")
+
+
+def comb_states(mode_row):
+    """(transmitter_on, boxair_emi_on) for one file's mode row."""
+    if not mode_row:
+        return False, False
+    return (mode_row.get("transmitter") in COMB_ON,
+            mode_row.get("boxair_emi") in COMB_ON)
+
+
 def process_file(args):
-    path, tx_on = args
+    path, transmitter_on, boxair_emi_on = args
     fname = os.path.basename(path)
     try:
         with h5py.File(path, "r") as h:
@@ -107,8 +140,8 @@ def process_file(args):
 
                 bb = D.broadband_times(pix, freqs)
                 ms = D.meteor_scatter_times(pix, freqs)
-                cat = D.categorise(pix, chan_flags, freqs, combs, tx_on,
-                                   bb, ms)
+                cat = D.categorise(pix, chan_flags, freqs, combs,
+                                   transmitter_on, bb, ms)
                 # Calibration samples: not sky. Marked, never counted as RFI.
                 cat[~ant, :] |= D.CAL
                 # Accumulator wrap: instrumental, never counted as RFI.
@@ -125,6 +158,8 @@ def process_file(args):
                     "n_time": int(nt),
                     "n_broadband": int(bb.sum()),
                     "n_meteor": int(ms.sum()),
+                    "transmitter_on": bool(transmitter_on),
+                    "boxair_emi_on": bool(boxair_emi_on),
                 }
             return fname, per_input, freqs, None
     except Exception as exc:
@@ -172,6 +207,7 @@ def main(argv=None):
 
     os.makedirs(out_dir, exist_ok=True)
     modes = load_mode_table(os.path.join(root, "curation", "mode_table.jsonl"))
+    check_comb_columns(modes)
     files = sorted(glob.glob(os.path.join(data_dir, "*.h5")))
     if args.limit:
         files = files[: args.limit]
@@ -179,7 +215,7 @@ def main(argv=None):
     tasks = []
     for p in files:
         m = mode_for(modes, os.path.basename(p))
-        tasks.append((p, bool(m and m.get("tx_comb") == "on")))
+        tasks.append((p, *comb_states(m)))
 
     by_day = defaultdict(dict)
     stats = defaultdict(lambda: defaultdict(float))
@@ -210,6 +246,8 @@ def main(argv=None):
                        for n, v in rec["combs"].items()},
                     "n_broadband": rec["n_broadband"],
                     "n_meteor": rec["n_meteor"],
+                    "transmitter_on": rec["transmitter_on"],
+                    "boxair_emi_on": rec["boxair_emi_on"],
                 })
                 _accumulate(stats, day, k, rec["cat"], freqs)
 
@@ -250,11 +288,16 @@ def main(argv=None):
                  "rfi": False,
                  "meaning": "beam-mapping transmitter comb, 1.953125 MHz "
                             "= 8 channels exactly, clock-locked; wanted "
-                            "signal, not interference"},
+                            "signal, not interference. Defined but never "
+                            "set by this generator: the transmitter's "
+                            "teeth land in bit 2"},
                 {"bit": 2, "value": int(D.SELF_RFI), "name": "self-RFI",
                  "rfi": True,
-                 "meaning": "self-generated: Panda EMI comb (1.000 MHz, "
-                            "walks, box-air only), fan, laptop comb"},
+                 "meaning": "self-generated: box-air's 1.000 MHz EMI comb "
+                            "(walks, box-air only, 07-16), fan, laptop "
+                            "comb. ALSO holds the beam-mapping "
+                            "transmitter's 8-channel teeth on 07-17/18, "
+                            "detected as comb 'transmitter' (memo 001)"},
                 {"bit": 3, "value": int(D.FM_DTV_MS), "name": "FM-scatter",
                  "rfi": True,
                  "meaning": "FM and DTV bands rising together: "
@@ -289,8 +332,23 @@ def main(argv=None):
                 {"path": "data/*.h5", "n_files": len(files)},
                 {"path": "curation/mode_table.jsonl",
                  "sha256": sha256(os.path.join(
-                     root, "curation", "mode_table.jsonl"))},
+                     root, "curation", "mode_table.jsonl")),
+                 "columns_used": ["transmitter", "boxair_emi"]},
             ],
+            "renamed_from": {
+                "date": "2026-10-03",
+                "why": "memo 001 identified the 8-channel comb as the "
+                       "beam-mapping transmitter and the 1.000 MHz comb "
+                       "as box-air self-EMI",
+                "comb_detections.jsonl": {
+                    "contrast_transmitter": "contrast_digital_self",
+                    "det_transmitter": "det_digital_self",
+                    "contrast_boxair_emi": "contrast_panda_emi",
+                    "det_boxair_emi": "det_panda_emi",
+                },
+                "tx_on_source": "mode_table 'transmitter' (was 'tx_comb', "
+                                "which is box-air's 1 MHz self-EMI)",
+            },
             "params": {
                 "transient_clip_sigma": 5.0,
                 "transient_median_width": 9,
