@@ -97,15 +97,18 @@ def test_sparse_stationary_solver_converges_with_unchanged_tolerance(
         solver.ncoeff
     )
     rhs = selected.T @ (data / solver.scale)[keep]
-    # Verify this fixture catches the previous failure, at the same defaults.
+    # Verify this fixture catches the previous failure: diagonal preconditioning
+    # at the original 300-iteration budget (the default was raised to 2000 when
+    # campaign batches stopped just short of tolerance at 300).
+    old_maxiter = 300
     _, old_info = cg(
         normal,
         rhs,
         M=LinearOperator(normal.shape, matvec=lambda x: x / normal.diagonal()),
         rtol=solver.config.cg_rtol,
-        maxiter=solver.config.cg_maxiter,
+        maxiter=old_maxiter,
     )
-    assert old_info == solver.config.cg_maxiter
+    assert old_info == old_maxiter
 
     prediction = solver.solve(data, keep)
     record = solver.history[-1]
@@ -640,3 +643,19 @@ def test_unconverged_cross_channels_are_unsupported_not_fatal():
     cross = result.diagnostics["segments"][0]["cross"]
     assert cross["unconverged_channels"] == len(freqs)
     assert not cross["reached_step_tolerance"]
+
+
+def test_jittered_times_use_an_interpolated_time_basis():
+    """Slightly uneven sample times (as in a few Marjum segments) no longer stop the
+    DPSS time basis; evenly spaced times take the exact path."""
+    air, ground, cross, times, freqs, dt, states = _synthetic()
+    rng = np.random.default_rng(3)
+    jittered = times + rng.uniform(-0.05, 0.05, size=times.shape) * (times[1] - times[0])
+    result = flag_arrays(air, ground, cross, jittered, freqs, dt, states,
+                         config=replace(RFIConfig(), time_guard=0))
+    even = flag_arrays(air, ground, cross, times, freqs, dt, states,
+                       config=replace(RFIConfig(), time_guard=0))
+    sky = np.ones(len(times), dtype=bool)
+    sky[40:44] = False
+    assert np.isfinite(result.model[sky]).mean() > 0.95
+    assert abs(result.mask[sky].mean() - even.mask[sky].mean()) < 0.01

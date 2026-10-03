@@ -107,7 +107,7 @@ class RFIConfig:
     comb_min_teeth: int = 16
     ridge: float = 1e-6
     cg_rtol: float = 1e-8
-    cg_maxiter: int = 300
+    cg_maxiter: int = 2000
     robust_rounds: int = 50
     mask_change_tol: float = 5e-4
     cross_cut: float = 8.0
@@ -165,12 +165,28 @@ def _bases(times, freqs, config):
         [config.freq_halfwidth_s],
         eigenval_cutoff=[config.eigenvalue_cutoff],
     )[0].real
-    at = dpss_operator(
-        times - times[0],
-        [0],
-        [config.time_halfwidth_hz],
-        eigenval_cutoff=[config.eigenvalue_cutoff],
-    )[0].real
+    rel = np.asarray(times, float) - times[0]
+    step = np.diff(rel)
+    if len(step) and np.ptp(step) > 1e-6 * np.median(step):
+        # Jittered or slightly uneven sampling: DPSS needs an even grid, so build
+        # the modes on one spanning the segment at the median step and
+        # interpolate them to the sample times (the modes are smooth on scales
+        # far longer than the step; _TensorFit re-orthonormalizes them).
+        grid = np.arange(0.0, rel[-1] + 0.5 * np.median(step), np.median(step))
+        on_grid = dpss_operator(
+            grid,
+            [0],
+            [config.time_halfwidth_hz],
+            eigenval_cutoff=[config.eigenvalue_cutoff],
+        )[0].real
+        at = np.column_stack([np.interp(rel, grid, mode) for mode in on_grid.T])
+    else:
+        at = dpss_operator(
+            rel,
+            [0],
+            [config.time_halfwidth_hz],
+            eigenval_cutoff=[config.eigenvalue_cutoff],
+        )[0].real
     return at, af
 
 
