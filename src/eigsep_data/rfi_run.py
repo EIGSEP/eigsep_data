@@ -236,6 +236,7 @@ def _resume_files(
     wanted,
     config_hash,
     resolution_policy_hash,
+    antenna="box-air",
 ):
     flags = _read_manifest(root / "flags" / flags_version / "manifest.json")
     models = _read_manifest(
@@ -244,7 +245,14 @@ def _resume_files(
     completed = set()
     partial = []
     for fname in wanted:
-        pair = (flags.get(fname), models.get(fname))
+        def for_antenna(record):
+            if record is None:
+                return None
+            if "antennas" in record:
+                return record["antennas"].get(antenna)
+            return record if antenna == "box-air" else None
+
+        pair = (for_antenna(flags.get(fname)), for_antenna(models.get(fname)))
         if pair[0] is None and pair[1] is None:
             continue
 
@@ -510,6 +518,7 @@ def main(argv=None):
             original_files,
             config_hash,
             policy_hash,
+            antenna=args.air_antenna,
         )
     pending = [name for name in original_files if name not in completed]
     if pending:

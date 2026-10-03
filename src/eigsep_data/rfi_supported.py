@@ -1173,6 +1173,11 @@ def _write_products_unlocked(
     files_record = {}
     flags_root = root / "flags" / flags_version
     model_root = root / "derived" / "smooth_model" / model_version
+    antenna = str(result.diagnostics.get("antennas", {}).get("air", "box-air"))
+    existing_files = {}
+    if (flags_root / "manifest.json").exists():
+        with open(flags_root / "manifest.json") as stream:
+            existing_files = json.load(stream).get("files", {})
     for fname, group in result.meta.groupby("file", sort=False):
         input_key = _input_key(group)
         # Results are in time order, which is not raw-row order in four files
@@ -1181,7 +1186,8 @@ def _write_products_unlocked(
         positions = _raw_row_positions(result, fname)
         source = source_dir / fname
         source_hash = _sha256(source)
-        files_record[fname] = {
+        record = {
+            "antenna": antenna,
             "source": (
                 f"data/{fname}" if source_dir == root / "data" else str(source)
             ),
@@ -1196,6 +1202,19 @@ def _write_products_unlocked(
             ).get(fname),
             "generated_utc": generated,
         }
+        # One record per flagged antenna (each is its own input dataset); the
+        # top-level fields stay box-air's, as in products written before
+        # box-gnd was flagged.
+        previous = existing_files.get(fname, {})
+        merged = dict(previous)
+        antennas = dict(previous.get("antennas", {}))
+        if previous and not antennas:
+            antennas["box-air"] = {k: v for k, v in previous.items() if k != "antennas"}
+        antennas[antenna] = record
+        if antenna == "box-air" or not previous:
+            merged.update(record)
+        merged["antennas"] = antennas
+        files_record[fname] = merged
         day_path = flags_root / f"flags_{fname[5:13]}.h5"
 
         def update_flags(h5, fname=fname, positions=positions):

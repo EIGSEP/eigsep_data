@@ -311,3 +311,32 @@ def test_worker_failure_does_not_cancel_other_days(
     assert (
         list(tmp_path.iterdir()) == []
     )  # Dry run writes no reports/products.
+
+
+def test_resume_is_per_antenna(tmp_path):
+    """A file flagged for box-air is complete for box-air only; box-gnd still runs.
+    Legacy single-antenna records count as box-air."""
+    fname = "corr_20260716_000000Z.h5"
+    digest = parameter_sha256(RFIConfig())
+    done = {
+        "parameter_sha256": digest,
+        "algorithm_source_sha256": algorithm_source_sha256(),
+        "algorithm_revision": ALGORITHM_REVISION,
+    }
+    paths = (
+        tmp_path / "flags" / "v3-beta" / "manifest.json",
+        tmp_path / "derived" / "smooth_model" / "v3-beta" / "manifest.json",
+    )
+    for record in ({fname: dict(done)},
+                   {fname: dict(done, antennas={"box-air": dict(done)})}):
+        for path in paths:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"files": record}))
+        args = (tmp_path, "v3-beta", "v3-beta", [fname], digest, None)
+        assert _resume_files(*args, antenna="box-air") == {fname}
+        assert _resume_files(*args, antenna="box-gnd") == set()
+    both = {fname: dict(done, antennas={"box-air": dict(done), "box-gnd": dict(done)})}
+    for path in paths:
+        path.write_text(json.dumps({"files": both}))
+    assert _resume_files(tmp_path, "v3-beta", "v3-beta", [fname], digest, None,
+                         antenna="box-gnd") == {fname}
