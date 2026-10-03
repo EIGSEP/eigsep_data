@@ -621,3 +621,22 @@ def test_unknown_point_scale_is_rejected():
             air, ground, cross, times, freqs, dt, states,
             config=replace(RFIConfig(), point_scale="bogus"),
         )
+
+
+def test_unconverged_cross_channels_are_unsupported_not_fatal():
+    """A cross-background channel that has not settled when the iterations run out
+    gets no cross score and is marked unsupported; the segment still completes."""
+    air, ground, cross, times, freqs, dt, states = _synthetic()
+    result = flag_arrays(
+        air, ground, cross, times, freqs, dt, states,
+        config=replace(RFIConfig(), time_guard=0, cross_iterations=1, cross_step_tol=0.0),
+    )
+    unsupported = 1 << BIT_BY_REASON["unsupported_background"]
+    cross_bit = 1 << BIT_BY_REASON["cross_change"]
+    sky = np.ones(len(times), dtype=bool)
+    sky[40:44] = False
+    assert np.all(result.flags[sky] & unsupported)
+    assert not np.any(result.flags & cross_bit)
+    cross = result.diagnostics["segments"][0]["cross"]
+    assert cross["unconverged_channels"] == len(freqs)
+    assert not cross["reached_step_tolerance"]

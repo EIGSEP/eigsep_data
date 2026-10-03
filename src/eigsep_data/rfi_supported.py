@@ -428,18 +428,19 @@ def _cross_background(cross_z, qt, reference_valid, config):
         gram += config.ridge * np.eye(rank)[None, :, :]
         coeff = np.linalg.solve(gram, rhs.T[:, :, None])[:, :, 0].T
         updated = qt @ coeff
-        change = float(np.max(abs(updated - fitted)))
-        history.append(change)
+        column_change = np.max(abs(updated - fitted), axis=0)
+        history.append(float(column_change.max()))
         fitted = updated
-        if change < config.cross_step_tol:
+        if history[-1] < config.cross_step_tol:
             break
-    if history[-1] >= config.cross_step_tol:
-        raise RuntimeError(
-            "cross-background solve did not converge: last step "
-            f"{history[-1]:.4g}"
-        )
+    # Each channel is an independent reweighted fit. A channel that does not
+    # settle (e.g. intermittent strong coherent RFI) has no usable cross
+    # background: its cross score is undefined (NaN) and the caller marks it
+    # unsupported, instead of the whole segment failing.
+    unconverged = column_change >= config.cross_step_tol
     model = np.zeros_like(cross_z)
     model[:, active] = fitted
+    model[:, np.flatnonzero(active)[unconverged]] = np.nan
     residual = cross_z - model
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
@@ -456,7 +457,8 @@ def _cross_background(cross_z, qt, reference_valid, config):
         {
             "iterations": len(history),
             "last_step": history[-1],
-            "reached_step_tolerance": True,
+            "reached_step_tolerance": not unconverged.any(),
+            "unconverged_channels": int(unconverged.sum()),
             "systems_solved": int(active.sum() * len(history)),
             "system_rank": rank,
             "seconds": time.perf_counter() - started,
@@ -672,10 +674,11 @@ def _one_segment(data, ground, cross, times, freqs, dt, sky, config):
         ~sky[:, None], data.shape
     ).copy()
     reasons["invalid_input_or_domain"] = ~valid_input
-    reasons["unsupported_background"] = ~supported
+    cross_unsupported = ~np.isfinite(cross_score) & valid_input & sky[:, None]
+    reasons["unsupported_background"] = ~supported | cross_unsupported
     reasons["cross_change"] = (
-        (cross_score > config.cross_cut) & valid_input & sky[:, None]
-    )
+        np.nan_to_num(cross_score, nan=0.0) > config.cross_cut
+    ) & valid_input & sky[:, None]
     before_guard = np.logical_or.reduce(list(reasons.values()))
     expanded = maximum_filter(
         before_guard,
