@@ -69,7 +69,7 @@ FLAG_MEANINGS = {
 }
 BIT_BY_REASON = {v["name"]: int(k) for k, v in FLAG_BITS.items()}
 DEFAULT_VERSION = "v3-beta"
-ALGORITHM_REVISION = "supported-dpss-v3-beta-lowband-2-empirical-point"
+ALGORITHM_REVISION = "supported-dpss-v3-beta-lowband-3-extended"
 # Products generated from this committed source predate the explicit revision
 # field but use the same numerical flagger. The later change only restores raw
 # row order while writing complete, time-permuted files.
@@ -99,6 +99,10 @@ class RFIConfig:
     point_cut: float = 6.0
     other_point_cut: float = 8.0
     point_scale: str = "empirical"
+    # A channel whose residual scatter (robust, untruncated) exceeds this many
+    # times radiometer noise is not described by the smooth background (e.g. the
+    # rotating-antenna raster); its cells are unsupported rather than tested.
+    max_scatter_ratio: float = 5.0
     negative_cut: float = 8.0
     group_cut: float = 6.0
     group_cell_cut: float = 2.0
@@ -694,7 +698,15 @@ def _one_segment(data, ground, cross, times, freqs, dt, sky, config):
     ).copy()
     reasons["invalid_input_or_domain"] = ~valid_input
     cross_unsupported = ~np.isfinite(cross_score) & valid_input & sky[:, None]
-    reasons["unsupported_background"] = ~supported | cross_unsupported
+    _, scatter = _temporal_center_scale(
+        np.where(np.isfinite(z), z, np.nan), reference & supported
+    )
+    too_scattered = (
+        (scatter > config.max_scatter_ratio)[None, :] & valid_input & sky[:, None]
+    )
+    reasons["unsupported_background"] = (
+        ~supported | cross_unsupported | too_scattered
+    )
     reasons["cross_change"] = (
         np.nan_to_num(cross_score, nan=0.0) > config.cross_cut
     ) & valid_input & sky[:, None]
