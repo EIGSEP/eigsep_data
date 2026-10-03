@@ -147,6 +147,10 @@ A product is a derived dataset keyed by the raw files —
 
 ## Recent changes
 
+- 2026-10-03: `rfi_supported` v3-beta's point threshold now scales with each
+  channel's measured residual scatter (`point_scale="empirical"`, new algorithm
+  revision); the radiometer-only threshold over-flagged smooth-model error as RFI
+  (`docs/rfi_v3_beta.md`, memo 006).
 - 2026-09-17 (`agent:eigsep-67`): `import eigsep_data` made lazy, 7.05 s
   -> 0.00 s; JAX is no longer pulled to read a flag mask.
 - 2026-09-17 (`agent:eigsep-67`): added `bundle.py` and `products/`, the

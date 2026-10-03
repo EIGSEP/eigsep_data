@@ -582,3 +582,42 @@ def test_refit_exhaustion_is_unsupported_but_numerical_errors_propagate(
     monkeypatch.setattr(rfi._TensorFit, "solve", numerical_failure)
     with pytest.raises(RuntimeError, match="CG did not converge"):
         flag_arrays(*args)
+
+
+def test_point_threshold_scales_with_measured_scatter():
+    """Scatter three times the radiometer level is not RFI under the empirical
+    point scale, while a narrow line well above that scatter is still flagged;
+    the radiometer scale flags the extra scatter."""
+    air, ground, cross, times, freqs, dt, states = _synthetic()
+    rng = np.random.default_rng(7)
+    normalization = np.sqrt(2 * dt[0] * np.diff(freqs)[0] * 1e6)
+    truth = ground / 0.8
+    # total scatter 3x radiometer, in quadrature with the existing noise
+    air = air + np.sqrt(8) * truth * rng.normal(size=air.shape) / normalization
+    line = np.zeros(air.shape, dtype=bool)
+    line[60:63, 150] = True
+    air[line] += 60 * truth[line] / normalization
+    bit = 1 << BIT_BY_REASON["positive_auto_excess"]
+    fractions = {}
+    for scale in ("empirical", "radiometer"):
+        result = flag_arrays(
+            air, ground, cross, times, freqs, dt, states,
+            config=replace(RFIConfig(), time_guard=0, point_scale=scale),
+        )
+        flagged = (result.flags & bit) != 0
+        sky = np.ones(len(times), dtype=bool)
+        sky[40:44] = False
+        clean = sky[:, None] & ~line
+        fractions[scale] = flagged[clean].mean()
+        assert flagged[line].all()
+    assert fractions["empirical"] < 0.002
+    assert fractions["radiometer"] > 0.01
+
+
+def test_unknown_point_scale_is_rejected():
+    air, ground, cross, times, freqs, dt, states = _synthetic()
+    with pytest.raises(ValueError, match="point_scale"):
+        flag_arrays(
+            air, ground, cross, times, freqs, dt, states,
+            config=replace(RFIConfig(), point_scale="bogus"),
+        )

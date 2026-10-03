@@ -69,7 +69,7 @@ FLAG_MEANINGS = {
 }
 BIT_BY_REASON = {v["name"]: int(k) for k, v in FLAG_BITS.items()}
 DEFAULT_VERSION = "v3-beta"
-ALGORITHM_REVISION = "supported-dpss-v3-beta-lowband-1"
+ALGORITHM_REVISION = "supported-dpss-v3-beta-lowband-2-empirical-point"
 # Products generated from this committed source predate the explicit revision
 # field but use the same numerical flagger. The later change only restores raw
 # row order while writing complete, time-permuted files.
@@ -95,6 +95,7 @@ class RFIConfig:
     fit_clip: float = 8.0
     point_cut: float = 6.0
     other_point_cut: float = 8.0
+    point_scale: str = "empirical"
     negative_cut: float = 8.0
     group_cut: float = 6.0
     group_cell_cut: float = 2.0
@@ -488,16 +489,25 @@ def _detect(
     threshold = np.full(len(freqs), config.other_point_cut)
     for lo, hi in REPORT_BANDS.values():
         threshold[(freqs >= lo) & (freqs < hi)] = config.point_cut
-    reasons = {
-        "invalid_input_or_domain": ~valid,
-        "cross_change": cross_score > config.cross_cut,
-        "positive_auto_excess": z > threshold,
-        "negative_or_model_failure": (z < -config.negative_cut)
-        | ~np.isfinite(z),
-    }
     center, scale = _temporal_center_scale(
         z, reference_valid & (z < config.fit_clip)
     )
+    if config.point_scale == "empirical":
+        # Threshold each channel against its measured scatter (never below the
+        # radiometer level): the smooth model's own errors exceed radiometer
+        # noise, so a fixed radiometer threshold flags model error as RFI.
+        point = z / scale
+    elif config.point_scale == "radiometer":
+        point = z
+    else:
+        raise ValueError(f"unknown point_scale {config.point_scale!r}")
+    reasons = {
+        "invalid_input_or_domain": ~valid,
+        "cross_change": cross_score > config.cross_cut,
+        "positive_auto_excess": point > threshold,
+        "negative_or_model_failure": (z < -config.negative_cut)
+        | ~np.isfinite(z),
+    }
     standardized = np.nan_to_num(
         (z - center) / scale, nan=0, posinf=0, neginf=0
     )
