@@ -463,9 +463,9 @@ def _cross_background(cross_z, qt, reference_valid, config):
         if history[-1] < config.cross_step_tol:
             break
     # Each channel is an independent reweighted fit. A channel that does not
-    # settle (e.g. intermittent strong coherent RFI) has no usable cross
-    # background: its cross score is undefined (NaN) and the caller marks it
-    # unsupported, instead of the whole segment failing.
+    # settle (e.g. intermittent strong coherent RFI, or one antenna rotating)
+    # has no usable cross background: its cross score is undefined (NaN), so
+    # it has no cross detection, instead of the whole segment failing.
     unconverged = column_change >= config.cross_step_tol
     model = np.zeros_like(cross_z)
     model[:, active] = fitted
@@ -703,16 +703,16 @@ def _one_segment(data, ground, cross, times, freqs, dt, sky, config):
         ~sky[:, None], data.shape
     ).copy()
     reasons["invalid_input_or_domain"] = ~valid_input
-    cross_unsupported = ~np.isfinite(cross_score) & valid_input & sky[:, None]
     _, scatter = _temporal_center_scale(
         np.where(np.isfinite(z), z, np.nan), reference & supported
     )
     too_scattered = (
         (scatter > config.max_scatter_ratio)[None, :] & valid_input & sky[:, None]
     )
-    reasons["unsupported_background"] = (
-        ~supported | cross_unsupported | too_scattered
-    )
+    # A cross channel without a converged background loses only the cross
+    # detector (its score is NaN, so cross_change is never set); the auto fit
+    # and its detectors still stand.
+    reasons["unsupported_background"] = ~supported | too_scattered
     reasons["cross_change"] = (
         np.nan_to_num(cross_score, nan=0.0) > config.cross_cut
     ) & valid_input & sky[:, None]

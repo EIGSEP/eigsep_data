@@ -626,9 +626,9 @@ def test_unknown_point_scale_is_rejected():
         )
 
 
-def test_unconverged_cross_channels_are_unsupported_not_fatal():
+def test_unconverged_cross_channels_lose_only_cross_detection():
     """A cross-background channel that has not settled when the iterations run out
-    gets no cross score and is marked unsupported; the segment still completes."""
+    gets no cross score; the auto fit stands and the segment completes."""
     air, ground, cross, times, freqs, dt, states = _synthetic()
     result = flag_arrays(
         air, ground, cross, times, freqs, dt, states,
@@ -638,7 +638,7 @@ def test_unconverged_cross_channels_are_unsupported_not_fatal():
     cross_bit = 1 << BIT_BY_REASON["cross_change"]
     sky = np.ones(len(times), dtype=bool)
     sky[40:44] = False
-    assert np.all(result.flags[sky] & unsupported)
+    assert ((result.flags[sky] & unsupported) != 0).mean() < 0.05
     assert not np.any(result.flags & cross_bit)
     cross = result.diagnostics["segments"][0]["cross"]
     assert cross["unconverged_channels"] == len(freqs)
