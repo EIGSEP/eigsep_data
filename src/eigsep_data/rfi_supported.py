@@ -174,6 +174,12 @@ def _bases(times, freqs, config):
     )[0].real
     rel = np.asarray(times, float) - times[0]
     step = np.diff(rel)
+    if len(step) and np.any(step <= 0):
+        # Duplicated or backward timestamps (split flush files): the time axis
+        # is unusable, so place rows at the nominal cadence in row order.
+        positive = step[step > 0]
+        rel = np.arange(len(rel)) * (np.median(positive) if positive.size else 1.0)
+        step = np.diff(rel)
     if len(step) and np.ptp(step) > 1e-6 * np.median(step):
         # Jittered or slightly uneven sampling: DPSS needs an even grid, so build
         # the modes on one spanning the segment at the median step and

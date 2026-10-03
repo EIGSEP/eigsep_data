@@ -700,3 +700,13 @@ def test_channels_the_background_cannot_describe_are_unsupported():
         fractions[total] = ((result.flags[sky] & bit) != 0).mean()
     assert fractions[3] < 0.05
     assert fractions[8] > 0.9
+
+
+def test_duplicated_timestamps_fall_back_to_row_order():
+    air, ground, cross, times, freqs, dt, states = _synthetic()
+    broken = times.copy()
+    broken[50:120] = broken[50]          # a flush file with one repeated time
+    result = flag_arrays(air, ground, cross, broken, freqs, dt, states,
+                         config=replace(RFIConfig(), time_guard=0))
+    sky = states == "RFANT"
+    assert np.isfinite(result.model[sky]).mean() > 0.95
