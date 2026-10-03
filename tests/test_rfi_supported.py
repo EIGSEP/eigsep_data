@@ -659,3 +659,25 @@ def test_jittered_times_use_an_interpolated_time_basis():
     sky[40:44] = False
     assert np.isfinite(result.model[sky]).mean() > 0.95
     assert abs(result.mask[sky].mean() - even.mask[sky].mean()) < 0.01
+
+
+def test_calibration_states_are_flagged_and_stay_non_sky():
+    """Rows in an extra state get their own fit: a line planted there is flagged,
+    bit 0 stays set, and sky rows are unchanged from a sky-only run."""
+    air, ground, cross, times, freqs, dt, states = _synthetic()
+    states = states.copy()
+    states[100:130] = "RFNON"
+    normalization = np.sqrt(2 * dt[0] * np.diff(freqs)[0] * 1e6)
+    air = air.copy()
+    air[110:115, 120] += 80 * air[110:115, 120] / normalization
+    config = replace(RFIConfig(), time_guard=0)
+    both = flag_arrays(air, ground, cross, times, freqs, dt, states, config=config)
+    sky_only = flag_arrays(air, ground, cross, times, freqs, dt, states,
+                           config=replace(config, extra_states=()))
+    nonsky = 1 << BIT_BY_REASON["non_sky_switch_state"]
+    auto = 1 << BIT_BY_REASON["positive_auto_excess"]
+    assert np.all(both.flags[100:130] & nonsky)
+    assert np.all(both.flags[110:115, 120] & auto)
+    assert not np.any(sky_only.flags[100:130] & auto)
+    sky = states == "RFANT"
+    np.testing.assert_array_equal(both.flags[sky], sky_only.flags[sky])

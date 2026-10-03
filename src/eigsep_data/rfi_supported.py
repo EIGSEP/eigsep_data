@@ -15,7 +15,7 @@ product layouts understood by :meth:`Selection.load_bundle`.
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 import fcntl
 import hashlib
@@ -85,6 +85,9 @@ class RFIConfig:
     band_mhz: tuple[float, float] = (35.0, 250.0)
     tested_band_mhz: tuple[float, float] = (35.0, 235.0)
     sky_state: str = "RFANT"
+    # Calibration states flagged as well, each against its own background; their
+    # rows keep bit 0 (not sky) and gain the RFI and support bits.
+    extra_states: tuple[str, ...] = ("RFNON", "RFAMB")
     freq_halfwidth_s: float = 50e-9
     spectral_correction_halfwidth_s: float = 300e-9
     spectral_correction_band_mhz: tuple[float, float] = (35.0, 88.0)
@@ -886,6 +889,25 @@ def flag_arrays(
         name: np.concatenate([p["reasons"][name] for p in pieces])
         for name in BIT_BY_REASON
     }
+    state_diagnostics = {}
+    for state in config.extra_states:
+        rows = states == state
+        if state == config.sky_state or not rows.any():
+            continue
+        other = flag_arrays(
+            data, ground, cross, times, freqs, dt, states,
+            config=replace(config, sky_state=state, extra_states=()),
+            meta=meta,
+        )
+        for name in concatenate:
+            joined[name][rows] = getattr(other, name)[rows]
+        for name in BIT_BY_REASON:
+            reasons[name][rows] = other.reasons[name][rows]
+        reasons["non_sky_switch_state"][rows] = True
+        joined["flags"][rows] = other.flags[rows] | (
+            1 << BIT_BY_REASON["non_sky_switch_state"]
+        )
+        state_diagnostics[state] = other.diagnostics["segments"]
     return RFIResult(
         **joined,
         reasons=reasons,
@@ -893,7 +915,7 @@ def flag_arrays(
         times=times,
         meta=meta,
         config=config,
-        diagnostics={"segments": diagnostics},
+        diagnostics={"segments": diagnostics, "extra_states": state_diagnostics},
     )
 
 
