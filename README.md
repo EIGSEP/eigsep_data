@@ -150,6 +150,8 @@ A product is a derived dataset keyed by the raw files —
 
 ## Recent changes
 
+- 2026-10-04: `rfi_supported` revision 5: high-scatter channels get an advisory
+  bit 9 (`high_scatter`), not excluded by default, instead of bit 7.
 - 2026-10-04: `rfi_supported` revision 4: files recorded with the switch daemon
   off are flagged as sky (the switch sat on the antenna), not left non-sky.
 - 2026-10-04: `rfi_supported` revision 3: unconverged cross channels and uneven

@@ -683,14 +683,15 @@ def test_calibration_states_are_flagged_and_stay_non_sky():
     np.testing.assert_array_equal(both.flags[sky], sky_only.flags[sky])
 
 
-def test_channels_the_background_cannot_describe_are_unsupported():
+def test_high_scatter_channels_get_the_advisory_bit():
     """Residual scatter well above max_scatter_ratio x radiometer (as in the
-    rotating-antenna raster) marks the channel unsupported; 3x does not."""
+    rotating-antenna raster) sets the advisory high_scatter bit, which the default
+    mask does not exclude; 3x does not set it."""
     air0, ground, cross, times, freqs, dt, states = _synthetic()
     rng = np.random.default_rng(11)
     normalization = np.sqrt(2 * dt[0] * np.diff(freqs)[0] * 1e6)
     truth = ground / 0.8
-    bit = 1 << BIT_BY_REASON["unsupported_background"]
+    bit = 1 << BIT_BY_REASON["high_scatter"]
     sky = states == "RFANT"
     fractions = {}
     for total in (3, 8):
@@ -698,6 +699,10 @@ def test_channels_the_background_cannot_describe_are_unsupported():
         result = flag_arrays(air, ground, cross, times, freqs, dt, states,
                              config=replace(RFIConfig(), time_guard=0))
         fractions[total] = ((result.flags[sky] & bit) != 0).mean()
+        flagged = (result.flags[sky] & bit) != 0
+        only_advisory = result.flags[sky] == bit
+        assert not result.mask[sky][only_advisory].any()
+        assert result.mask_conservative[sky][flagged].all()
     assert fractions[3] < 0.05
     assert fractions[8] > 0.9
 

@@ -55,7 +55,10 @@ FLAG_BITS = {
     "6": {"name": "comb_group_trigger", "rfi": True},
     "7": {"name": "unsupported_background", "rfi": False},
     "8": {"name": "guard", "rfi": False},
+    "9": {"name": "high_scatter", "rfi": False, "advisory": True},
 }
+# Advisory bits record a condition without excluding the cell by default.
+ADVISORY_VALUE = sum(1 << int(k) for k, v in FLAG_BITS.items() if v.get("advisory"))
 FLAG_MEANINGS = {
     "non_sky_switch_state": "receiver switch is not RFANT; not sky and not RFI",
     "invalid_input_or_domain": "missing/nonpositive input or outside the tested 35-235 MHz domain",
@@ -66,10 +69,11 @@ FLAG_MEANINGS = {
     "comb_group_trigger": "a clock-aligned 8/4/2-channel comb group crossed its threshold",
     "unsupported_background": "design-noise or ridge-prior check rejects the model prediction",
     "guard": "time/frequency guard grown around another exclusion reason",
+    "high_scatter": "advisory, not excluded by default: the channel's residual scatter exceeds max_scatter_ratio times radiometer noise, so detection there is weak (e.g. a moving antenna)",
 }
 BIT_BY_REASON = {v["name"]: int(k) for k, v in FLAG_BITS.items()}
 DEFAULT_VERSION = "v3-beta"
-ALGORITHM_REVISION = "supported-dpss-v3-beta-lowband-4-daemonless"
+ALGORITHM_REVISION = "supported-dpss-v3-beta-lowband-5-scatter-advisory"
 # Products generated from this committed source predate the explicit revision
 # field but use the same numerical flagger. The later change only restores raw
 # row order while writing complete, time-permuted files.
@@ -157,7 +161,12 @@ class RFIResult:
 
     @property
     def mask(self):
-        """Boolean exclusion mask (every nonzero reason bit)."""
+        """Boolean exclusion mask: every nonzero reason bit except advisory ones."""
+        return (self.flags & ~np.uint16(ADVISORY_VALUE)) != 0
+
+    @property
+    def mask_conservative(self):
+        """Exclusion mask including the advisory bits (e.g. high_scatter)."""
         return self.flags != 0
 
     @property
@@ -717,11 +726,14 @@ def _one_segment(data, ground, cross, times, freqs, dt, sky, config):
     # A cross channel without a converged background loses only the cross
     # detector (its score is NaN, so cross_change is never set); the auto fit
     # and its detectors still stand.
-    reasons["unsupported_background"] = ~supported | too_scattered
+    reasons["unsupported_background"] = ~supported
+    reasons["high_scatter"] = too_scattered
     reasons["cross_change"] = (
         np.nan_to_num(cross_score, nan=0.0) > config.cross_cut
     ) & valid_input & sky[:, None]
-    before_guard = np.logical_or.reduce(list(reasons.values()))
+    before_guard = np.logical_or.reduce(
+        [v for k, v in reasons.items() if not FLAG_BITS[str(BIT_BY_REASON[k])].get("advisory")]
+    )
     expanded = maximum_filter(
         before_guard,
         size=(2 * config.time_guard + 1, 2 * config.frequency_guard + 1),
@@ -1356,6 +1368,7 @@ def _write_products_unlocked(
             "n_channels": int(len(result.freqs_mhz)),
             "channel_width_mhz": float(np.median(np.diff(result.freqs_mhz))),
             "clean_value": 0,
+            "exclude_by_default": "every bit except the advisory ones (high_scatter); apply those for a conservative mask",
             "product": "flags",
             "version": flags_version,
             "status": "beta",
@@ -1366,6 +1379,7 @@ def _write_products_unlocked(
                     "value": 1 << int(bit),
                     "name": spec["name"],
                     "rfi": spec["rfi"],
+                    "advisory": bool(spec.get("advisory", False)),
                     "meaning": FLAG_MEANINGS[spec["name"]],
                 }
                 for bit, spec in FLAG_BITS.items()
