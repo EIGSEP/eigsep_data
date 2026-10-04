@@ -119,6 +119,34 @@ radiometer level, so the fixed radiometer threshold flagged smooth-model error
 as RFI (13-50% of sky cells in `flags@v3-beta.1`; memo 006).
 `point_scale="radiometer"` reproduces the earlier behaviour.
 
+## Revision 3 (`supported-dpss-v3-beta-lowband-3-extended`)
+
+Changes made to promote v3-beta to the campaign default (memo 006):
+
+- **Unconverged cross channels.** The cross-background fit is tested for
+  convergence per channel. A channel that has not settled after
+  `cross_iterations` gets no cross score, so no cross detection; its auto fit
+  and detectors stand. Before, any such channel failed the whole batch (57 of
+  the 70 failed batches of `flags@v3-beta.1`). The count is in the segment
+  diagnostics (`cross.unconverged_channels`).
+- **Uneven sampling.** When sample times are not evenly spaced, the DPSS time
+  modes are built on an even grid spanning the segment and interpolated to the
+  sample times (3 failed batches).
+- **CG budget.** `cg_maxiter` 300 to 2000, tolerance unchanged; the failed
+  solves had stopped at relative residuals of about 2e-8 against 1e-8.
+- **Calibration states.** `extra_states` (default RFNON, RFAMB) are flagged
+  against their own backgrounds. Their rows keep bit 0 and gain the RFI and
+  support bits; sky rows are unchanged.
+- **Channels the background cannot describe.** Where a channel's robust,
+  untruncated residual scatter exceeds `max_scatter_ratio` (5) times radiometer
+  noise, its cells are `unsupported_background` rather than tested. This covers
+  the rotating-antenna raster, where the scatter is 8-11 times radiometer noise
+  whatever the time basis.
+- **Both antennas.** Run once with `--air-antenna box-air` and once with
+  `--air-antenna box-gnd --ground-antenna box-air` into the same version; the
+  manifest keeps a record per antenna under `antennas`, and `--resume` is per
+  antenna.
+
 ## Flag meanings
 
 Every nonzero value means that the cell is excluded. Bits can overlap.

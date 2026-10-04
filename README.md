@@ -150,6 +150,10 @@ A product is a derived dataset keyed by the raw files —
 
 ## Recent changes
 
+- 2026-10-04: `rfi_supported` revision 3: unconverged cross channels and uneven
+  sampling no longer fail batches, calibration states are flagged, channels the
+  smooth background cannot describe are marked unsupported, and box-gnd can be
+  flagged into the same product (`docs/rfi_v3_beta.md`, memo 006).
 - 2026-10-03 (Claude Code, for Aaron): comb labels corrected to memo 001
   everywhere. The 8-channel comb (07-17 onward) is the beam-mapping
   transmitter and the 07-16 1.000 MHz comb is box-air's own EMI; the old

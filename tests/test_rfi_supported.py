@@ -97,15 +97,18 @@ def test_sparse_stationary_solver_converges_with_unchanged_tolerance(
         solver.ncoeff
     )
     rhs = selected.T @ (data / solver.scale)[keep]
-    # Verify this fixture catches the previous failure, at the same defaults.
+    # Verify this fixture catches the previous failure: diagonal preconditioning
+    # at the original 300-iteration budget (the default was raised to 2000 when
+    # campaign batches stopped just short of tolerance at 300).
+    old_maxiter = 300
     _, old_info = cg(
         normal,
         rhs,
         M=LinearOperator(normal.shape, matvec=lambda x: x / normal.diagonal()),
         rtol=solver.config.cg_rtol,
-        maxiter=solver.config.cg_maxiter,
+        maxiter=old_maxiter,
     )
-    assert old_info == solver.config.cg_maxiter
+    assert old_info == old_maxiter
 
     prediction = solver.solve(data, keep)
     record = solver.history[-1]
@@ -621,3 +624,89 @@ def test_unknown_point_scale_is_rejected():
             air, ground, cross, times, freqs, dt, states,
             config=replace(RFIConfig(), point_scale="bogus"),
         )
+
+
+def test_unconverged_cross_channels_lose_only_cross_detection():
+    """A cross-background channel that has not settled when the iterations run out
+    gets no cross score; the auto fit stands and the segment completes."""
+    air, ground, cross, times, freqs, dt, states = _synthetic()
+    result = flag_arrays(
+        air, ground, cross, times, freqs, dt, states,
+        config=replace(RFIConfig(), time_guard=0, cross_iterations=1, cross_step_tol=0.0),
+    )
+    unsupported = 1 << BIT_BY_REASON["unsupported_background"]
+    cross_bit = 1 << BIT_BY_REASON["cross_change"]
+    sky = np.ones(len(times), dtype=bool)
+    sky[40:44] = False
+    assert ((result.flags[sky] & unsupported) != 0).mean() < 0.05
+    assert not np.any(result.flags & cross_bit)
+    cross = result.diagnostics["segments"][0]["cross"]
+    assert cross["unconverged_channels"] == len(freqs)
+    assert not cross["reached_step_tolerance"]
+
+
+def test_jittered_times_use_an_interpolated_time_basis():
+    """Slightly uneven sample times (as in a few Marjum segments) no longer stop the
+    DPSS time basis; evenly spaced times take the exact path."""
+    air, ground, cross, times, freqs, dt, states = _synthetic()
+    rng = np.random.default_rng(3)
+    jittered = times + rng.uniform(-0.05, 0.05, size=times.shape) * (times[1] - times[0])
+    result = flag_arrays(air, ground, cross, jittered, freqs, dt, states,
+                         config=replace(RFIConfig(), time_guard=0))
+    even = flag_arrays(air, ground, cross, times, freqs, dt, states,
+                       config=replace(RFIConfig(), time_guard=0))
+    sky = np.ones(len(times), dtype=bool)
+    sky[40:44] = False
+    assert np.isfinite(result.model[sky]).mean() > 0.95
+    assert abs(result.mask[sky].mean() - even.mask[sky].mean()) < 0.01
+
+
+def test_calibration_states_are_flagged_and_stay_non_sky():
+    """Rows in an extra state get their own fit: a line planted there is flagged,
+    bit 0 stays set, and sky rows are unchanged from a sky-only run."""
+    air, ground, cross, times, freqs, dt, states = _synthetic()
+    states = states.copy()
+    states[100:130] = "RFNON"
+    normalization = np.sqrt(2 * dt[0] * np.diff(freqs)[0] * 1e6)
+    air = air.copy()
+    air[110:115, 120] += 80 * air[110:115, 120] / normalization
+    config = replace(RFIConfig(), time_guard=0)
+    both = flag_arrays(air, ground, cross, times, freqs, dt, states, config=config)
+    sky_only = flag_arrays(air, ground, cross, times, freqs, dt, states,
+                           config=replace(config, extra_states=()))
+    nonsky = 1 << BIT_BY_REASON["non_sky_switch_state"]
+    auto = 1 << BIT_BY_REASON["positive_auto_excess"]
+    assert np.all(both.flags[100:130] & nonsky)
+    assert np.all(both.flags[110:115, 120] & auto)
+    assert not np.any(sky_only.flags[100:130] & auto)
+    sky = states == "RFANT"
+    np.testing.assert_array_equal(both.flags[sky], sky_only.flags[sky])
+
+
+def test_channels_the_background_cannot_describe_are_unsupported():
+    """Residual scatter well above max_scatter_ratio x radiometer (as in the
+    rotating-antenna raster) marks the channel unsupported; 3x does not."""
+    air0, ground, cross, times, freqs, dt, states = _synthetic()
+    rng = np.random.default_rng(11)
+    normalization = np.sqrt(2 * dt[0] * np.diff(freqs)[0] * 1e6)
+    truth = ground / 0.8
+    bit = 1 << BIT_BY_REASON["unsupported_background"]
+    sky = states == "RFANT"
+    fractions = {}
+    for total in (3, 8):
+        air = air0 + np.sqrt(total ** 2 - 1) * truth * rng.normal(size=air0.shape) / normalization
+        result = flag_arrays(air, ground, cross, times, freqs, dt, states,
+                             config=replace(RFIConfig(), time_guard=0))
+        fractions[total] = ((result.flags[sky] & bit) != 0).mean()
+    assert fractions[3] < 0.05
+    assert fractions[8] > 0.9
+
+
+def test_duplicated_timestamps_fall_back_to_row_order():
+    air, ground, cross, times, freqs, dt, states = _synthetic()
+    broken = times.copy()
+    broken[50:120] = broken[50]          # a flush file with one repeated time
+    result = flag_arrays(air, ground, cross, broken, freqs, dt, states,
+                         config=replace(RFIConfig(), time_guard=0))
+    sky = states == "RFANT"
+    assert np.isfinite(result.model[sky]).mean() > 0.95

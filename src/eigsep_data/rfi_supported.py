@@ -15,7 +15,7 @@ product layouts understood by :meth:`Selection.load_bundle`.
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 import fcntl
 import hashlib
@@ -69,7 +69,7 @@ FLAG_MEANINGS = {
 }
 BIT_BY_REASON = {v["name"]: int(k) for k, v in FLAG_BITS.items()}
 DEFAULT_VERSION = "v3-beta"
-ALGORITHM_REVISION = "supported-dpss-v3-beta-lowband-2-empirical-point"
+ALGORITHM_REVISION = "supported-dpss-v3-beta-lowband-3-extended"
 # Products generated from this committed source predate the explicit revision
 # field but use the same numerical flagger. The later change only restores raw
 # row order while writing complete, time-permuted files.
@@ -85,6 +85,9 @@ class RFIConfig:
     band_mhz: tuple[float, float] = (35.0, 250.0)
     tested_band_mhz: tuple[float, float] = (35.0, 235.0)
     sky_state: str = "RFANT"
+    # Calibration states flagged as well, each against its own background; their
+    # rows keep bit 0 (not sky) and gain the RFI and support bits.
+    extra_states: tuple[str, ...] = ("RFNON", "RFAMB")
     freq_halfwidth_s: float = 50e-9
     spectral_correction_halfwidth_s: float = 300e-9
     spectral_correction_band_mhz: tuple[float, float] = (35.0, 88.0)
@@ -96,6 +99,10 @@ class RFIConfig:
     point_cut: float = 6.0
     other_point_cut: float = 8.0
     point_scale: str = "empirical"
+    # A channel whose residual scatter (robust, untruncated) exceeds this many
+    # times radiometer noise is not described by the smooth background (e.g. the
+    # rotating-antenna raster); its cells are unsupported rather than tested.
+    max_scatter_ratio: float = 5.0
     negative_cut: float = 8.0
     group_cut: float = 6.0
     group_cell_cut: float = 2.0
@@ -107,7 +114,7 @@ class RFIConfig:
     comb_min_teeth: int = 16
     ridge: float = 1e-6
     cg_rtol: float = 1e-8
-    cg_maxiter: int = 300
+    cg_maxiter: int = 2000
     robust_rounds: int = 50
     mask_change_tol: float = 5e-4
     cross_cut: float = 8.0
@@ -165,12 +172,34 @@ def _bases(times, freqs, config):
         [config.freq_halfwidth_s],
         eigenval_cutoff=[config.eigenvalue_cutoff],
     )[0].real
-    at = dpss_operator(
-        times - times[0],
-        [0],
-        [config.time_halfwidth_hz],
-        eigenval_cutoff=[config.eigenvalue_cutoff],
-    )[0].real
+    rel = np.asarray(times, float) - times[0]
+    step = np.diff(rel)
+    if len(step) and np.any(step <= 0):
+        # Duplicated or backward timestamps (split flush files): the time axis
+        # is unusable, so place rows at the nominal cadence in row order.
+        positive = step[step > 0]
+        rel = np.arange(len(rel)) * (np.median(positive) if positive.size else 1.0)
+        step = np.diff(rel)
+    if len(step) and np.ptp(step) > 1e-6 * np.median(step):
+        # Jittered or slightly uneven sampling: DPSS needs an even grid, so build
+        # the modes on one spanning the segment at the median step and
+        # interpolate them to the sample times (the modes are smooth on scales
+        # far longer than the step; _TensorFit re-orthonormalizes them).
+        grid = np.arange(0.0, rel[-1] + 0.5 * np.median(step), np.median(step))
+        on_grid = dpss_operator(
+            grid,
+            [0],
+            [config.time_halfwidth_hz],
+            eigenval_cutoff=[config.eigenvalue_cutoff],
+        )[0].real
+        at = np.column_stack([np.interp(rel, grid, mode) for mode in on_grid.T])
+    else:
+        at = dpss_operator(
+            rel,
+            [0],
+            [config.time_halfwidth_hz],
+            eigenval_cutoff=[config.eigenvalue_cutoff],
+        )[0].real
     return at, af
 
 
@@ -428,18 +457,19 @@ def _cross_background(cross_z, qt, reference_valid, config):
         gram += config.ridge * np.eye(rank)[None, :, :]
         coeff = np.linalg.solve(gram, rhs.T[:, :, None])[:, :, 0].T
         updated = qt @ coeff
-        change = float(np.max(abs(updated - fitted)))
-        history.append(change)
+        column_change = np.max(abs(updated - fitted), axis=0)
+        history.append(float(column_change.max()))
         fitted = updated
-        if change < config.cross_step_tol:
+        if history[-1] < config.cross_step_tol:
             break
-    if history[-1] >= config.cross_step_tol:
-        raise RuntimeError(
-            "cross-background solve did not converge: last step "
-            f"{history[-1]:.4g}"
-        )
+    # Each channel is an independent reweighted fit. A channel that does not
+    # settle (e.g. intermittent strong coherent RFI, or one antenna rotating)
+    # has no usable cross background: its cross score is undefined (NaN), so
+    # it has no cross detection, instead of the whole segment failing.
+    unconverged = column_change >= config.cross_step_tol
     model = np.zeros_like(cross_z)
     model[:, active] = fitted
+    model[:, np.flatnonzero(active)[unconverged]] = np.nan
     residual = cross_z - model
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
@@ -456,7 +486,8 @@ def _cross_background(cross_z, qt, reference_valid, config):
         {
             "iterations": len(history),
             "last_step": history[-1],
-            "reached_step_tolerance": True,
+            "reached_step_tolerance": not unconverged.any(),
+            "unconverged_channels": int(unconverged.sum()),
             "systems_solved": int(active.sum() * len(history)),
             "system_rank": rank,
             "seconds": time.perf_counter() - started,
@@ -672,10 +703,19 @@ def _one_segment(data, ground, cross, times, freqs, dt, sky, config):
         ~sky[:, None], data.shape
     ).copy()
     reasons["invalid_input_or_domain"] = ~valid_input
-    reasons["unsupported_background"] = ~supported
-    reasons["cross_change"] = (
-        (cross_score > config.cross_cut) & valid_input & sky[:, None]
+    _, scatter = _temporal_center_scale(
+        np.where(np.isfinite(z), z, np.nan), reference & supported
     )
+    too_scattered = (
+        (scatter > config.max_scatter_ratio)[None, :] & valid_input & sky[:, None]
+    )
+    # A cross channel without a converged background loses only the cross
+    # detector (its score is NaN, so cross_change is never set); the auto fit
+    # and its detectors still stand.
+    reasons["unsupported_background"] = ~supported | too_scattered
+    reasons["cross_change"] = (
+        np.nan_to_num(cross_score, nan=0.0) > config.cross_cut
+    ) & valid_input & sky[:, None]
     before_guard = np.logical_or.reduce(list(reasons.values()))
     expanded = maximum_filter(
         before_guard,
@@ -867,6 +907,25 @@ def flag_arrays(
         name: np.concatenate([p["reasons"][name] for p in pieces])
         for name in BIT_BY_REASON
     }
+    state_diagnostics = {}
+    for state in config.extra_states:
+        rows = states == state
+        if state == config.sky_state or not rows.any():
+            continue
+        other = flag_arrays(
+            data, ground, cross, times, freqs, dt, states,
+            config=replace(config, sky_state=state, extra_states=()),
+            meta=meta,
+        )
+        for name in concatenate:
+            joined[name][rows] = getattr(other, name)[rows]
+        for name in BIT_BY_REASON:
+            reasons[name][rows] = other.reasons[name][rows]
+        reasons["non_sky_switch_state"][rows] = True
+        joined["flags"][rows] = other.flags[rows] | (
+            1 << BIT_BY_REASON["non_sky_switch_state"]
+        )
+        state_diagnostics[state] = other.diagnostics["segments"]
     return RFIResult(
         **joined,
         reasons=reasons,
@@ -874,7 +933,7 @@ def flag_arrays(
         times=times,
         meta=meta,
         config=config,
-        diagnostics={"segments": diagnostics},
+        diagnostics={"segments": diagnostics, "extra_states": state_diagnostics},
     )
 
 
@@ -1154,6 +1213,11 @@ def _write_products_unlocked(
     files_record = {}
     flags_root = root / "flags" / flags_version
     model_root = root / "derived" / "smooth_model" / model_version
+    antenna = str(result.diagnostics.get("antennas", {}).get("air", "box-air"))
+    existing_files = {}
+    if (flags_root / "manifest.json").exists():
+        with open(flags_root / "manifest.json") as stream:
+            existing_files = json.load(stream).get("files", {})
     for fname, group in result.meta.groupby("file", sort=False):
         input_key = _input_key(group)
         # Results are in time order, which is not raw-row order in four files
@@ -1162,7 +1226,8 @@ def _write_products_unlocked(
         positions = _raw_row_positions(result, fname)
         source = source_dir / fname
         source_hash = _sha256(source)
-        files_record[fname] = {
+        record = {
+            "antenna": antenna,
             "source": (
                 f"data/{fname}" if source_dir == root / "data" else str(source)
             ),
@@ -1177,6 +1242,19 @@ def _write_products_unlocked(
             ).get(fname),
             "generated_utc": generated,
         }
+        # One record per flagged antenna (each is its own input dataset); the
+        # top-level fields stay box-air's, as in products written before
+        # box-gnd was flagged.
+        previous = existing_files.get(fname, {})
+        merged = dict(previous)
+        antennas = dict(previous.get("antennas", {}))
+        if previous and not antennas:
+            antennas["box-air"] = {k: v for k, v in previous.items() if k != "antennas"}
+        antennas[antenna] = record
+        if antenna == "box-air" or not previous:
+            merged.update(record)
+        merged["antennas"] = antennas
+        files_record[fname] = merged
         day_path = flags_root / f"flags_{fname[5:13]}.h5"
 
         def update_flags(h5, fname=fname, positions=positions):
