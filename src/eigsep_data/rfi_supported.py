@@ -69,7 +69,7 @@ FLAG_MEANINGS = {
 }
 BIT_BY_REASON = {v["name"]: int(k) for k, v in FLAG_BITS.items()}
 DEFAULT_VERSION = "v3-beta"
-ALGORITHM_REVISION = "supported-dpss-v3-beta-lowband-3-extended"
+ALGORITHM_REVISION = "supported-dpss-v3-beta-lowband-4-daemonless"
 # Products generated from this committed source predate the explicit revision
 # field but use the same numerical flagger. The later change only restores raw
 # row order while writing complete, time-permuted files.
@@ -88,6 +88,11 @@ class RFIConfig:
     # Calibration states flagged as well, each against its own background; their
     # rows keep bit 0 (not sky) and gain the RFI and support bits.
     extra_states: tuple[str, ...] = ("RFNON", "RFAMB")
+    # Files with no switch record at all were taken with the switch daemon off,
+    # when the RF switch sat on the antenna (Aaron, 2026-10-04): treat their rows
+    # as this state. None keeps them non-sky. Rows missing inside a recorded file
+    # are never reassigned.
+    daemonless_switch_state: str | None = "RFANT"
     freq_halfwidth_s: float = 50e-9
     spectral_correction_halfwidth_s: float = 300e-9
     spectral_correction_band_mhz: tuple[float, float] = (35.0, 88.0)
@@ -975,6 +980,26 @@ def load_selection_inputs(
     return bundles
 
 
+MISSING_SWITCH_STATES = ("MISSING",)
+
+
+def switch_states(meta, config):
+    """Per-row switch states, with files that carry no switch record at all set to
+    ``config.daemonless_switch_state``. Returns the states and ``{file: state}``
+    for the files reassigned."""
+    states = meta.rfswitch.to_numpy(dtype=object).copy()
+    assumed = {}
+    if config.daemonless_switch_state is None:
+        return states, assumed
+    files = meta.file.to_numpy(dtype=object)
+    for fname in pd.unique(files):
+        rows = files == fname
+        if np.isin(states[rows], MISSING_SWITCH_STATES).all():
+            states[rows] = config.daemonless_switch_state
+            assumed[str(fname)] = config.daemonless_switch_state
+    return states, assumed
+
+
 def run_selection(
     selection,
     *,
@@ -997,6 +1022,7 @@ def run_selection(
         raise ValueError(
             "selection metadata lacks rfswitch or integration_time"
         )
+    states, assumed = switch_states(air.meta, config)
     result = flag_arrays(
         air.data,
         bundles["ground"].data,
@@ -1004,10 +1030,11 @@ def run_selection(
         air.t,
         air.freqs_mhz,
         air.meta.integration_time.to_numpy(dtype=float),
-        air.meta.rfswitch.to_numpy(dtype=object),
+        states,
         config=config,
         meta=air.meta.copy(),
     )
+    result.diagnostics["assumed_switch_state"] = assumed
     result.diagnostics["antennas"] = {
         "air": str(air_antenna),
         "ground": str(ground_antenna),
@@ -1239,6 +1266,9 @@ def _write_products_unlocked(
             "input_key": str(input_key),
             "resolved_inputs": result.diagnostics.get(
                 "resolved_inputs", {}
+            ).get(fname),
+            "assumed_switch_state": result.diagnostics.get(
+                "assumed_switch_state", {}
             ).get(fname),
             "generated_utc": generated,
         }

@@ -147,6 +147,16 @@ Changes made to promote v3-beta to the campaign default (memo 006):
   manifest keeps a record per antenna under `antennas`, and `--resume` is per
   antenna.
 
+## Revision 4 (`supported-dpss-v3-beta-lowband-4-daemonless`)
+
+Files with no `metadata/rfswitch` at all were recorded with the switch daemon
+off, when the RF switch sat on the antenna (Aaron, 2026-10-04). Their rows are
+treated as `daemonless_switch_state` (default `RFANT`) and flagged as sky; the
+product manifest records `assumed_switch_state` for each such file. A row
+missing inside a file that does carry switch records is not reassigned. In the
+Marjum products this covers 1,280 files (319,127 rows, mostly 07-15) that
+revision 3 left as non-sky.
+
 ## Flag meanings
 
 Every nonzero value means that the cell is excluded. Bits can overlap.
