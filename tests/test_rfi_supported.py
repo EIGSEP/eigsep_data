@@ -710,3 +710,16 @@ def test_duplicated_timestamps_fall_back_to_row_order():
                          config=replace(RFIConfig(), time_guard=0))
     sky = states == "RFANT"
     assert np.isfinite(result.model[sky]).mean() > 0.95
+
+
+def test_daemonless_files_are_sky_but_gaps_in_recorded_files_are_not():
+    from eigsep_data.rfi_supported import switch_states
+    meta = pd.DataFrame({
+        "file": ["a.h5"] * 3 + ["b.h5"] * 3,
+        "rfswitch": ["MISSING"] * 3 + ["RFANT", "MISSING", "RFNON"],
+    })
+    states, assumed = switch_states(meta, RFIConfig())
+    assert list(states) == ["RFANT"] * 3 + ["RFANT", "MISSING", "RFNON"]
+    assert assumed == {"a.h5": "RFANT"}
+    states, assumed = switch_states(meta, replace(RFIConfig(), daemonless_switch_state=None))
+    assert list(states[:3]) == ["MISSING"] * 3 and assumed == {}
