@@ -139,9 +139,11 @@ Changes made to promote v3-beta to the campaign default (memo 006):
   support bits; sky rows are unchanged.
 - **Channels the background cannot describe.** Where a channel's robust,
   untruncated residual scatter exceeds `max_scatter_ratio` (5) times radiometer
-  noise, its cells are `unsupported_background` rather than tested. This covers
-  the rotating-antenna raster, where the scatter is 8-11 times radiometer noise
-  whatever the time basis.
+  noise, its cells get the advisory bit 9 `high_scatter` (revision 5; revision 3
+  used bit 7). Detection there is weak: in the rotating-antenna raster, where
+  the scatter is 8-11 times radiometer noise whatever the time basis, lines
+  planted at 20 times radiometer noise were not recovered. Advisory bits are not
+  excluded by default (`RFIResult.mask`); `mask_conservative` includes them.
 - **Both antennas.** Run once with `--air-antenna box-air` and once with
   `--air-antenna box-gnd --ground-antenna box-air` into the same version; the
   manifest keeps a record per antenna under `antennas`, and `--resume` is per
@@ -159,7 +161,9 @@ revision 3 left as non-sky.
 
 ## Flag meanings
 
-Every nonzero value means that the cell is excluded. Bits can overlap.
+Every nonzero value except the advisory bit 9 alone means that the cell is
+excluded; bit 9 marks cells where detection is weak, for users to apply when they
+want a conservative mask. Bits can overlap.
 
 | Bit | Name | RFI evidence |
 | ---: | --- | :---: |
@@ -172,8 +176,10 @@ Every nonzero value means that the cell is excluded. Bits can overlap.
 | 6 | `comb_group_trigger` | yes |
 | 7 | `unsupported_background` | no |
 | 8 | `guard` | no |
+| 9 | `high_scatter` (advisory) | no |
 
-`RFIResult.mask` includes every reason. `RFIResult.rfi_mask` includes only the
+`RFIResult.mask` includes every reason except the advisory bit 9;
+`RFIResult.mask_conservative` includes it too. `RFIResult.rfi_mask` includes only the
 four rows marked as RFI evidence above. A non-sky switch state is flagged over
 the entire frequency axis before fitting. Missing or nonpositive inputs and
 the untested domain are also excluded.
