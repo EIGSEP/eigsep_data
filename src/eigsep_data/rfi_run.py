@@ -1,4 +1,4 @@
-"""Plan and run supported-DPSS ``v3-beta`` campaign products."""
+"""Plan and run supported-DPSS ``v3`` campaign products."""
 
 from __future__ import annotations
 
@@ -390,7 +390,7 @@ def _run_day(task):
 def parser():
     out = argparse.ArgumentParser(
         description=(
-            "Plan or generate supported-DPSS v3-beta flags and smooth models "
+            "Plan or generate supported-DPSS v3 flags and smooth models "
             "from complete EIGSEP correlator files."
         )
     )

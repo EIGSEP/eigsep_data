@@ -1,4 +1,4 @@
-# Supported-DPSS RFI products (`v3-beta`)
+# Supported-DPSS RFI products (`v3`)
 
 `eigsep_data.rfi_supported` fits a smooth background to an air
 autocorrelation and generates a reason-coded exclusion mask. It uses the
@@ -24,13 +24,15 @@ The corresponding `RFIConfig` fields are
 `spectral_correction_halfwidth_s=0` to disable the correction for a baseline
 comparison.
 
-This interface is beta. Name both products explicitly as `flags@v3-beta` and
-`smooth_model@v3-beta`; no default product version is implied by the readers.
+Released as `v3` on 2026-10-05 (Marjum: `flags@v3`, built as `flags@v3-beta.3`;
+memo 006). It was developed as `v3-beta`, and older products and revision strings
+keep that name. Name products explicitly, e.g. `flags@v3` and `smooth_model@v3`;
+the readers imply no default version. Improvements will be new product versions.
 
 ## Planning and running a campaign
 
 ```sh
-eigsep-rfi-v3-beta --data-dir /path/to/campaign/data \
+eigsep-rfi-v3 --data-dir /path/to/campaign/data \
   --files corr_20260716_031155Z.h5 corr_20260716_033323Z.h5 \
   --plan
 ```
@@ -47,10 +49,10 @@ batch without fitting or writing. Inspect that JSON on the processing machine,
 then run, for example:
 
 ```sh
-eigsep-rfi-v3-beta --data-dir /data/marjum-2026-07/data --all \
+eigsep-rfi-v3 --data-dir /data/marjum-2026-07/data --all \
   --output-root /data/marjum-2026-07 \
   --resolution-policy /data/marjum-2026-07/curation/antenna_resolution.json \
-  --flags-version v3-beta.1 --model-version v3-beta.1 \
+  --flags-version v3 --model-version v3 \
   --files-per-batch 10 --workers 6 --resume
 ```
 

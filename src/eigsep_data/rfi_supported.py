@@ -1,6 +1,6 @@
 """Supported separable-DPSS RFI flagging and product writing.
 
-This is the ``v3-beta`` algorithm developed in the Marjum RFI notebooks.
+This is the ``v3`` algorithm (developed as ``v3-beta`` in the Marjum RFI notebooks).
 It fits one smooth time/frequency background without forming a separate
 frequency inverse for every flag pattern.  A design-support calculation
 marks places where that fit is too weakly constrained; the public model is
@@ -72,7 +72,7 @@ FLAG_MEANINGS = {
     "high_scatter": "advisory, not excluded by default: the channel's residual scatter exceeds max_scatter_ratio times radiometer noise, so detection there is weak (e.g. a moving antenna)",
 }
 BIT_BY_REASON = {v["name"]: int(k) for k, v in FLAG_BITS.items()}
-DEFAULT_VERSION = "v3-beta"
+DEFAULT_VERSION = "v3"
 ALGORITHM_REVISION = "supported-dpss-v3-beta-lowband-5-scatter-advisory"
 # Products generated from this committed source predate the explicit revision
 # field but use the same numerical flagger. The later change only restores raw
@@ -84,7 +84,7 @@ LEGACY_COMPATIBLE_SOURCE_SHA256 = frozenset(
 
 @dataclass(frozen=True)
 class RFIConfig:
-    """Parameters for the supported-DPSS v3-beta algorithm."""
+    """Parameters for the supported-DPSS v3 algorithm."""
 
     band_mhz: tuple[float, float] = (35.0, 250.0)
     tested_band_mhz: tuple[float, float] = (35.0, 235.0)
@@ -766,7 +766,7 @@ def _one_segment(data, ground, cross, times, freqs, dt, sky, config):
 
 
 def encode_reasons(reasons):
-    """Pack named boolean masks into the stable uint16 v3-beta bitfield."""
+    """Pack named boolean masks into the stable uint16 v3 bitfield."""
     unknown = set(reasons) - set(BIT_BY_REASON)
     if unknown:
         raise KeyError(f"unknown flag reasons: {sorted(unknown)}")
@@ -850,7 +850,7 @@ def flag_arrays(
     config=None,
     meta=None,
 ):
-    """Run v3-beta on aligned air auto, ground auto, and cross arrays.
+    """Run v3 on aligned air auto, ground auto, and cross arrays.
 
     Gaps and integration-time changes are fitted independently. A segment
     with no sky rows or insufficient fit samples returns a fully flagged,
@@ -1371,7 +1371,7 @@ def _write_products_unlocked(
             "exclude_by_default": "every bit except the advisory ones (high_scatter); apply those for a conservative mask",
             "product": "flags",
             "version": flags_version,
-            "status": "beta",
+            "status": "released",
             "dtype": "uint16",
             "bits": [
                 {
@@ -1399,8 +1399,8 @@ def _write_products_unlocked(
             {
                 "product": kind,
                 "version": version,
-                "status": "beta",
-                "algorithm": "supported separable DPSS v3-beta",
+                "status": "released",
+                "algorithm": "supported separable DPSS v3",
                 "algorithm_source_sha256": algorithm_hash,
                 "algorithm_revision": ALGORITHM_REVISION,
                 "axes": {

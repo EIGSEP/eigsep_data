@@ -150,6 +150,9 @@ A product is a derived dataset keyed by the raw files —
 
 ## Recent changes
 
+- 2026-10-05: `rfi_supported` released as `v3` (default product version `v3`,
+  status `released`, CLI `eigsep-rfi-v3`; `eigsep-rfi-v3-beta` still works). The
+  numerical algorithm is unchanged from revision 5.
 - 2026-10-04: `rfi_supported` revision 5: high-scatter channels get an advisory
   bit 9 (`high_scatter`), not excluded by default, instead of bit 7.
 - 2026-10-04: `rfi_supported` revision 4: files recorded with the switch daemon
