@@ -371,13 +371,13 @@ def test_writer_round_trips_through_product_readers(tmp_path, external_data):
     write_products(result, root, data_dir=data_dir if external_data else None)
     campaign = Campaign(root)
     got_flags, got_freqs = get("flags").read_file(
-        campaign, "v3-beta", fname, "4"
+        campaign, "v3", fname, "4"
     )
     np.testing.assert_array_equal(got_flags, flags)
     np.testing.assert_array_equal(got_freqs, freqs)
     fetched = get("smooth_model").fetch(
         campaign,
-        "v3-beta",
+        "v3",
         fname,
         np.arange(3),
         "4",
@@ -385,11 +385,11 @@ def test_writer_round_trips_through_product_readers(tmp_path, external_data):
         np.arange(3.0),
     )
     np.testing.assert_allclose(fetched["model"], model)
-    metadata = get("flags").bits(campaign, "v3-beta")
+    metadata = get("flags").bits(campaign, "v3")
     assert metadata["dtype"] == "uint16"
     assert metadata["bits"][4]["name"] == "cross_change"
     manifest = json.loads(
-        (root / "flags" / "v3-beta" / "manifest.json").read_text()
+        (root / "flags" / "v3" / "manifest.json").read_text()
     )
     assert (
         manifest["files"][fname]["algorithm_source_sha256"]
@@ -479,14 +479,14 @@ def test_writer_restores_real_permuted_files_to_raw_row_order(tmp_path):
         fname = record["file"]
         nrows = record["nrows"]
         expected_identity = file_number * 1000 + np.arange(nrows)
-        day_path = root / "flags" / "v3-beta" / f"flags_{fname[5:13]}.h5"
+        day_path = root / "flags" / "v3" / f"flags_{fname[5:13]}.h5"
         with h5py.File(day_path) as h5:
             written_flags = h5[f"mask/{fname}/4"][:]
         np.testing.assert_array_equal(
             written_flags,
             np.repeat(expected_identity[:, None], len(freqs), axis=1),
         )
-        model_path = root / "derived" / "smooth_model" / "v3-beta" / fname
+        model_path = root / "derived" / "smooth_model" / "v3" / fname
         with h5py.File(model_path) as h5:
             group = h5["input_4"]
             np.testing.assert_allclose(

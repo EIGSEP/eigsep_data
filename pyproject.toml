@@ -57,7 +57,8 @@ eigsep_observing = { path = "../eigsep_observing", editable = true }
 
 [project.scripts]
 eigsep-quicklook = "eigsep_data.quicklook:main"
-eigsep-rfi-v3-beta = "eigsep_data.rfi_run:main"
+eigsep-rfi-v3 = "eigsep_data.rfi_run:main"
+eigsep-rfi-v3-beta = "eigsep_data.rfi_run:main"  # old name, kept
 eigsep-select-files = "eigsep_data.select_files:main"
 eigsep-build-masks = "eigsep_data.flagging.build_masks:main"
 eigsep-publish-geometry-release = "eigsep_data.geometry_release:main"
