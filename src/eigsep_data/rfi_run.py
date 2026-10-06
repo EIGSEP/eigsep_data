@@ -38,7 +38,9 @@ from .rfi_supported import (
     DEFAULT_VERSION,
     LEGACY_COMPATIBLE_SOURCE_SHA256,
     RFIConfig,
+    _sha256,
     algorithm_source_sha256,
+    parameter_record,
     parameter_sha256,
     run_selection,
     write_products,
@@ -237,6 +239,7 @@ def _resume_files(
     config_hash,
     resolution_policy_hash,
     antenna="box-air",
+    pointing_hash=None,
 ):
     flags = _read_manifest(root / "flags" / flags_version / "manifest.json")
     models = _read_manifest(
@@ -263,6 +266,8 @@ def _resume_files(
                 record.get("resolution_policy_sha256")
                 != resolution_policy_hash
             ):
+                return False
+            if record.get("pointing_table_sha256") != pointing_hash:
                 return False
             revision = record.get("algorithm_revision")
             if revision is not None:
@@ -307,7 +312,7 @@ def _report_failure(task, exc, *, stage, batch=None):
         "traceback": traceback.format_exc(),
         "time_utc": datetime.now(timezone.utc).isoformat(),
         "parameter_sha256": parameter_sha256(task["config"]),
-        "parameters": asdict(task["config"]),
+        "parameters": parameter_record(task["config"]),
         "resolution_policy_sha256": task.get("resolution_policy_hash"),
         "data_dir": task["data_dir"],
         "algorithm_source_sha256": algorithm_source_sha256(),
@@ -341,22 +346,43 @@ def _failed_day(task, exc):
     }
 
 
+def _load_pointing(path, files):
+    import pyarrow.parquet as pq
+
+    return pq.read_table(
+        path,
+        columns=["file", "sample_idx", "el_deg"],
+        filters=[("file", "in", list(files))],
+    ).to_pandas()
+
+
 def _run_day(task):
     index = MetadataIndex(Path(task["data_dir"]))
     policy = AntennaResolutionPolicy.load(task["resolution_policy"])
+    pointing_path = task.get("pointing_table")
     summaries = []
     failures = []
     for batch in task["batches"]:
         stage = "fit"
         try:
             selection = index.select(files=batch["files"])
+            pointing = (
+                None
+                if pointing_path is None
+                else _load_pointing(pointing_path, batch["files"])
+            )
             result = run_selection(
                 selection,
                 air_antenna=task["air_antenna"],
                 ground_antenna=task["ground_antenna"],
                 config=task["config"],
                 resolution_policy=policy,
+                pointing=pointing,
             )
+            if pointing_path is not None:
+                result.diagnostics["pointing_table_sha256"] = task[
+                    "pointing_table_sha256"
+                ]
             if not task["dry_run"]:
                 stage = "write"
                 write_products(
@@ -433,6 +459,14 @@ def parser():
     out.add_argument(
         "--set", action="append", default=[], metavar="NAME=VALUE"
     )
+    out.add_argument(
+        "--pointing-table",
+        type=Path,
+        help=(
+            "pointing table for --set pointing_background=true (default: "
+            "OUTPUT_ROOT/curation/pointing_table.parquet)"
+        ),
+    )
     out.add_argument("--flags-version", default=DEFAULT_VERSION)
     out.add_argument("--model-version", default=DEFAULT_VERSION)
     out.add_argument("--files-per-batch", type=int, default=10)
@@ -496,6 +530,16 @@ def main(argv=None):
     config_hash = parameter_sha256(config)
     algorithm_hash = algorithm_source_sha256()
     policy = _resolution_policy(args, output_root)
+    pointing_path = pointing_hash = None
+    if config.pointing_background:
+        pointing_path = args.pointing_table or (
+            output_root / "curation" / "pointing_table.parquet"
+        )
+        if not pointing_path.is_file():
+            raise FileNotFoundError(f"pointing table not found: {pointing_path}")
+        pointing_hash = _sha256(pointing_path)
+    elif args.pointing_table is not None:
+        raise ValueError("--pointing-table needs --set pointing_background=true")
     policy_hash = None if policy is None else policy.sha256
     index = MetadataIndex(data_dir)
     requested = _selection(index, args)
@@ -519,6 +563,7 @@ def main(argv=None):
             config_hash,
             policy_hash,
             antenna=args.air_antenna,
+            pointing_hash=pointing_hash,
         )
     pending = [name for name in original_files if name not in completed]
     if pending:
@@ -540,7 +585,12 @@ def main(argv=None):
         "algorithm_source_sha256": algorithm_hash,
         "algorithm_revision": ALGORITHM_REVISION,
         "resolution_policy": (None if policy is None else policy.provenance()),
-        "parameters": asdict(config),
+        "parameters": parameter_record(config),
+        "pointing_table": (
+            None
+            if pointing_path is None
+            else {"path": str(pointing_path), "sha256": pointing_hash}
+        ),
         "requested_files": len(requested.files),
         "approved_files": len(original_files),
         "policy_rejected_files": len(rejected),
@@ -586,6 +636,8 @@ def main(argv=None):
         config=config,
         resolution_policy=(None if policy is None else policy.source),
         resolution_policy_hash=policy_hash,
+        pointing_table=None if pointing_path is None else str(pointing_path),
+        pointing_table_sha256=pointing_hash,
         flags_version=args.flags_version,
         model_version=args.model_version,
         overwrite=args.overwrite,

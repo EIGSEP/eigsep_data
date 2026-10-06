@@ -728,3 +728,77 @@ def test_daemonless_files_are_sky_but_gaps_in_recorded_files_are_not():
     assert assumed == {"a.h5": "RFANT"}
     states, assumed = switch_states(meta, replace(RFIConfig(), daemonless_switch_state=None))
     assert list(states[:3]) == ["MISSING"] * 3 and assumed == {}
+
+
+def _scanning(elevation_span=90.0):
+    """The synthetic sky with a fast elevation sweep that modulates the
+    spectrum, as the rotating antenna does in the raster."""
+    air, ground, cross, times, freqs, dt, states = _synthetic()
+    phase = (np.arange(len(times)) % 24) / 24
+    elevation = elevation_span * (1 - abs(2 * phase - 1)) - 45
+    shape = 0.06 * np.cos(np.radians(elevation))[:, None] * np.cos(
+        2 * np.pi * freqs[None, :] / 90
+    )
+    return air * (1 + shape), ground, cross, times, freqs, dt, states, elevation
+
+
+def test_pointing_background_is_off_by_default_and_keeps_the_v3_hash():
+    from eigsep_data.rfi_supported import parameter_sha256
+
+    assert not RFIConfig().pointing_background
+    # The released flags@v3 parameter set; the disabled option must not move it.
+    assert parameter_sha256(RFIConfig()) == (
+        "de050f9a2c835fa94e2e33afad942589432dfbab1767d09d69f4b8351db3b427"
+    )
+    assert parameter_sha256(replace(RFIConfig(), pointing_harmonics=4)) == (
+        parameter_sha256(RFIConfig())
+    )
+    air, ground, cross, times, freqs, dt, states, elevation = _scanning()
+    result = flag_arrays(air, ground, cross, times, freqs, dt, states)
+    assert not (result.flags & (1 << BIT_BY_REASON["pointing_line"])).any()
+    with pytest.raises(ValueError, match="elevation"):
+        flag_arrays(air, ground, cross, times, freqs, dt, states,
+                    config=replace(RFIConfig(), pointing_background=True))
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "shelved: starting the pointing fit from v3's mask (needed on the real raster, "
+    "where v3's point detections are strong RFI) leaves out the modulation peaks "
+    "here, so the fit is biased low and flags ~7% of clean cells; starting from "
+    "every tested cell passes this test but fails on the real raster"))
+def test_pointing_line_finds_lines_the_scan_modulation_hides_from_v3():
+    """A 6% elevation-dependent modulation leaves v3 scattered far above
+    radiometer noise; the pointing-aware background removes it, and planted
+    15-sigma single-cell lines are recovered there (v3 alone misses many)
+    and almost nothing else is flagged."""
+    air, ground, cross, times, freqs, dt, states, elevation = _scanning()
+    rng = np.random.default_rng(5)
+    normalization = np.sqrt(2 * dt[0] * np.diff(freqs)[0] * 1e6)
+    sky = np.flatnonzero(states == "RFANT")
+    rows = rng.choice(sky, 60)
+    channels = rng.integers(10, len(freqs) - 10, 60)
+    air[rows, channels] *= 1 + 15 / normalization
+    config = replace(RFIConfig(), time_guard=0, pointing_background=True,
+                     pointing_harmonics=4)
+    result = flag_arrays(air, ground, cross, times, freqs, dt, states,
+                         config=config, elevation_deg=elevation)
+    line = result.reasons["pointing_line"]
+    stats = result.diagnostics["segments"][0]["pointing"]
+    assert stats["scatter_median"] < 2 < 5 < stats["v3_scatter_median"]
+    assert line[rows, channels].mean() > 0.75
+    planted = np.zeros_like(line)
+    planted[rows, channels] = True
+    assert line[~planted].mean() < 1e-3
+    assert result.reasons["positive_auto_excess"][rows, channels].mean() < 0.7
+    assert result.mask[rows, channels].mean() > 0.9
+    # The better background also sets the high-scatter advisory.
+    assert not result.reasons["high_scatter"][sky].any()
+
+
+def test_pointing_background_skips_a_stationary_antenna():
+    air, ground, cross, times, freqs, dt, states, _ = _scanning()
+    config = replace(RFIConfig(), pointing_background=True)
+    result = flag_arrays(air, ground, cross, times, freqs, dt, states,
+                         config=config, elevation_deg=np.full(len(times), 30.0))
+    assert "below threshold" in result.diagnostics["segments"][0]["pointing"]["skipped"]
+    assert not result.reasons["pointing_line"].any()

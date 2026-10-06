@@ -56,6 +56,8 @@ FLAG_BITS = {
     "7": {"name": "unsupported_background", "rfi": False},
     "8": {"name": "guard", "rfi": False},
     "9": {"name": "high_scatter", "rfi": False, "advisory": True},
+    # Set only when RFIConfig.pointing_background is on.
+    "10": {"name": "pointing_line", "rfi": True, "option": "pointing_background"},
 }
 # Advisory bits record a condition without excluding the cell by default.
 ADVISORY_VALUE = sum(1 << int(k) for k, v in FLAG_BITS.items() if v.get("advisory"))
@@ -70,6 +72,7 @@ FLAG_MEANINGS = {
     "unsupported_background": "design-noise or ridge-prior check rejects the model prediction",
     "guard": "time/frequency guard grown around another exclusion reason",
     "high_scatter": "advisory, not excluded by default: the channel's residual scatter exceeds max_scatter_ratio times radiometer noise, so detection there is weak (e.g. a moving antenna)",
+    "pointing_line": "moving-antenna segments only: positive air-auto residual above its point threshold against the pointing-aware background",
 }
 BIT_BY_REASON = {v["name"]: int(k) for k, v in FLAG_BITS.items()}
 DEFAULT_VERSION = "v3"
@@ -136,6 +139,23 @@ class RFIConfig:
     time_guard: int = 1
     frequency_guard: int = 0
     gap_factor: float = 3.0
+    # Moving-antenna segments only: a second background whose time dependence is
+    # Fourier harmonics of elevation times the slow DPSS time modes, fitted on
+    # the cells v3 does not exclude, then robustly re-decided. Its residuals feed one more point detector
+    # (bit 10, pointing_line) and the high_scatter advisory there; the v3
+    # background still decides every other bit. Needs per-row elevation.
+    pointing_background: bool = False
+    pointing_harmonics: int = 8
+    pointing_min_el_span_deg: float = 10.0
+    pointing_robust_rounds: int = 3
+
+
+POINTING_FIELDS = (
+    "pointing_background",
+    "pointing_harmonics",
+    "pointing_min_el_span_deg",
+    "pointing_robust_rounds",
+)
 
 
 @dataclass
@@ -518,6 +538,91 @@ def _temporal_center_scale(z, usable):
     return np.nan_to_num(center), np.maximum(np.nan_to_num(scale, nan=1), 1)
 
 
+def _point_thresholds(freqs, config):
+    threshold = np.full(len(freqs), config.other_point_cut)
+    for lo, hi in REPORT_BANDS.values():
+        threshold[(freqs >= lo) & (freqs < hi)] = config.point_cut
+    return threshold
+
+
+def _pointing_basis(elevation_deg, slow, harmonics):
+    """Orthonormal time basis: harmonics 0..M of elevation times slow modes."""
+    e = np.radians(elevation_deg)
+    columns = [np.ones_like(e)]
+    for m in range(1, harmonics + 1):
+        columns += [np.cos(m * e), np.sin(m * e)]
+    design = np.einsum("ti,tj->tij", np.column_stack(columns), slow)
+    return np.linalg.qr(design.reshape(len(e), -1))[0]
+
+
+def _exact_tensor_solve(qt, qf, y, weights, ridge):
+    """argmin_C sum w (y - qt C qf^T)^2 + ridge |C|^2 from the normal equations.
+
+    Conjugate gradients do not converge on this basis in a usable number of
+    iterations (the elevation harmonics are far from separable with the
+    mask), so the coefficient-sized normal matrix is built and factored.
+    """
+    nt, nf = qt.shape[1], qf.shape[1]
+    products = (qt[:, :, None] * qt[:, None, :]).reshape(len(qt), nt * nt)
+    per_channel = weights.T @ products
+    outer = np.einsum("fk,fl->fkl", qf, qf).reshape(len(qf), nf * nf)
+    normal = (per_channel.T @ outer).reshape(nt, nt, nf, nf)
+    normal = normal.transpose(0, 2, 1, 3).reshape(nt * nf, nt * nf)
+    normal[np.diag_indices_from(normal)] += ridge
+    rhs = (qt.T @ (weights * y) @ qf).ravel()
+    coefficients = cho_solve(cho_factor(normal), rhs)
+    return qt @ coefficients.reshape(nt, nf) @ qf.T
+
+
+def _pointing_background(
+    data, elevation, rows, usable, keep, normalization, solver, config
+):
+    """Fit the pointing-aware background on ``rows``, starting from the cells
+    in ``keep`` and re-deciding every ``usable`` cell in robust rounds.
+
+    Returns the model (NaN outside ``rows``) and diagnostics, or ``None`` and
+    the reason when the segment's elevation does not move enough to use it.
+    """
+    started = time.perf_counter()
+    stats = {"rows": int(rows.sum())}
+    if not rows.any():
+        return None, dict(stats, skipped="no rows with elevation")
+    lo, hi = np.percentile(elevation[rows], [1, 99])
+    stats["elevation_span_deg"] = float(hi - lo)
+    if hi - lo < config.pointing_min_el_span_deg:
+        return None, dict(stats, skipped="elevation span below threshold")
+    qt = _pointing_basis(
+        elevation[rows], solver.cross_qt[rows], config.pointing_harmonics
+    )
+    qf, scale = solver.qf, solver.scale
+    observed = data[rows]
+    eligible = usable[rows] & np.isfinite(observed)
+    y = np.where(eligible, observed / scale, 0.0)
+    current = eligible & keep[rows]
+    trace = []
+    for _ in range(config.pointing_robust_rounds):
+        model = _exact_tensor_solve(qt, qf, y, current.astype(float), config.ridge)
+        z = residual_z(observed, model * scale, normalization[rows])
+        _, spread = _temporal_center_scale(z, current)
+        # Re-decide every eligible cell from this background's residuals, so
+        # cells v3 excluded only because its background cannot follow the
+        # scan come back.
+        updated = eligible & np.isfinite(z) & (abs(z) < config.fit_clip * spread)
+        trace.append(float(np.mean(updated != current)))
+        current = updated
+    model = np.full(data.shape, np.nan)
+    model[rows] = _exact_tensor_solve(
+        qt, qf, y, current.astype(float), config.ridge
+    ) * scale
+    stats.update(
+        columns=int(qt.shape[1] * qf.shape[1]),
+        robust_changed_fraction=trace,
+        kept_fraction=float(current.mean()),
+        seconds=time.perf_counter() - started,
+    )
+    return model, stats
+
+
 def _detect(
     data,
     model,
@@ -531,9 +636,7 @@ def _detect(
 ):
     reference_valid = reference_valid & valid
     z = residual_z(data, model, normalization)
-    threshold = np.full(len(freqs), config.other_point_cut)
-    for lo, hi in REPORT_BANDS.values():
-        threshold[(freqs >= lo) & (freqs < hi)] = config.point_cut
+    threshold = _point_thresholds(freqs, config)
     center, scale = _temporal_center_scale(
         z, reference_valid & (z < config.fit_clip)
     )
@@ -633,7 +736,7 @@ def _detect(
     return reasons, z, {"band_events": band_events, "comb_scores": comb_scores}
 
 
-def _one_segment(data, ground, cross, times, freqs, dt, sky, config):
+def _one_segment(data, ground, cross, times, freqs, dt, sky, config, elevation=None):
     started = time.perf_counter()
     df_hz = float(np.median(np.diff(freqs))) * 1e6
     normalization = np.sqrt(2 * dt[:, None] * df_hz)
@@ -723,6 +826,49 @@ def _one_segment(data, ground, cross, times, freqs, dt, sky, config):
     too_scattered = (
         (scatter > config.max_scatter_ratio)[None, :] & valid_input & sky[:, None]
     )
+    reasons["pointing_line"] = np.zeros(data.shape, dtype=bool)
+    pointing_stats = None
+    if config.pointing_background:
+        moving = sky & np.isfinite(elevation)
+        # Start from the cells v3 does not exclude: its strong detections
+        # are real RFI that would wreck a least-squares start. Group and cross
+        # detections stay out; any other v3 exclusion can return in the robust
+        # rounds, since where the scan modulation dominates v3 flags the
+        # modulation itself.
+        excluded = np.logical_or.reduce(
+            [v for k, v in reasons.items() if not FLAG_BITS[str(BIT_BY_REASON[k])].get("advisory")]
+        )
+        excluded = maximum_filter(
+            excluded,
+            size=(2 * config.time_guard + 1, 2 * config.frequency_guard + 1),
+            mode="constant",
+        )
+        usable = valid & supported & ~(
+            reasons["band_group_trigger"]
+            | reasons["comb_group_trigger"]
+            | reasons["cross_change"]
+        )
+        pointing_model, pointing_stats = _pointing_background(
+            data, elevation, moving, usable, usable & ~excluded,
+            normalization, solver, config,
+        )
+        if pointing_model is not None:
+            zp = residual_z(data, pointing_model, normalization)
+            tested = valid & supported & moving[:, None] & np.isfinite(zp)
+            _, spread = _temporal_center_scale(zp, tested)
+            reasons["pointing_line"] = tested & (
+                zp / spread > _point_thresholds(freqs, config)
+            )
+            # Detection power in these rows is set by the better background.
+            too_scattered[moving] = (
+                (spread > config.max_scatter_ratio)[None, :]
+                & valid_input[moving]
+            )
+            pointing_stats.update(
+                scatter_median=float(np.median(spread)),
+                v3_scatter_median=float(np.median(scatter)),
+                flagged_fraction=float(reasons["pointing_line"][moving].mean()),
+            )
     # A cross channel without a converged background loses only the cross
     # detector (its score is NaN, so cross_change is never set); the auto fit
     # and its detectors still stand.
@@ -760,6 +906,7 @@ def _one_segment(data, ground, cross, times, freqs, dt, sky, config):
             "refit_trace": refit_trace,
             "cross": cross_stats,
             "support_seconds": support_seconds,
+            "pointing": pointing_stats,
             **event_stats,
         },
     }
@@ -849,12 +996,15 @@ def flag_arrays(
     *,
     config=None,
     meta=None,
+    elevation_deg=None,
 ):
     """Run v3 on aligned air auto, ground auto, and cross arrays.
 
     Gaps and integration-time changes are fitted independently. A segment
     with no sky rows or insufficient fit samples returns a fully flagged,
     unavailable background. Non-sky rows are flagged a priori.
+    ``elevation_deg`` (per row, NaN where unknown) is required when
+    ``config.pointing_background`` is on and ignored otherwise.
     """
     config = RFIConfig() if config is None else config
     data = np.asarray(data, dtype=float)
@@ -872,6 +1022,14 @@ def flag_arrays(
         raise ValueError("frequencies must be a uniformly spaced axis")
     if np.any(~np.isfinite(dt)) or np.any(dt <= 0):
         raise ValueError("integration times must be finite and positive")
+    if config.pointing_background:
+        if elevation_deg is None:
+            raise ValueError("pointing_background needs elevation_deg per row")
+        elevation = np.asarray(elevation_deg, dtype=float)
+        if elevation.shape != times.shape:
+            raise ValueError("elevation_deg does not match times")
+    else:
+        elevation = np.full(len(times), np.nan)
     sky = states == config.sky_state
     pieces = []
     diagnostics = []
@@ -892,7 +1050,7 @@ def flag_arrays(
             )
         else:
             try:
-                piece = _one_segment(*arguments)
+                piece = _one_segment(*arguments, elevation=elevation[segment])
             except _InsufficientFitSamples as exc:
                 piece = _unfitted_segment(
                     *arguments,
@@ -931,7 +1089,9 @@ def flag_arrays(
             continue
         other = flag_arrays(
             data, ground, cross, times, freqs, dt, states,
-            config=replace(config, sky_state=state, extra_states=()),
+            config=replace(
+                config, sky_state=state, extra_states=(), pointing_background=False
+            ),
             meta=meta,
         )
         for name in concatenate:
@@ -1019,8 +1179,14 @@ def run_selection(
     ground_antenna="box-gnd",
     config=None,
     resolution_policy=None,
+    pointing=None,
 ):
-    """Resolve physical antennas per file and run supported-DPSS flagging."""
+    """Resolve physical antennas per file and run supported-DPSS flagging.
+
+    ``pointing`` is a table with ``file``, ``sample_idx`` and ``el_deg`` (the
+    campaign pointing table), joined on file and raw row; it is required when
+    ``config.pointing_background`` is on.
+    """
     config = RFIConfig() if config is None else config
     bundles = load_selection_inputs(
         selection,
@@ -1035,6 +1201,18 @@ def run_selection(
             "selection metadata lacks rfswitch or integration_time"
         )
     states, assumed = switch_states(air.meta, config)
+    elevation = None
+    if config.pointing_background:
+        if pointing is None:
+            raise ValueError("pointing_background needs the pointing table")
+        joined = air.meta[["file", "row"]].merge(
+            pointing[["file", "sample_idx", "el_deg"]],
+            left_on=["file", "row"],
+            right_on=["file", "sample_idx"],
+            how="left",
+            validate="one_to_one",
+        )
+        elevation = joined.el_deg.to_numpy(dtype=float)
     result = flag_arrays(
         air.data,
         bundles["ground"].data,
@@ -1045,6 +1223,7 @@ def run_selection(
         states,
         config=config,
         meta=air.meta.copy(),
+        elevation_deg=elevation,
     )
     result.diagnostics["assumed_switch_state"] = assumed
     result.diagnostics["antennas"] = {
@@ -1093,9 +1272,20 @@ def _jsonable(value):
     return value
 
 
+def parameter_record(config):
+    """The parameters that identify a run. A disabled option leaves the
+    numerics unchanged, so its fields are left out and products made before
+    the option existed keep their hash (and stay resumable)."""
+    value = asdict(config)
+    if not config.pointing_background:
+        for name in POINTING_FIELDS:
+            value.pop(name)
+    return value
+
+
 def parameter_sha256(config):
     """Stable hash used to identify a complete :class:`RFIConfig`."""
-    value = asdict(config)
+    value = parameter_record(config)
     encoded = json.dumps(_jsonable(value), sort_keys=True)
     return hashlib.sha256(encoded.encode()).hexdigest()
 
@@ -1240,7 +1430,7 @@ def _write_products_unlocked(
     source_dir = (
         root / "data" if data_dir is None else Path(data_dir).resolve()
     )
-    config = asdict(result.config)
+    config = parameter_record(result.config)
     parameter_hash = parameter_sha256(result.config)
     algorithm_hash = algorithm_source_sha256()
     policy = result.diagnostics.get("resolution_policy") or {}
@@ -1284,6 +1474,10 @@ def _write_products_unlocked(
             ).get(fname),
             "generated_utc": generated,
         }
+        if result.diagnostics.get("pointing_table_sha256"):
+            record["pointing_table_sha256"] = result.diagnostics[
+                "pointing_table_sha256"
+            ]
         # One record per flagged antenna (each is its own input dataset); the
         # top-level fields stay box-air's, as in products written before
         # box-gnd was flagged.
@@ -1383,6 +1577,7 @@ def _write_products_unlocked(
                     "meaning": FLAG_MEANINGS[spec["name"]],
                 }
                 for bit, spec in FLAG_BITS.items()
+                if getattr(result.config, spec.get("option", ""), True)
             ],
         },
     )
