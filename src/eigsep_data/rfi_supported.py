@@ -198,8 +198,10 @@ def _bases(times, freqs, config):
         # Jittered or slightly uneven sampling: DPSS needs an even grid, so build
         # the modes on one spanning the segment at the median step and
         # interpolate them to the sample times (the modes are smooth on scales
-        # far longer than the step; _TensorFit re-orthonormalizes them).
-        grid = np.arange(0.0, rel[-1] + 0.5 * np.median(step), np.median(step))
+        # far longer than the step; _TensorFit re-orthonormalizes them). The
+        # grid must reach rel[-1], or interp holds the last rows constant.
+        med = np.median(step)
+        grid = np.arange(0.0, rel[-1] + med, med)
         on_grid = dpss_operator(
             grid,
             [0],
