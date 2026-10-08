@@ -118,7 +118,10 @@ def workspace_git(repo: Path, *args: str) -> str:
 
 
 def repository_record(repo: Path) -> dict:
-    return {"repository": repo.resolve().name,
+    # Name the repository by its shared .git directory, so a run from a
+    # worktree records "eigsep_data", not the worktree's directory name.
+    common = Path(workspace_git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+    return {"repository": common.parent.name,
             "commit": workspace_git(repo, "rev-parse", "HEAD"),
             "tracked_worktree_dirty": bool(workspace_git(
                 repo, "status", "--porcelain", "--untracked-files=no"))}
