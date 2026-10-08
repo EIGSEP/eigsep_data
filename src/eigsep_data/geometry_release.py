@@ -103,7 +103,9 @@ def git_value(*args: str) -> str:
 
 
 def relative(path: Path) -> str:
-    return str(path.resolve().relative_to(_workspace().resolve()))
+    # abspath, not resolve: a synced bulk file may be a symlink, and its
+    # recorded path is where the workspace exposes it.
+    return str(Path(os.path.abspath(path)).relative_to(os.path.abspath(_workspace())))
 
 
 def source_record(path: Path) -> dict:
