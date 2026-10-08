@@ -120,7 +120,11 @@ def workspace_git(repo: Path, *args: str) -> str:
 def repository_record(repo: Path) -> dict:
     # Name the repository by its shared .git directory, so a run from a
     # worktree records "eigsep_data", not the worktree's directory name.
-    common = Path(workspace_git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+    # (git 2.25 here has no --path-format; a relative answer is relative to repo.)
+    common = Path(workspace_git(repo, "rev-parse", "--git-common-dir"))
+    if not common.is_absolute():
+        common = Path(repo) / common
+    common = common.resolve()
     return {"repository": common.parent.name,
             "commit": workspace_git(repo, "rev-parse", "HEAD"),
             "tracked_worktree_dirty": bool(workspace_git(
