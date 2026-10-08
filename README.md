@@ -150,6 +150,7 @@ A product is a derived dataset keyed by the raw files —
 
 ## Recent changes
 
+- 2026-10-08: `geometry_release` publishes releases from a `derived/geometry_posterior/vNNNN` product, numbered to match it (`v0004_marjum_geometry` is the first); the `terrain/` builder that made v0001 needs `--legacy-terrain`.
 - 2026-10-05: `rfi_supported` released as `v3` (default product version `v3`,
   status `released`, CLI `eigsep-rfi-v3`; `eigsep-rfi-v3-beta` still works). The
   numerical algorithm is unchanged from revision 5.
