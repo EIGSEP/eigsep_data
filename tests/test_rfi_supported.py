@@ -18,6 +18,7 @@ from eigsep_data.rfi_supported import (
     RFIResult,
     _support,
     _TensorFit,
+    _bases,
     algorithm_source_sha256,
     encode_reasons,
     flag_arrays,
@@ -659,6 +660,15 @@ def test_jittered_times_use_an_interpolated_time_basis():
     sky[40:44] = False
     assert np.isfinite(result.model[sky]).mean() > 0.95
     assert abs(result.mask[sky].mean() - even.mask[sky].mean()) < 0.01
+
+
+def test_interpolated_time_basis_reaches_the_last_sample():
+    """The even grid must extend to the last sample time; otherwise interp holds
+    the modes constant over the final rows."""
+    times = np.concatenate([np.arange(200) * 10.0, [1993.0, 1994.0]])
+    at, _ = _bases(times, np.linspace(30, 60, 64), RFIConfig())
+    assert not np.allclose(at[-1], at[-2])
+    assert not np.allclose(at[-2], at[-3])
 
 
 def test_calibration_states_are_flagged_and_stay_non_sky():
