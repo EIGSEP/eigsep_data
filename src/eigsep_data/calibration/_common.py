@@ -34,6 +34,16 @@ def load_config(root, product, version, path=None):
     return json.loads(path.read_text()), path
 
 
+def config_record(path, root):
+    """The manifest's record of a config: its path relative to the campaign
+    tree ``root`` when it is inside it, and its SHA-256."""
+    p, r = Path(path).resolve(), Path(root).resolve()
+    return {
+        "path": str(p.relative_to(r)) if p.is_relative_to(r) else str(path),
+        "sha256": sha256(path),
+    }
+
+
 def sha256(path):
     h = hashlib.sha256()
     with open(path, "rb") as f:

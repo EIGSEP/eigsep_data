@@ -26,7 +26,7 @@ from ..index import MetadataIndex
 from ..noise_source_bench import BenchSetup, measure
 from ..paths import get_campaign_root
 from ..products import noise_source
-from ._common import code_provenance, load_config, sha256
+from ._common import code_provenance, config_record, load_config, sha256
 
 
 def main(argv=None):
@@ -106,7 +106,7 @@ def main(argv=None):
         "built_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "builder": "eigsep_data.calibration.build_noise_source (eigsep-build-noise-source)",
         "argv": sys.argv[1:],
-        "config": {"path": str(cfg_path), "sha256": sha256(cfg_path)},
+        "config": config_record(cfg_path, out_root),
         "bench_run": cfg["bench_run"],
         "run_record": cfg["run_record"],
         "setup": cfg["setup"],

@@ -136,3 +136,16 @@ def test_importing_the_builders_does_not_import_eigsep_cal():
     )
     assert out.returncode == 0, out.stderr
     assert out.stdout.split() == ["False", "False"]
+
+
+def test_config_record_is_relative_to_the_campaign_tree(tmp_path):
+    d = tmp_path / "derived" / "tcal" / "v0009"
+    d.mkdir(parents=True)
+    p = d / "config.json"
+    p.write_text("{}")
+    rec = _common.config_record(p, tmp_path)
+    assert rec["path"] == "derived/tcal/v0009/config.json"
+    assert rec["sha256"] == _common.sha256(p)
+    outside = tmp_path.parent / "elsewhere.json"
+    outside.write_text("{}")
+    assert _common.config_record(outside, tmp_path)["path"] == str(outside)

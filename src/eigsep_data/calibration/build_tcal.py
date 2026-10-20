@@ -41,7 +41,14 @@ import pandas as pd
 
 from ..index import MetadataIndex
 from ..paths import get_campaign_root
-from ._common import code_provenance, load_config, product_dir, sha256, unix
+from ._common import (
+    code_provenance,
+    config_record,
+    load_config,
+    product_dir,
+    sha256,
+    unix,
+)
 
 
 def regime_of(files, windows):
@@ -411,14 +418,7 @@ def main(argv=None):
             ),
             "builder": "eigsep_data.calibration.build_tcal (eigsep-build-tcal)",
             "argv": sys.argv[1:],
-            "config": {
-                "path": (
-                    str(Path(cfg_path).resolve().relative_to(proot.resolve()))
-                    if Path(cfg_path).resolve().is_relative_to(proot.resolve())
-                    else str(cfg_path)
-                ),
-                "sha256": sha256(cfg_path),
-            },
+            "config": config_record(cfg_path, proot),
             "code": code_provenance(),
         },
         "applies_to": {
