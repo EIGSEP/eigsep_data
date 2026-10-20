@@ -50,6 +50,7 @@ _SUBMODULES = {
     "select_files",
     "sim",
     "sph_fit",
+    "switched",
 }
 
 #: Public name -> the submodule that defines it.

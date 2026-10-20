@@ -126,6 +126,42 @@ class TestInterpolation:
         np.testing.assert_allclose(tc["offset"], np.broadcast_to(of, tc["offset"].shape))
 
 
+class TestNoiseSourceSpectrum:
+    """From v0004 t_ns_k can be one value per channel; it is applied to
+    every row, channel by channel, and cut to the bundle's band."""
+
+    def test_a_spectrum_is_applied_channel_by_channel(self, campaign):
+        s = write_solutions(campaign, t_ns_k=np.linspace(450.0, 600.0, NCHAN))
+        tc = bundle(campaign).products["tcal"]
+        b = bundle(campaign)
+        t0, t1 = s["amb_t"]
+        w = ((b.t - t0) / (t1 - t0))[:, None]
+        a, _ = tstar_coefficients(110 + 10 * w, 10 + 10 * w, s["t_ns_k"][None, :], tc["tcal_t_load_k"][:, None])
+        np.testing.assert_allclose(tc["tstar_scale"], a)
+
+    def test_a_spectrum_follows_the_band(self, campaign):
+        from eigsep_data import products as P
+
+        s = write_solutions(campaign, t_ns_k=np.linspace(450.0, 600.0, NCHAN))
+        P.get("tcal")._cache.clear()
+        index = MetadataIndex(campaign / "data", cache=False)
+        b = index.select().load_bundle(antenna="box-air", root=campaign, products=["tcal@v0000"], band_mhz=(50.0, 150.0))
+        keep = (s["freqs"] >= b.freqs_mhz[0]) & (s["freqs"] <= b.freqs_mhz[-1])
+        a = b.products["tcal"]["tstar_scale"]
+        t0, t1 = s["amb_t"]
+        w = ((b.t - t0) / (t1 - t0))[:, None]
+        np.testing.assert_allclose(a, s["t_ns_k"][keep][None, :] / (100.0 + 0 * w))
+
+    def test_a_number_still_works(self, campaign):
+        write_solutions(campaign)          # t_ns_k = 917.0
+        assert np.isfinite(bundle(campaign).products["tcal"]["tstar_scale"]).all()
+
+    def test_a_spectrum_on_another_axis_is_refused(self, campaign):
+        write_solutions(campaign, t_ns_k=np.ones(NCHAN - 1))
+        with pytest.raises(ValueError, match="channels"):
+            bundle(campaign)
+
+
 class TestNothingIsStretched:
     def test_visits_in_different_regimes_do_not_bracket(self, campaign):
         write_solutions(campaign, amb_regime=np.array(["rx-A", "rx-B"]))
