@@ -9,6 +9,7 @@ flag product. Each product version's campaign choices are its
 and ``eigsep-build-noise-source``.
 
 ``d5_yfactor`` is Christian's independent calibration chain, vendored
-unchanged; the validation compares ``tcal`` with it. ``eigsep_cal`` (and,
-for ``d5_yfactor``, ``cmt_vna``) is imported only when a builder runs.
+with its ``calkit`` taken from ``eigsep_cal`` instead of ``cmt_vna``; the
+validation compares ``tcal`` with it. ``eigsep_cal`` is imported only when
+a builder runs.
 """

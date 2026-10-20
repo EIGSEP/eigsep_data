@@ -12,7 +12,7 @@ the flag product.
 | `validate_tcal.py` | `eigsep-validate-tcal <version>` | Leave-one-out test of linear versus nearest interpolation, a plumbing check through `load_bundle`, comparison with Christian's chain on a reference night, and coverage; writes `validation.json`. |
 | `bracket_cost.py` | `eigsep-tcal-bracket-cost <version>` | What wider interpolation limits cost in temperature, and whether the largest hole can be bridged; writes `bracket_cost.json`. The limits in the config come from it. |
 | `build_noise_source.py` | `eigsep-build-noise-source <version>` | Runs `eigsep_data.noise_source_bench.measure` on a bench run and writes `derived/noise_source/<version>/` with `products.noise_source.write`. |
-| `d5_yfactor.py` | — | Christian's minimal Y-factor chain, vendored unchanged from `data-analysis` (58c4c64); the validation's independent reference, used for no product. Needs `cmt_vna`. |
+| `d5_yfactor.py` | — | Christian's minimal Y-factor chain, vendored from `data-analysis` (58c4c64) with one change: `calkit` comes from `eigsep_cal`, not `cmt_vna` (identical results). The validation's independent reference, used for no product. |
 | `_common.py` | — | Config loading, checksums, code provenance. |
 
 **Campaign choices live in the campaign tree, not here.** Each builder reads
