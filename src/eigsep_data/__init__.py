@@ -40,6 +40,7 @@ _SUBMODULES = {
     "imu",
     "index",
     "metadata",
+    "noise_source_bench",
     "paths",
     "plot",
     "products",

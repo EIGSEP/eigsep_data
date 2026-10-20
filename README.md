@@ -142,6 +142,8 @@ characterization of the noise source, an input to `tcal`, read with
 - `flagging/` — writer for the `flags/v0` per-(time, channel) masks.
 - `switched.py` — switched calibration measurements: dwells, cycles,
   the VNA-sweep guard, thermistors with measured pull-ups.
+- `noise_source_bench.py` — the noise source's temperature at P from a
+  bench run (`measure`), stored with `products.noise_source.write`.
 - `beam_sim.py`, `sim.py`, `hpm.py`, `sph_fit.py` — simulation and
   spherical-harmonic work (needs the JAX/healjax extras).
 
@@ -157,7 +159,7 @@ characterization of the noise source, an input to `tcal`, read with
 
 ## Recent changes
 
-- 2026-10-20: `switched` (dwells and cycles of switched calibration measurements, the VNA-sweep guard, thermistors with measured pull-ups) and the `noise_source` product reader added, for the bench-measured noise source; `tcal` accepts `t_ns_k` as one value per channel (from v0004) as well as one number (v0000-v0003).
+- 2026-10-20: `switched` (dwells and cycles of switched calibration measurements, the VNA-sweep guard, thermistors with measured pull-ups) the `noise_source` product reader and writer, and `noise_source_bench.measure` (the noise source's temperature from a bench run) added, for the bench-measured noise source; `tcal` accepts `t_ns_k` as one value per channel (from v0004) as well as one number (v0000-v0003).
 - 2026-10-08: `geometry_release` publishes releases from a `derived/geometry_posterior/vNNNN` product, numbered to match it (`v0004_marjum_geometry` is the first); the `terrain/` builder that made v0001 needs `--legacy-terrain`.
 - 2026-10-05: `rfi_supported` released as `v3` (default product version `v3`,
   status `released`, CLI `eigsep-rfi-v3`; `eigsep-rfi-v3-beta` still works). The

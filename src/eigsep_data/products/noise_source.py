@@ -102,3 +102,65 @@ def load(version, root=None):
             raise ValueError(f"{k} has shape {arrays[k].shape}, freqs has {n} channels")
     return NoiseSource(version=version, **arrays, **scalars,
                        manifest=read_manifest(d / "manifest.json"))
+
+
+def write(root, version, *, freqs, t_non_k, t_non_sigma_k, t_off_k, good,
+          gamma_ns, provenance, validation=None, smooth_deg=3,
+          smooth_x0_mhz=150.0, smooth_xscale_mhz=100.0, overwrite=False):
+    """Write ``derived/noise_source/<version>/`` under ``root``.
+
+    Takes the measured quantities (module docstring), derives the excess
+    ``t_non_k - t_off_k`` and its smooth fit (a polynomial of degree
+    ``smooth_deg`` in ``(f - smooth_x0_mhz) / smooth_xscale_mhz``, weighted by
+    ``1 / t_non_sigma_k**2`` over the ``good`` channels), and writes
+    ``solutions.npz``, ``manifest.json`` (``provenance``, which should name
+    the bench run, the inputs with their checksums and the code with its
+    commits, plus a description of the contents) and, if given,
+    ``validation.json``. The README beside them is written by hand. Refuses
+    to overwrite an existing version unless ``overwrite``. Returns the
+    version's directory."""
+    import json
+
+    d = _base(root) / version
+    if (d / "solutions.npz").exists() and not overwrite:
+        raise FileExistsError(f"{d} already holds a solutions.npz")
+    freqs = np.asarray(freqs, dtype=float)
+    good = np.asarray(good, dtype=bool) & np.isfinite(t_non_k) & np.isfinite(t_non_sigma_k)
+    t_non_k = np.where(good, np.asarray(t_non_k, float), np.nan)
+    t_non_sigma_k = np.where(good, np.asarray(t_non_sigma_k, float), np.nan)
+    excess = t_non_k - float(t_off_k)
+    x = (freqs - smooth_x0_mhz) / smooth_xscale_mhz
+    coef = np.polyfit(x[good], excess[good], smooth_deg, w=1.0 / t_non_sigma_k[good])
+    smooth = np.polyval(coef, x)
+    resid = excess[good] - smooth[good]
+    d.mkdir(parents=True, exist_ok=True)
+    np.savez(d / "solutions.npz", freqs=freqs, t_non_k=t_non_k, t_non_sigma_k=t_non_sigma_k,
+             t_off_k=float(t_off_k), excess_k=excess, good=good, excess_smooth_k=smooth,
+             smooth_coef=coef, smooth_x0_mhz=float(smooth_x0_mhz),
+             smooth_xscale_mhz=float(smooth_xscale_mhz),
+             gamma_ns=np.asarray(gamma_ns, dtype=complex))
+    manifest = {
+        "provenance": dict(provenance, product="noise_source", version=version),
+        "contents": {
+            "freqs": "MHz, the correlator channels",
+            "t_non_k": "noise-source path's temperature at P when on, K; NaN off `good`",
+            "t_non_sigma_k": "standard error of t_non_k, K",
+            "t_off_k": "temperature taken for the path when off (diode-board thermistor), K",
+            "excess_k": "t_non_k - t_off_k, K",
+            "good": "channels kept by the measurement's mask",
+            "excess_smooth_k": "smooth fit of excess_k on every channel, K",
+            "smooth_coef": "its polynomial coefficients, highest power first",
+            "gamma_ns": "noise-source path's reflection at P (lab), on freqs",
+        },
+        "smooth_fit": {
+            "degree": int(smooth_deg), "x": "(f - smooth_x0_mhz) / smooth_xscale_mhz",
+            "weights": "1 / t_non_sigma_k**2 over good channels",
+            "n_channels": int(good.sum()),
+            "residual_rms_k": float(np.sqrt(np.mean(resid ** 2))),
+            "residual_max_abs_k": float(np.max(np.abs(resid))),
+        },
+    }
+    (d / "manifest.json").write_text(json.dumps(manifest, indent=2, default=float) + "\n")
+    if validation is not None:
+        (d / "validation.json").write_text(json.dumps(validation, indent=2, default=float) + "\n")
+    return d

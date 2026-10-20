@@ -56,3 +56,28 @@ def test_a_wrong_shape_is_refused(tmp_path):
 def test_missing_version(tmp_path):
     with pytest.raises(FileNotFoundError):
         ns.load("v0009", root=tmp_path)
+
+
+def test_write_then_load(tmp_path):
+    f = np.linspace(50.0, 245.0, 40)
+    sigma = np.full(f.size, 2.0)
+    good = np.ones(f.size, bool)
+    good[[5, 6]] = False
+    t_non = 800.0 + 0.002 * (f - 150.0) ** 2 + np.where(np.arange(f.size) % 2, 3.0, -3.0)
+    d = ns.write(tmp_path, "v0001", freqs=f, t_non_k=t_non, t_non_sigma_k=sigma, t_off_k=308.0,
+                 good=good, gamma_ns=np.full(f.size, 0.05 + 0.01j), provenance={"run": "test"},
+                 validation={"check": 1})
+    n = ns.load("v0001", root=tmp_path)
+    assert np.isnan(n.t_non_k[5]) and not n.good[5]
+    np.testing.assert_allclose(n.excess_k[good], t_non[good] - 308.0)
+    # the smooth fit is numpy's weighted polyfit over the good channels
+    x = (f - 150.0) / 100.0
+    expect = np.polyval(np.polyfit(x[good], t_non[good] - 308.0, 3, w=1 / sigma[good]), x)
+    np.testing.assert_allclose(n.excess_smooth_k, expect)
+    assert np.isfinite(n.excess_smooth_k).all()
+    assert n.manifest["provenance"]["run"] == "test"
+    assert n.manifest["smooth_fit"]["n_channels"] == 38
+    assert (d / "validation.json").is_file()
+    with pytest.raises(FileExistsError):
+        ns.write(tmp_path, "v0001", freqs=f, t_non_k=t_non, t_non_sigma_k=sigma, t_off_k=308.0,
+                 good=good, gamma_ns=np.zeros(f.size), provenance={})
