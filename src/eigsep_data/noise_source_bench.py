@@ -107,8 +107,9 @@ def measure(index, s11, gamma_ns, setup, *, steady_per_min=1.0, dwell_gap_s=5.0,
     dict
         ``freqs``, ``t_non_k``, ``t_non_sigma_k`` (NaN off ``good``),
         ``t_off_k``, ``good``, ``gamma_ns`` (on the channels), ``cycles`` (a
-        table of every cycle), ``mask`` (per reason) and ``validation`` (a
-        JSON-ready dict).
+        table of every cycle), ``mask`` (per reason), ``validation`` (a
+        JSON-ready dict); for diagnostics, the fits' inputs ``q`` and
+        ``mismatch`` (``hot``, ``ref``, ``ns``), each cycles x channels.
     """
     from eigsep_cal.dicke import calc_Tant_star, mismatch
     from eigsep_cal.noise_source import (
@@ -238,4 +239,5 @@ def measure(index, s11, gamma_ns, setup, *, steady_per_min=1.0, dwell_gap_s=5.0,
             "t_non_k": np.where(good, f_st["b"], np.nan),
             "t_non_sigma_k": np.where(good, f_st["sb"], np.nan),
             "t_off_k": t_off, "good": good, "gamma_ns": g_ns,
-            "cycles": pd.DataFrame(cyc), "mask": mask, "validation": validation}
+            "cycles": pd.DataFrame(cyc), "mask": mask, "validation": validation,
+            "q": q, "mismatch": {"hot": m_hot, "ref": m_ref, "ns": m_ns}}
