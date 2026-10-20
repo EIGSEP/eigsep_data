@@ -144,6 +144,10 @@ characterization of the noise source, an input to `tcal`, read with
   the VNA-sweep guard, thermistors with measured pull-ups.
 - `noise_source_bench.py` — the noise source's temperature at P from a
   bench run (`measure`), stored with `products.noise_source.write`.
+- `calibration/` — builders of the `tcal` and `noise_source` products
+  (`eigsep-build-tcal`, `eigsep-validate-tcal`, `eigsep-tcal-bracket-cost`,
+  `eigsep-build-noise-source`); each version's campaign choices are its
+  `config.json` in the campaign tree.
 - `beam_sim.py`, `sim.py`, `hpm.py`, `sph_fit.py` — simulation and
   spherical-harmonic work (needs the JAX/healjax extras).
 
@@ -158,6 +162,8 @@ characterization of the noise source, an input to `tcal`, read with
   software that writes the files this package reads.
 
 ## Recent changes
+
+- 2026-10-20: the `tcal` and `noise_source` builders move here from `data-analysis` as `calibration/` with four commands, so no released product depends on `data-analysis`. Each product version's campaign choices (span, flags, limits, bench wiring, thresholds) are a `config.json` beside it in the campaign tree, which the manifest records. Christian's chain (`calibration/d5_yfactor.py`), which the `tcal` validation compares against, is vendored unchanged.
 
 - 2026-10-20: `switched` (dwells and cycles of switched calibration measurements, the VNA-sweep guard, thermistors with measured pull-ups) the `noise_source` product reader and writer, and `noise_source_bench.measure` (the noise source's temperature from a bench run) added, for the bench-measured noise source; `tcal` accepts `t_ns_k` as one value per channel (from v0004) as well as one number (v0000-v0003).
 - 2026-10-08: `geometry_release` publishes releases from a `derived/geometry_posterior/vNNNN` product, numbered to match it (`v0004_marjum_geometry` is the first); the `terrain/` builder that made v0001 needs `--legacy-terrain`.

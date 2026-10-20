@@ -32,6 +32,7 @@ _SUBMODULES = {
     "beam_sim",
     "browse",
     "bundle",
+    "calibration",
     "clock",
     "data",
     "flagging",
