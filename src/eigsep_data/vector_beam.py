@@ -24,12 +24,18 @@ The component of u along r_hat is never measured: E1 and E2 are always
 transverse, so the prior row alone sets it, however many visits a pixel
 has. More visits only improve the transverse plane.
 
-Geometry follows :mod:`eigsep_data.beam_sim` (``RotatingAntennaCartesian``
-and ``TransmitterAntenna``), not the ``eigsep_base.rotations`` convention
-of :mod:`eigsep_data.beam_mapping`.
+Geometry comes from either of two conventions: :func:`fields_from_model`
+takes a :class:`~eigsep_data.beam_mapping.TxGeometryModel` (the
+``eigsep_base.rotations`` mount convention the production beam fit uses;
+arm 0 at the model's alpha, arm 1 at alpha + 90), and
+:func:`transmitter_fields` takes the older :mod:`eigsep_data.beam_sim`
+angles (``RotatingAntennaCartesian`` / ``TransmitterAntenna``). Both
+return the same four arrays, and everything downstream is convention
+free.
 
 Public API
 ----------
+fields_from_model
 transmitter_fields
 group_by_pixel
 solve_pixel
@@ -64,6 +70,44 @@ jax.config.update("jax_enable_x64", True)
 #: Default D-term seed: the single global phase used before g was fit
 #: per channel by closure.
 G_SEED = np.exp(1j * np.radians(-147.4))
+
+
+def fields_from_model(model, params, az_deg, el_deg, nside):
+    """
+    Geometry of every sample from a production beam-fit geometry.
+
+    Parameters
+    ----------
+    model : eigsep_data.beam_mapping.TxGeometryModel
+        Site geometry, az offset and polarization centre.
+    params : array-like, shape (5,)
+        The fitted geometry corrections (``beam_mapping.PARAM_NAMES``).
+    az_deg, el_deg : array-like, shape (nsample,)
+        Table pointing, before the model's az offset.
+    nside : int
+        HEALPix nside (RING) the samples are binned on.
+
+    Returns
+    -------
+    pxs, r_hat, E1v, E2v : as :func:`transmitter_fields`, with E1v the
+        field of transmitter arm 0 and E2v of arm 1, in the body frame
+        the HFSS ``beam_cart`` is expressed in.
+    """
+    import healpy as hp
+
+    from .beam_mapping.tx_coupling import transmitter_frame
+
+    R = model.rotations(az_deg, el_deg, params)
+    theta, phi, r_hat, e = transmitter_frame(
+        R, model.transmitter(params), None
+    )
+    pxs = hp.ang2pix(nside, theta, phi)
+    return (
+        np.asarray(pxs),
+        np.asarray(r_hat, dtype=float),
+        np.asarray(e[0], dtype=float),
+        np.asarray(e[1], dtype=float),
+    )
 
 
 def transmitter_fields(theta_deg, phi_deg, alpha_deg, az_rad, el_rad, nside):
