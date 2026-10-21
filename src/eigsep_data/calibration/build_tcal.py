@@ -42,6 +42,7 @@ import pandas as pd
 from ..index import MetadataIndex
 from ..paths import get_campaign_root
 from ..provenance import sha256
+from ..units import celsius_to_kelvin
 from ._common import (
     code_provenance,
     config_record,
@@ -264,7 +265,7 @@ def thermistor(index, cfg):
     )
     ok = np.isfinite(t) & np.isfinite(c)
     order = np.argsort(t[ok], kind="stable")
-    tt, kk = t[ok][order], c[ok][order] + 273.15
+    tt, kk = t[ok][order], celsius_to_kelvin(c[ok][order])
     # Collapse duplicate timestamps (one row per file per integration).
     tt, first = np.unique(tt, return_index=True)
     return (

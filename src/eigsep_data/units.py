@@ -1,6 +1,15 @@
 """Unit conversions shared across the package."""
 
 import numpy as np
+from scipy.constants import zero_Celsius
+
+#: 0 degC in kelvin.
+ZERO_CELSIUS_K = zero_Celsius
+
+
+def celsius_to_kelvin(t):
+    """Temperature ``t`` in degC, in kelvin."""
+    return np.asarray(t, dtype=float) + ZERO_CELSIUS_K
 
 
 def to_dB(x):

@@ -50,14 +50,17 @@ def median_night_tstar(root, vcfg, key):
     return np.median(ts, axis=0), float(np.nanmedian(tl))
 
 
-def cycles(z, regime):
-    """Pair each noise-source visit of ``regime`` with its load visit."""
+def cycles(z, regime, max_pair_s=300.0):
+    """Pair each noise-source visit of ``regime`` with its load visit.
+
+    A visit pairs with the nearest load visit when they are under
+    ``max_pair_s`` apart: in one cycle, not the next (~13 min later)."""
     keep_n = z["non_regime"] == regime
     tn, pn = z["non_t"][keep_n], z["non_p"][keep_n]
     ka = z["amb_regime"] == regime
     ta, pa = z["amb_t"][ka], z["amb_p"][ka]
     j = np.array([np.argmin(np.abs(ta - t)) for t in tn])
-    ok = np.abs(ta[j] - tn) < 300
+    ok = np.abs(ta[j] - tn) < max_pair_s
     return tn[ok], pa[j][ok], pn[ok] - pa[j][ok]
 
 
@@ -68,6 +71,59 @@ def stats(x):
         "median": float(np.median(x)),
         "p95": float(np.percentile(x, 95)),
         "max": float(x.max()),
+    }
+
+
+def across_hole(
+    z, tc, gc, ih, b, raise_t, cycle_tol_s=600.0, s11_tol_s=1800.0
+):
+    """Changes across the hole against the same span elsewhere.
+
+    ``tc``, ``gc`` are the regime's cycle times and gain proxies, the hole
+    lies between cycles ``ih`` and ``ih + 1``, ``b`` is the band's channel
+    mask and ``raise_t`` (unix s) a time inside the hole. A pair elsewhere
+    counts as spanning the same time when its span is within
+    ``cycle_tol_s`` (cycles, ~13 min apart) or ``s11_tol_s`` (S11 sweeps,
+    hourly) of the hole's, before the hole."""
+    before, after = tc[ih], tc[ih + 1]
+    ib, ia = ih, ih + 1
+    span = after - before
+    edge = float(np.nanmedian(np.abs(gc[ia] / gc[ib] - 1)[b]))
+    ref = []
+    for i in np.flatnonzero(tc <= before):
+        j = np.argmin(np.abs(tc - (tc[i] + span)))
+        if abs(tc[j] - tc[i] - span) < cycle_tol_s and tc[j] <= before:
+            ref.append(np.nanmedian(np.abs(gc[j] / gc[i] - 1)[b]))
+    s_all = z["s11_ant_t"]
+    sb = np.flatnonzero(s_all < raise_t).max()
+    sa = np.flatnonzero(s_all > raise_t).min()
+    s_span = s_all[sa] - s_all[sb]
+    dgam = float(np.nanmedian(np.abs(z["s11_ant"][sa] - z["s11_ant"][sb])[b]))
+    sref = []
+    for i in range(s_all.size):
+        j = np.argmin(np.abs(s_all - (s_all[i] + s_span)))
+        if (
+            abs(s_all[j] - s_all[i] - s_span) < s11_tol_s
+            and s_all[j] < s_all[sb] + 1  # sweeps up to sb (1 s slack)
+        ):
+            sref.append(
+                np.nanmedian(np.abs(z["s11_ant"][j] - z["s11_ant"][i])[b])
+            )
+    return {
+        "cycle_edges_utc": [
+            datetime.utcfromtimestamp(x).strftime("%H:%M")
+            for x in (before, after)
+        ],
+        "gain_change_across_hole": edge,
+        "gain_change_same_span_elsewhere": stats(ref) if ref else None,
+        "s11_edges_utc": [
+            datetime.utcfromtimestamp(x).strftime("%H:%M")
+            for x in (s_all[sb], s_all[sa])
+        ],
+        "s11_ant_abs_change_across_hole": dgam,
+        "s11_ant_abs_change_same_span_elsewhere": (
+            stats(sref) if sref else None
+        ),
     }
 
 
@@ -101,7 +157,7 @@ def main(argv=None):
     # The hole is the longest gap between the regime's cycles.
     tc, plc, gc = cycles(z, vcfg["bracket_regime"])
     ih = int(np.argmax(np.diff(tc)))
-    before, after = tc[ih], tc[ih + 1]
+    before = tc[ih]
     night = " to ".join(vcfg["reference_night_local"])
     out = {
         "band_mhz": band,
@@ -153,46 +209,7 @@ def main(argv=None):
     out["s11_hold_frac_error_in_t"] = rows
 
     # 3. Across the hole: edges vs the same span elsewhere.
-    ib, ia = ih, ih + 1
-    span = after - before
-    edge = float(np.nanmedian(np.abs(gc[ia] / gc[ib] - 1)[b]))
-    ref = []
-    for i in np.flatnonzero(tc <= before):
-        j = np.argmin(np.abs(tc - (tc[i] + span)))
-        if abs(tc[j] - tc[i] - span) < 600 and tc[j] <= before:
-            ref.append(np.nanmedian(np.abs(gc[j] / gc[i] - 1)[b]))
-    s_all = z["s11_ant_t"]
-    raise_t = unix(vcfg["raise_utc"])
-    sb = np.flatnonzero(s_all < raise_t).max()
-    sa = np.flatnonzero(s_all > raise_t).min()
-    s_span = s_all[sa] - s_all[sb]
-    dgam = float(np.nanmedian(np.abs(z["s11_ant"][sa] - z["s11_ant"][sb])[b]))
-    sref = []
-    for i in range(s_all.size):
-        j = np.argmin(np.abs(s_all - (s_all[i] + s_span)))
-        if (
-            abs(s_all[j] - s_all[i] - s_span) < 1800
-            and s_all[j] < s_all[sb] + 1
-        ):
-            sref.append(
-                np.nanmedian(np.abs(z["s11_ant"][j] - z["s11_ant"][i])[b])
-            )
-    out["hole"] = {
-        "cycle_edges_utc": [
-            datetime.utcfromtimestamp(x).strftime("%H:%M")
-            for x in (before, after)
-        ],
-        "gain_change_across_hole": edge,
-        "gain_change_same_span_elsewhere": stats(ref) if ref else None,
-        "s11_edges_utc": [
-            datetime.utcfromtimestamp(x).strftime("%H:%M")
-            for x in (s_all[sb], s_all[sa])
-        ],
-        "s11_ant_abs_change_across_hole": dgam,
-        "s11_ant_abs_change_same_span_elsewhere": (
-            stats(sref) if sref else None
-        ),
-    }
+    out["hole"] = across_hole(z, tc, gc, ih, b, unix(vcfg["raise_utc"]))
     (pdir / "bracket_cost.json").write_text(json.dumps(out, indent=2) + "\n")
     print(json.dumps(out, indent=2))
 

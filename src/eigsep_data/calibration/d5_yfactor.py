@@ -1,10 +1,10 @@
 # Vendored from data-analysis/notebooks/arp/marjum-2026-07/d5_yfactor.py
 # (commit 58c4c64): Christian's minimal Y-factor chain, run as written to check
 # tcal against an independent calibration. Not used to build any product.
-# Two changes: calkit comes from eigsep_cal instead of cmt_vna (the same
-# functions; the S911T model, internal standards and field S11 at P agree
-# exactly), so nothing here needs cmt_vna; and T_NS uses the package's
-# from_dB (the same number).
+# Changes, none of which changes a result: calkit comes from eigsep_cal
+# instead of cmt_vna (the same functions; the S911T model, internal standards
+# and field S11 at P agree exactly), so nothing here needs cmt_vna; and the
+# dB and degC conversions use eigsep_data.units.
 """Minimal three-state Y-factor calibration for EIGSEP Deployment 5.
 
 Reads the correlator files and the field S11 files directly, with only
@@ -38,7 +38,7 @@ import h5py
 import numpy as np
 from eigsep_cal import calkit
 
-from ..units import from_dB
+from ..units import celsius_to_kelvin, from_dB
 
 #: Assumed excess temperature of the noise source over the ambient load,
 #: in K: the nameplate ENR of 35 dB behind a 30 dB pad, so
@@ -138,7 +138,7 @@ def read_corr_file(path, key):
         time = header_times
     t_load = [
         (
-            e["T_now"] + 273.15
+            float(celsius_to_kelvin(e["T_now"]))
             if isinstance(e, dict) and isinstance(e.get("T_now"), (int, float))
             else np.nan
         )

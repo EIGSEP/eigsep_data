@@ -30,6 +30,7 @@ import numpy as np
 import pandas as pd
 
 from . import switched as sw
+from .units import celsius_to_kelvin
 
 
 @dataclass(frozen=True)
@@ -132,7 +133,7 @@ def measure(index, s11, gamma_ns, setup, *, steady_per_min=1.0, dwell_gap_s=5.0,
             raise ValueError(f"{st}: a different frequency axis")
         meta["T_hot"] = sw.thermistor_k(meta[s.hot_therm[0]], s.hot_therm[1])
         meta["T_ref"] = sw.thermistor_k(meta[s.ref_therm[0]], s.ref_therm[1])
-        meta["T_board"] = meta[s.board_therm_c].astype(float) + 273.15
+        meta["T_board"] = celsius_to_kelvin(meta[s.board_therm_c])
         flags, pc = sw.rfi_flags(spec, f)
         near = sw.near_sweep(meta, sweeps, sweep_guard)
         flags[near] = True
