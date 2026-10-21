@@ -78,6 +78,64 @@ def leave_one_out(t, v, label, max_gap, f, band):
     }
 
 
+def plumbing(ts, tl, st, t_ns, bb, wide, tol_frac=0.05, max_channels_off=50):
+    """The load and noise-source rows of the bundle, calibrated through the
+    product, against what they should read.
+
+    ``ts`` is the bundle's T*, ``tl`` its load temperature, ``st`` its
+    switch states, ``t_ns`` the noise-source excess on its channels, and
+    ``bb``, ``wide`` the channel masks of the band and the plumbing band. A
+    channel is off when it misses by more than ``tol_frac`` of the expected
+    temperature (load) or of the excess (noise source); a row is counted
+    when more than ``max_channels_off`` of its channels are off."""
+    pct = f"{100 * tol_frac:g}pct"
+    plumb = {}
+    for state, extra in (("RFAMB", np.zeros(ts.shape[1])), ("RFNON", t_ns)):
+        rows = (st == state) & np.isfinite(ts[:, bb]).all(1)
+        resid = np.nanmedian(ts[rows][:, bb] - extra[bb], axis=1) - tl[rows]
+        # Worst cases and single channels, not just medians: a few bad
+        # calibration visits corrupt hundreds of channels for ~25 min while
+        # leaving every band-median statistic unchanged (tcal v0000).
+        expect = tl[rows][:, None] + extra[None, wide]
+        tol = tol_frac * (expect if state == "RFAMB" else extra[None, wide])
+        with np.errstate(invalid="ignore"):
+            off = np.abs(ts[rows][:, wide] - expect) > tol
+        plumb[state] = {
+            "rows": int(rows.sum()),
+            "median_resid_k": float(np.median(resid)),
+            "p95_abs_resid_k": float(np.percentile(np.abs(resid), 95)),
+            "max_abs_resid_k": float(np.max(np.abs(resid))),
+            f"channel_fraction_off_{pct}": float(np.nanmean(off)),
+            f"rows_with_over_{max_channels_off}_channels_off_{pct}": int(
+                (off.sum(1) > max_channels_off).sum()
+            ),
+        }
+    return plumb
+
+
+def coverage(cal, st, bb, t0, t1, min_channel_fraction=0.99):
+    """How much of the antenna's data the product calibrates.
+
+    A row counts as calibrated when at least ``min_channel_fraction`` of its
+    band's channels (``bb``) are: a channel the flags remove from a whole
+    calibration visit is NaN in every row that visit brackets, which is
+    honest, but should not void the row. The channel-level fraction is
+    reported alongside."""
+    ant = st == "RFANT"
+    finite = np.isfinite(cal[:, bb])
+    ok = finite.mean(1) >= min_channel_fraction
+    return {
+        "channel_fraction_calibrated_on_rfant": float(finite[ant].mean()),
+        "span_utc": [
+            datetime.utcfromtimestamp(t0).isoformat() + "Z",
+            datetime.utcfromtimestamp(t1).isoformat() + "Z",
+        ],
+        "rfant_rows": int(ant.sum()),
+        "rfant_rows_calibrated": int((ant & ok).sum()),
+        "fraction": float((ant & ok).sum() / max(ant.sum(), 1)),
+    }
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("version")
@@ -148,7 +206,6 @@ def main(argv=None):
     st = b.meta.rfswitch.to_numpy(str)
     tl = b.products["tcal"]["tcal_t_load_k"]
     ts = b.t_star
-    plumb = {}
     # T_NS on the bundle's channels: one number or a spectrum on the
     # product's axis, looked up channel by channel.
     t_ns = np.asarray(z["t_ns_k"], dtype=float)
@@ -157,45 +214,8 @@ def main(argv=None):
     else:
         t_ns = np.full(fb.size, float(t_ns))
     wide = band_mask(fb, vcfg["plumbing_band_mhz"])
-    for state, extra in (("RFAMB", np.zeros(fb.size)), ("RFNON", t_ns)):
-        rows = (st == state) & np.isfinite(ts[:, bb]).all(1)
-        resid = np.nanmedian(ts[rows][:, bb] - extra[bb], axis=1) - tl[rows]
-        # Worst cases and single channels, not just medians: a few bad
-        # calibration visits corrupt hundreds of channels for ~25 min while
-        # leaving every band-median statistic unchanged (tcal v0000).
-        expect = tl[rows][:, None] + extra[None, wide]
-        tol = 0.05 * (expect if state == "RFAMB" else extra[None, wide])
-        with np.errstate(invalid="ignore"):
-            off = np.abs(ts[rows][:, wide] - expect) > tol
-        plumb[state] = {
-            "rows": int(rows.sum()),
-            "median_resid_k": float(np.median(resid)),
-            "p95_abs_resid_k": float(np.percentile(np.abs(resid), 95)),
-            "max_abs_resid_k": float(np.max(np.abs(resid))),
-            "channel_fraction_off_5pct": float(np.nanmean(off)),
-            "rows_with_over_50_channels_off_5pct": int(
-                (off.sum(1) > 50).sum()
-            ),
-        }
-    out["plumbing"] = plumb
-    ant = st == "RFANT"
-    cal = b.calibrated
-    # A row counts as calibrated when at least 99 % of its band's channels
-    # are: a channel the flags remove from a whole calibration visit is NaN in
-    # every row that visit brackets, which is honest, but should not void the
-    # row. The channel-level fraction is reported alongside.
-    finite = np.isfinite(cal[:, bb])
-    ok = finite.mean(1) >= 0.99
-    out["coverage"] = {
-        "channel_fraction_calibrated_on_rfant": float(finite[ant].mean()),
-        "span_utc": [
-            datetime.utcfromtimestamp(t0).isoformat() + "Z",
-            datetime.utcfromtimestamp(t1).isoformat() + "Z",
-        ],
-        "rfant_rows": int(ant.sum()),
-        "rfant_rows_calibrated": int((ant & ok).sum()),
-        "fraction": float((ant & ok).sum() / max(ant.sum(), 1)),
-    }
+    out["plumbing"] = plumbing(ts, tl, st, t_ns, bb, wide)
+    out["coverage"] = coverage(b.calibrated, st, bb, t0, t1)
 
     # 3. The independent calibration of the reference night.
     import eigsep_cal.s11

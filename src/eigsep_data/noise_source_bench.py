@@ -84,7 +84,8 @@ def _weighted_mean(x, w):
 
 def measure(index, s11, gamma_ns, setup, *, steady_per_min=1.0, dwell_gap_s=5.0,
             sweep_guard=sw.SWEEP_GUARD_S, band_mhz=(50.0, 245.0), chi2_factor=3.0,
-            max_rel_err=0.05, enbw_hz=250e6 / 1024):
+            max_rel_err=0.05, enbw_hz=250e6 / 1024,
+            report_bands_mhz=((50.0, 88.0), (108.0, 150.0), (150.0, 200.0), (200.0, 245.0))):
     """The noise source's temperature at P from a bench run.
 
     Parameters
@@ -102,6 +103,9 @@ def measure(index, s11, gamma_ns, setup, *, steady_per_min=1.0, dwell_gap_s=5.0,
     steady_per_min, dwell_gap_s, sweep_guard, band_mhz, chi2_factor,
     max_rel_err, enbw_hz
         The run's choices (module docstring).
+    report_bands_mhz : sequence of (lo, hi)
+        Sub-bands whose weighted-mean temperatures the validation reports
+        (``validation["bands"]``, keyed ``"lo-hi"``); they affect nothing else.
 
     Returns
     -------
@@ -234,7 +238,7 @@ def measure(index, s11, gamma_ns, setup, *, steady_per_min=1.0, dwell_gap_s=5.0,
         "ramp_check_heating_cooling_vs_steady": ramp,
         "t_off_k": t_off,
         "bands": {f"{lo:.0f}-{hi:.0f}": band_wmean(lo, hi)
-                  for lo, hi in ((50, 88), (108, 150), (150, 200), (200, 245))},
+                  for lo, hi in report_bands_mhz},
     }
     return {"freqs": freqs,
             "t_non_k": np.where(good, f_st["b"], np.nan),

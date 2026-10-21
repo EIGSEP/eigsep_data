@@ -28,6 +28,7 @@ command runs.
 
 ## Recent changes
 
+- 2026-10-21: the validation's remaining fixed choices are keyword arguments of new functions, with the old values as defaults: in `validate_tcal`, `plumbing(tol_frac=0.05, max_channels_off=50)` (the output keys are built from them, so `channel_fraction_off_5pct` keeps its name) and `coverage(min_channel_fraction=0.99)`; in `bracket_cost`, `bracket_errors(brackets=...)` and `s11_hold_errors(holds=...)`, the spans scored. Output is unchanged.
 - 2026-10-21: `bracket_cost`'s matching tolerances are documented keyword arguments with the old values as defaults: `cycles(max_pair_s=300)` pairs a noise-source visit with the load visit of the same cycle, and the new `across_hole(cycle_tol_s=600, s11_tol_s=1800)` sets how closely a comparison span must match the hole's. degC to K goes through `eigsep_data.units.celsius_to_kelvin`. Results are unchanged.
 - 2026-10-21: checksums and git state come from `eigsep_data.provenance`, shared with the other product generators, instead of `_common.py`; manifests are unchanged.
 - 2026-10-20: added: the `tcal` builders moved from `data-analysis/scripts/marjum-2026-07/tcal/` and the `noise_source` builder from `data-analysis/scripts/marjum-2026-07/noise_source/`, with their campaign choices moved into each version's `config.json`. Rebuilding `tcal` v0004 and `noise_source` v0001 with them reproduces the arrays exactly.

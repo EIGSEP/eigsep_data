@@ -167,6 +167,7 @@ characterization of the noise source, an input to `tcal`, read with
 
 ## Recent changes
 
+- 2026-10-21: `noise_source_bench.measure` takes the sub-bands its validation reports as `report_bands_mhz` (default unchanged: 50-88, 108-150, 150-200, 200-245 MHz).
 - 2026-10-21: `units.celsius_to_kelvin` replaces the literal 273.15 in `noise_source_bench` and `calibration/`.
 - 2026-10-21: `units.to_dB` and `units.from_dB` (also `eigsep_data.to_dB`/`from_dB`) are the package's dB conversions for power ratios; `quicklook` and `calibration/d5_yfactor` use them, with identical results.
 - 2026-10-21: `provenance` holds the file checksum and git helpers that `calibration/`, `flagging/`, `geometry_release` and `rfi_supported` each used to define for themselves. What each product records is unchanged.

@@ -74,6 +74,60 @@ def stats(x):
     }
 
 
+def bracket_errors(
+    t, pl, g, t_ns, tstar, t_load, b, brackets=(2, 3, 4, 5, 7, 9, 11, 14)
+):
+    """Fractional T* error of interpolating calibration across ``m`` cycles.
+
+    ``t``, ``pl``, ``g`` are cycle times, load powers and gain proxies of a
+    stretch with no gap; ``brackets`` the spans ``m`` to score, in cycles.
+    Each row reports the span in minutes at the stretch's median cadence."""
+    cadence = float(np.median(np.diff(t)))
+    rows = []
+    for m in brackets:
+        errs = []
+        for i in range(t.size - m):
+            for k in range(i + 1, i + m):
+                w = (t[k] - t[i]) / (t[i + m] - t[i])
+                dpl = (1 - w) * pl[i] + w * pl[i + m] - pl[k]
+                dg = (1 - w) * g[i] + w * g[i + m] - g[k]
+                dts = -t_ns * dpl / g[k] - (tstar - t_load) * dg / g[k]
+                errs.append(np.nanmedian(np.abs(dts / tstar)[b]))
+        rows.append({"bracket_min": round(m * cadence / 60, 1), **stats(errs)})
+    return rows
+
+
+def s11_hold_errors(z, before, tstar, t_load, b, holds=(1, 2, 3, 4)):
+    """Fractional error in calibrated T of holding an S11 sweep ``m``
+    sweeps too long, over the sweeps up to ``before``; ``holds`` are the
+    ``m`` to score. Each row reports the hold in hours (median)."""
+    from eigsep_cal.dicke import receiver_s11_coefficients
+
+    st = z["s11_ant_t"]
+    pre = st <= before
+    g_ant, g_amb, g_rec = (z[f"s11_{d}"][pre] for d in ("ant", "amb", "rec"))
+    st = st[pre]
+
+    def t_cal(i):
+        a, o = 1.0, 0.0  # T* is given, so the T* line is the identity
+        sc, of = receiver_s11_coefficients(
+            a, o, t_load, g_ant[i], g_amb[i], g_rec[i]
+        )
+        return np.real(sc * tstar + of)
+
+    rows = []
+    for m in holds:
+        errs, dts = [], []
+        for i in range(st.size - m):
+            ref = t_cal(i + m)
+            errs.append(np.nanmedian(np.abs(t_cal(i) / ref - 1)[b]))
+            dts.append(st[i + m] - st[i])
+        rows.append(
+            {"hold_h": round(float(np.median(dts)) / 3600, 2), **stats(errs)}
+        )
+    return rows
+
+
 def across_hole(
     z, tc, gc, ih, b, raise_t, cycle_tol_s=600.0, s11_tol_s=1800.0
 ):
@@ -128,8 +182,6 @@ def across_hole(
 
 
 def main(argv=None):
-    from eigsep_cal.dicke import receiver_s11_coefficients
-
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("version")
     ap.add_argument(
@@ -166,47 +218,19 @@ def main(argv=None):
     }
 
     # 1. Calibration brackets, quiet stretch only (no bracket spans the hole).
-    quiet = tc <= before
-    t, pl, g = tc[quiet], plc[quiet], gc[quiet]
-    cadence = float(np.median(np.diff(t)))
-    rows = []
-    for m in (2, 3, 4, 5, 7, 9, 11, 14):
-        errs = []
-        for i in range(t.size - m):
-            k_all = range(i + 1, i + m)
-            for k in k_all:
-                w = (t[k] - t[i]) / (t[i + m] - t[i])
-                dpl = (1 - w) * pl[i] + w * pl[i + m] - pl[k]
-                dg = (1 - w) * g[i] + w * g[i + m] - g[k]
-                dts = -t_ns * dpl / g[k] - (tstar - t_load) * dg / g[k]
-                errs.append(np.nanmedian(np.abs(dts / tstar)[b]))
-        rows.append({"bracket_min": round(m * cadence / 60, 1), **stats(errs)})
-    out["cal_bracket_frac_error_in_tstar"] = rows
-
+    out["cal_bracket_frac_error_in_tstar"] = bracket_errors(
+        tc[tc <= before],
+        plc[tc <= before],
+        gc[tc <= before],
+        t_ns,
+        tstar,
+        t_load,
+        b,
+    )
     # 2. S11 hold, the regime's sweeps before the hole.
-    st = z["s11_ant_t"]
-    pre = st <= before
-    g_ant, g_amb, g_rec = (z[f"s11_{d}"][pre] for d in ("ant", "amb", "rec"))
-    st = st[pre]
-
-    def t_cal(i):
-        a, o = 1.0, 0.0  # T* is given, so the T* line is the identity
-        sc, of = receiver_s11_coefficients(
-            a, o, t_load, g_ant[i], g_amb[i], g_rec[i]
-        )
-        return np.real(sc * tstar + of)
-
-    rows = []
-    for m in (1, 2, 3, 4):
-        errs, dts = [], []
-        for i in range(st.size - m):
-            ref = t_cal(i + m)
-            errs.append(np.nanmedian(np.abs(t_cal(i) / ref - 1)[b]))
-            dts.append(st[i + m] - st[i])
-        rows.append(
-            {"hold_h": round(float(np.median(dts)) / 3600, 2), **stats(errs)}
-        )
-    out["s11_hold_frac_error_in_t"] = rows
+    out["s11_hold_frac_error_in_t"] = s11_hold_errors(
+        z, before, tstar, t_load, b
+    )
 
     # 3. Across the hole: edges vs the same span elsewhere.
     out["hole"] = across_hole(z, tc, gc, ih, b, unix(vcfg["raise_utc"]))
