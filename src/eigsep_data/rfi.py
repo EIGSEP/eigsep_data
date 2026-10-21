@@ -1550,6 +1550,51 @@ def flag_dpss_interleaved_outliers(
     return P1_clean, P6_clean, P1_outlier, P6_outlier
 
 
+def flag_unbracketed_fills(measured, trust_mask=None):
+    """
+    Flag DPSS-filled cells that are extrapolations rather than
+    interpolations: an unmeasured cell whose two frequency neighbours
+    are not both trusted measurements of the same arm.
+
+    In the interleaved comb the arms alternate tone by tone, so an arm's
+    fill at column ``j`` sits between that arm's own tones at ``j - 1``
+    and ``j + 1``. When both are measured (and trusted) the fill is the
+    routine interleaved-comb interpolation. When either is missing, the
+    per-time DPSS fit has no anchor on that side and can swing far off.
+
+    Why: on Marjum 2026-07 every DPSS fill more than 100x its channel's
+    median (up to ~1e8x near the 230 MHz trust edge) lacked an anchor on
+    one side, while bracketed fills stayed within the spread of the
+    measured data. These blow-ups are isolated in time but persist over
+    tens of integrations, so the local-in-time
+    :func:`flag_dpss_interleaved_outliers` misses them.
+
+    Parameters
+    ----------
+    measured : np.ndarray of bool, shape (nsample, nfreq)
+        One arm's measured mask from
+        fit_dpss_interleaved_fix(..., return_measured_mask=True).
+    trust_mask : np.ndarray of bool, shape (nfreq,), optional
+        Columns outside it never count as anchors (the fit does not use
+        them), so a fill next to an untrusted column is unbracketed.
+
+    Returns
+    -------
+    unbracketed : np.ndarray of bool, shape (nsample, nfreq)
+        True at unmeasured cells lacking a trusted measured neighbour on
+        either side. Always False at measured cells.
+    """
+    measured = np.asarray(measured, dtype=bool)
+    anchor = measured.copy()
+    if trust_mask is not None:
+        anchor &= np.asarray(trust_mask, dtype=bool)[None, :]
+    below = np.zeros_like(anchor)
+    above = np.zeros_like(anchor)
+    below[:, 1:] = anchor[:, :-1]
+    above[:, :-1] = anchor[:, 1:]
+    return ~measured & ~(below & above)
+
+
 def flag_absurd_cells(vals, axis=None, n_mad=5.0):
     """
     Flag values that are implausibly large (or negative) relative to a

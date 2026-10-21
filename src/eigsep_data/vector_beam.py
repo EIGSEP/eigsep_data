@@ -63,6 +63,7 @@ from .rfi import (
     fit_dpss_interleaved_fix,
     flag_absurd_cells,
     flag_dpss_interleaved_outliers,
+    flag_unbracketed_fills,
 )
 
 jax.config.update("jax_enable_x64", True)
@@ -399,6 +400,7 @@ def reduce_cross(
     nmodes=23,
     NW=4.0,
     flag_fill_outliers=True,
+    require_bracketed_fill=False,
 ):
     """
     Reduce raw cross-correlation spectra to per-arm Ex_hat, Ey_hat.
@@ -410,7 +412,7 @@ def reduce_cross(
     delay so the residual phase is slow enough for a DPSS basis; fit the
     interleaved arms with :func:`~eigsep_data.rfi.fit_dpss_interleaved_fix`
     (real and imaginary parts separately); optionally NaN implausible
-    fills; restore the delay.
+    and extrapolated fills; restore the delay.
 
     Parameters
     ----------
@@ -434,6 +436,10 @@ def reduce_cross(
     flag_fill_outliers : bool
         NaN DPSS fills that fail
         :func:`~eigsep_data.rfi.flag_dpss_interleaved_outliers`.
+    require_bracketed_fill : bool
+        NaN fills without a trusted measured same-arm tone on both sides
+        (:func:`~eigsep_data.rfi.flag_unbracketed_fills`). Default False
+        keeps the September 2026 reduction; True is recommended.
 
     Returns
     -------
@@ -480,6 +486,14 @@ def reduce_cross(
         )
         Ex_hat[Ex_out] = np.nan + 1j * np.nan
         Ey_hat[Ey_out] = np.nan + 1j * np.nan
+
+    if require_bracketed_fill:
+        Ex_hat[flag_unbracketed_fills(Ex_meas, trust_mask)] = (
+            np.nan + 1j * np.nan
+        )
+        Ey_hat[flag_unbracketed_fills(Ey_meas, trust_mask)] = (
+            np.nan + 1j * np.nan
+        )
 
     rerot = np.conj(derot)
     return (

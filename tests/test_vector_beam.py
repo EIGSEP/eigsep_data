@@ -11,7 +11,11 @@ from eigsep_data.beam_sim import (
     cross_sim,
 )
 from healjax.coord import angles_to_coord
-from eigsep_data.rfi import fit_dpss_interleaved_fix, freq_axis_flag_reduced
+from eigsep_data.rfi import (
+    fit_dpss_interleaved_fix,
+    flag_unbracketed_fills,
+    freq_axis_flag_reduced,
+)
 
 
 def _unit(v):
@@ -343,6 +347,51 @@ def test_reduce_cross_passes_measured_tones_through():
     assert mx[:, 0::2].all() and my[:, 1::2].all()
     np.testing.assert_allclose(Ex[:, 0::2], tones[:, 0::2], atol=1e-12)
     np.testing.assert_allclose(Ey[:, 1::2], tones[:, 1::2], atol=1e-12)
+
+
+def test_flag_unbracketed_fills():
+    # Arm measured on even columns; fills on odd columns.
+    measured = np.zeros((3, 8), bool)
+    measured[:, 0::2] = True
+    measured[1, 4] = False  # row 1 loses the anchor between cols 3 and 5
+    trust = np.ones(8, bool)
+    trust[6] = False  # untrusted anchor: cols 5 and 7 lose a side
+    out = flag_unbracketed_fills(measured, trust)
+    # Row 0: cols 1, 3 bracketed; col 5 (6 untrusted), col 7 (edge) not.
+    assert out[0].tolist() == [0, 0, 0, 0, 0, 1, 0, 1]
+    # Row 1: the gap at col 4 is unmeasured with no anchor at 3 or 5,
+    # and it unbrackets its neighbours 3 and 5.
+    assert out[1].tolist() == [0, 0, 0, 1, 1, 1, 0, 1]
+    assert not out[measured].any()
+    # Without a trust mask, col 5 is bracketed again.
+    assert not flag_unbracketed_fills(measured)[0, 5]
+
+
+def test_reduce_cross_require_bracketed_fill_drops_extrapolations():
+    rng = np.random.default_rng(13)
+    ntime, ntone = 4, 40
+    chs = 8 * np.arange(1, ntone + 1)
+    freqs = np.linspace(110, 200, ntone)
+    tones = (1.0 + 0.1 * rng.normal(size=(ntime, ntone))) * np.exp(
+        1j * np.linspace(0, 1, ntone)
+    )
+    cross = np.zeros((ntime, chs.max() + 2), complex)
+    cross[:, chs] = tones
+    mask = np.zeros((ntime, ntone), bool)
+    mask[0, 21] = True  # an Ey tone: Ey's fills at 20 and 22 lose a side
+    scale = np.ones(ntone // 2)
+    kw = dict(shift=0, tau_ns=91.65, nmodes=8, flag_fill_outliers=False)
+    Ex0, Ey0, *_ = vb.reduce_cross(cross, chs, mask, scale, freqs, **kw)
+    Ex1, Ey1, *_ = vb.reduce_cross(
+        cross, chs, mask, scale, freqs, require_bracketed_fill=True, **kw
+    )
+    assert np.isfinite(Ey0[0, [20, 22]]).all()
+    assert np.isnan(Ey1[0, [20, 22]]).all()
+    # Edge fills (Ex at the top column, Ey at the bottom) never are.
+    assert np.isnan(Ex1[:, -1]).all() and np.isnan(Ey1[:, 0]).all()
+    # Everything else, measured or bracketed, is untouched.
+    np.testing.assert_array_equal(Ex1[:, :-1], Ex0[:, :-1])
+    np.testing.assert_array_equal(Ey1[1:, 1:], Ey0[1:, 1:])
 
 
 class TestAgainstProductionModel:
