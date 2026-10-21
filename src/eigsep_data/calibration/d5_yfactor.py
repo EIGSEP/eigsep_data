@@ -1,9 +1,10 @@
 # Vendored from data-analysis/notebooks/arp/marjum-2026-07/d5_yfactor.py
 # (commit 58c4c64): Christian's minimal Y-factor chain, run as written to check
 # tcal against an independent calibration. Not used to build any product.
-# One change: calkit comes from eigsep_cal instead of cmt_vna (the same
+# Two changes: calkit comes from eigsep_cal instead of cmt_vna (the same
 # functions; the S911T model, internal standards and field S11 at P agree
-# exactly), so nothing here needs cmt_vna.
+# exactly), so nothing here needs cmt_vna; and T_NS uses the package's
+# from_dB (the same number).
 """Minimal three-state Y-factor calibration for EIGSEP Deployment 5.
 
 Reads the correlator files and the field S11 files directly, with only
@@ -37,11 +38,13 @@ import h5py
 import numpy as np
 from eigsep_cal import calkit
 
+from ..units import from_dB
+
 #: Assumed excess temperature of the noise source over the ambient load,
 #: in K: the nameplate ENR of 35 dB behind a 30 dB pad, so
 #: 290 K * 10**(5/10) = 917 K. It has not been measured, and the kelvin
 #: scale of every temperature below is only as good as this number.
-T_NS = 290.0 * 10 ** ((35.0 - 30.0) / 10)
+T_NS = 290.0 * from_dB(35.0 - 30.0)
 
 #: ``rfswitch`` states of the three Y-factor measurements.
 SKY, NOISE, LOAD = "RFANT", "RFNON", "RFAMB"

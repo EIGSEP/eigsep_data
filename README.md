@@ -148,6 +148,7 @@ characterization of the noise source, an input to `tcal`, read with
   (`eigsep-build-tcal`, `eigsep-validate-tcal`, `eigsep-tcal-bracket-cost`,
   `eigsep-build-noise-source`); each version's campaign choices are its
   `config.json` in the campaign tree.
+- `units.py` — `to_dB` and `from_dB`, for power ratios.
 - `provenance.py` — file checksums and git state, for the provenance
   records that product generators write into their manifests.
 - `beam_sim.py`, `sim.py`, `hpm.py`, `sph_fit.py` — simulation and
@@ -165,6 +166,7 @@ characterization of the noise source, an input to `tcal`, read with
 
 ## Recent changes
 
+- 2026-10-21: `units.to_dB` and `units.from_dB` (also `eigsep_data.to_dB`/`from_dB`) are the package's dB conversions for power ratios; `quicklook` and `calibration/d5_yfactor` use them, with identical results.
 - 2026-10-21: `provenance` holds the file checksum and git helpers that `calibration/`, `flagging/`, `geometry_release` and `rfi_supported` each used to define for themselves. What each product records is unchanged.
 - 2026-10-20: the `tcal` and `noise_source` builders move here from `data-analysis` as `calibration/` with four commands, so no released product depends on `data-analysis`. Each product version's campaign choices (span, flags, limits, bench wiring, thresholds) are a `config.json` beside it in the campaign tree, which the manifest records. Christian's chain (`calibration/d5_yfactor.py`), which the `tcal` validation compares against, is vendored unchanged.
 

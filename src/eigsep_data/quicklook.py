@@ -26,6 +26,7 @@ import numpy as np
 from eigsep_base.io import read_hdf5
 
 from . import metadata, rfi
+from .units import to_dB
 
 COMB_SPACING = 16  # cal comb lands in every 16th channel
 
@@ -195,7 +196,7 @@ def waterfall_stats(wf, flags=None):
         "med_power": med,
         "max_power": peak,
         "peak_chan": int(mean_spec.argmax()),
-        "dyn_range_db": 10 * np.log10(peak / med) if med > 0 else 0.0,
+        "dyn_range_db": to_dB(peak / med) if med > 0 else 0.0,
     }
 
 
