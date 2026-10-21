@@ -61,6 +61,36 @@ def _synthetic_pixels(rng, npix=40, visits=4, g=1.0 + 0j):
     return pxs, r_hat, E1v, E2v, Ex, Ey, u_true
 
 
+def _phase_raster(rng, nch=3, npix=40, visits=6, phase_amp=1.0):
+    """A raster in time order: visit k of every pixel happens in sweep k,
+    at a random roll, so each pixel is seen in ``visits`` separate
+    dwells. Every channel shares one random phase per block of 20
+    samples (up to +/- ``phase_amp`` rad); each has its own beam and g."""
+    r = _unit(rng.normal(size=(npix, 3)))
+    basis = [_transverse_basis(x) for x in r]
+    # Shuffle each sweep so blocks mix pixels and the raster is connected.
+    pxs = np.concatenate([rng.permutation(npix) for _ in range(visits)])
+    psi = rng.uniform(0, np.pi, len(pxs))
+    e1 = np.array([basis[p][0] for p in pxs])
+    e2 = np.array([basis[p][1] for p in pxs])
+    E1v = np.cos(psi)[:, None] * e1 + np.sin(psi)[:, None] * e2
+    E2v = -np.sin(psi)[:, None] * e1 + np.cos(psi)[:, None] * e2
+    r_hat = r[pxs]
+    n = len(pxs)
+    true_phase = rng.uniform(-phase_amp, phase_amp, n // 20 + 1)[
+        np.arange(n) // 20
+    ]
+    g = 2.0 * np.exp(1j * rng.uniform(-np.pi, np.pi, nch))
+    Ex, Ey = [], []
+    for k in range(nch):
+        c = rng.normal(size=(npix, 2)) + 1j * rng.normal(size=(npix, 2))
+        U = np.array([c[p] @ np.array(basis[p]) for p in pxs])
+        ph = np.exp(1j * true_phase)
+        Ex.append(ph * np.einsum("ij,ij->i", E1v, U))
+        Ey.append(ph * g[k] * np.einsum("ij,ij->i", E2v, U))
+    return pxs, r_hat, E1v, E2v, Ex, Ey, true_phase, g
+
+
 class TestSolvePixel:
     def test_exact_recovery_single_and_multi_visit(self):
         rng = np.random.default_rng(0)
@@ -198,6 +228,60 @@ class TestValidationHelpers:
         assert set(pix.tolist()) == {0, 1, 2}
         assert np.all(nd == 2)
         np.testing.assert_allclose(ua, ub, atol=1e-10)
+
+    def test_predict_other_dwells_never_uses_its_own_dwell(self):
+        rng = np.random.default_rng(14)
+        pxs, r_hat, E1v, E2v, Ex, Ey, _, g = _phase_raster(
+            rng, nch=1, phase_amp=0.0
+        )
+        Ex, Ey = Ex[0].copy(), Ey[0].copy()
+        valid = np.ones(len(pxs), bool)
+        # A single corrupted sample is predicted from the other dwells,
+        # so its own prediction stays clean while the data are not.
+        t = 5
+        Ex_bad = Ex.copy()
+        Ex_bad[t] *= 3.0
+        ex_p, _ = vb.predict_other_dwells(
+            pxs, r_hat, E1v, E2v, Ex_bad, Ey, valid, g[0]
+        )
+        assert ex_p[t] == pytest.approx(Ex[t])
+        # A pixel seen in only one dwell gets no prediction.
+        only = pxs == pxs[0]
+        valid2 = valid & ~(only & (np.arange(len(pxs)) > t))
+        ex_p2, _ = vb.predict_other_dwells(
+            pxs, r_hat, E1v, E2v, Ex, Ey, valid2, g[0]
+        )
+        assert np.isnan(ex_p2[only & valid2]).all()
+
+    def test_self_calibrate_phase_recovers_block_phases(self):
+        rng = np.random.default_rng(15)
+        pxs, r_hat, E1v, E2v, Ex, Ey, true_phase, g = _phase_raster(rng, nch=4)
+        chans = [
+            dict(Ex=Ex[k], Ey=Ey[k], valid=np.ones(len(pxs), bool))
+            for k in range(3)
+        ]
+        phase, info = vb.self_calibrate_phase(
+            pxs, r_hat, E1v, E2v, chans, block=20, max_iter=30, tol_deg=0.01
+        )
+        assert np.isfinite(phase).all()
+        offset = np.angle(np.mean(np.exp(1j * (phase - true_phase))))
+        err = np.angle(np.exp(1j * (phase - true_phase - offset)))
+        assert np.abs(err).max() < np.radians(0.5)
+        for k in range(3):
+            assert info["g"][k] == pytest.approx(g[k], rel=1e-3)
+        # The phase transfers to channel 3, which it was not fitted on:
+        # its other-dwell predictions disagree before and agree after.
+        valid = np.ones(len(pxs), bool)
+        rot = np.exp(-1j * phase)
+
+        def worst_err(ex, ey):
+            ex_p, _ = vb.predict_other_dwells(
+                pxs, r_hat, E1v, E2v, ex, ey, valid, g[3]
+            )
+            return np.nanmax(np.abs(ex_p - ex) / np.abs(ex))
+
+        assert worst_err(Ex[3], Ey[3]) > 0.1
+        assert worst_err(Ex[3] * rot, Ey[3] * rot) < 1e-3
 
     def test_compare_to_truth_ignores_global_complex_scale(self):
         rng = np.random.default_rng(6)

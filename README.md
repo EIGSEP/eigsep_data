@@ -151,6 +151,14 @@ A product is a derived dataset keyed by the raw files —
 
 ## Recent changes
 
+- 2026-10-21 (Claude Code, for Dominic): `beam_mapping.vector_beam` gains
+  `self_calibrate_phase` (with `predict_other_dwells`, `fit_block_phase`):
+  an HFSS-free estimate of a cross-correlation phase common to every
+  channel, one value per block of integrations, fitted only from
+  leave-one-dwell-out predictions on pixels seen in several dwells. On
+  Marjum 2026-07 the cross phase jumps by tens of degrees between dwells;
+  removing it takes the stripe-held-out solver error from 0.151 to 0.090,
+  and the same gain appears on channels left out of the estimate.
 - 2026-10-21 (Claude Code, for Dominic): `vector_beam` moved to
   `beam_mapping.vector_beam` (import `eigsep_data.beam_mapping.vector_beam`;
   `eigsep_data.vector_beam` is gone). Its `beam_sim`-convention geometry,

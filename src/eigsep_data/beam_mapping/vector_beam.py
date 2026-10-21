@@ -43,6 +43,9 @@ reduce_cross
 dwell_clusters
 leave_one_out
 split_half_by_dwell
+predict_other_dwells
+fit_block_phase
+self_calibrate_phase
 compare_to_truth
 """
 
@@ -582,6 +585,178 @@ def split_half_by_dwell(
         np.asarray(ub, dtype=complex).reshape(-1, 3),
         np.asarray(nd, dtype=int),
     )
+
+
+def predict_other_dwells(
+    pxs,
+    r_hat,
+    E1v,
+    E2v,
+    Ex,
+    Ey,
+    valid,
+    g,
+    gap=20,
+    cond_thresh=30.0,
+):
+    """
+    Leave-one-dwell-out prediction: each dwell's samples on a pixel are
+    predicted from u solved on that pixel's other dwells only.
+
+    A sample never enters the solve it is compared against, and a pixel
+    seen in a single dwell gives no prediction at all (its solve would
+    reproduce its own data, noise included).
+
+    Returns
+    -------
+    ex_pred, ey_pred : np.ndarray of complex, shape (nsample,)
+        NaN where there is no prediction.
+    """
+    ex_pred = np.full(len(Ex), np.nan + 1j * np.nan)
+    ey_pred = np.full(len(Ey), np.nan + 1j * np.nan)
+    for sample_idx in group_by_pixel(pxs, valid, min_visits=2).values():
+        dwells = dwell_clusters(sample_idx, gap=gap)
+        if len(dwells) < 2:
+            continue
+        for dwell in dwells:
+            rest = np.setdiff1d(sample_idx, dwell)
+            u, _, _, cond = solve_pixel(rest, E1v, E2v, r_hat, Ex, Ey, g=g)
+            if not (np.isfinite(cond) and cond <= cond_thresh):
+                continue
+            ex_pred[dwell] = E1v[dwell] @ u
+            ey_pred[dwell] = g * (E2v[dwell] @ u)
+    return ex_pred, ey_pred
+
+
+def fit_block_phase(data, pred, block=20, min_count=3):
+    """
+    One common phase per block of ``block`` consecutive samples that best
+    aligns the data with their predictions, pooled over every channel and
+    arm in ``data``.
+
+    Parameters
+    ----------
+    data, pred : sequence of np.ndarray of complex, each shape (nsample,)
+        Data and predictions to compare; NaN entries are skipped. Pass
+        only genuinely measured values as data.
+    block : int
+        Samples per block. Samples must be in time order.
+    min_count : int
+        Blocks with fewer finite comparisons get NaN.
+
+    Returns
+    -------
+    phase : np.ndarray, shape (nsample,)
+        Radians, such that ``data ~ exp(1j * phase) * pred``.
+    """
+    z = np.zeros(len(data[0]), dtype=complex)
+    n = np.zeros(len(data[0]))
+    for d, p in zip(data, pred):
+        zz = d * np.conj(p)
+        ok = np.isfinite(zz)
+        z[ok] += zz[ok]
+        n += ok
+    blk = np.arange(len(z)) // block
+    nb = np.bincount(blk, weights=n)
+    zb = np.bincount(blk, weights=z.real) + 1j * np.bincount(
+        blk, weights=z.imag
+    )
+    phase = np.angle(zb)[blk]
+    phase[nb[blk] < min_count] = np.nan
+    return phase
+
+
+def self_calibrate_phase(
+    pxs,
+    r_hat,
+    E1v,
+    E2v,
+    channels,
+    block=20,
+    max_iter=20,
+    tol_deg=1.0,
+    gap=20,
+    cond_thresh=30.0,
+    min_count=3,
+    verbose=False,
+):
+    """
+    Estimate a phase common to every channel and arm, one value per block
+    of consecutive samples, without a reference beam.
+
+    Why: on Marjum 2026-07 the cross-correlation phase at a fixed
+    pointing repeats to ~2 deg within a dwell but jumps by tens of
+    degrees between dwells, identically in every channel, while the
+    amplitude repeats to a few per cent. Visits to one pixel then
+    disagree, and the per-pixel solve degrades.
+
+    Alternates two steps: with the phase removed, fit each channel's
+    closure g and predict each dwell from the pixel's other dwells
+    (:func:`predict_other_dwells`); then fit one phase per block to
+    those predictions (:func:`fit_block_phase`). Only pixels seen in at
+    least two dwells constrain the phase. An overall constant is free
+    and set so the circular mean is zero. So is the offset between any
+    two groups of blocks that share no pixel; it is harmless, since each
+    group's pixels absorb it, but phases are only comparable within a
+    connected group.
+
+    Parameters
+    ----------
+    channels : sequence of dict
+        Each with ``Ex``, ``Ey`` (complex, shape (nsample,)), ``valid``
+        (bool), and optionally ``Ex_measured``, ``Ey_measured`` (bool):
+        only measured values are compared (default: all valid ones).
+    block : int
+        Samples per phase block; samples must be in time order.
+    max_iter, tol_deg : stop after ``max_iter`` iterations or once the
+        median update is below ``tol_deg``.
+
+    Returns
+    -------
+    phase : np.ndarray, shape (nsample,)
+        Radians; remove it as ``Ex * exp(-1j * phase)`` (likewise Ey).
+        NaN on blocks the data do not constrain; drop those samples.
+    info : dict
+        ``n_iter``, ``updates_deg`` (median update per iteration),
+        ``g`` (per-channel closure g at the last iteration).
+    """
+    nsample = len(pxs)
+    phase = np.zeros(nsample)
+    known = np.ones(nsample, dtype=bool)
+    updates, gs = [], []
+    for it in range(max_iter):
+        rot = np.exp(-1j * np.where(known, phase, 0.0))
+        data, pred, gs = [], [], []
+        for ch in channels:
+            Ex, Ey = ch["Ex"] * rot, ch["Ey"] * rot
+            valid = ch["valid"] & known
+            g = fit_closure_g(pxs, r_hat, E1v, E2v, Ex, Ey, valid)
+            ex_p, ey_p = predict_other_dwells(
+                pxs, r_hat, E1v, E2v, Ex, Ey, valid, g, gap, cond_thresh
+            )
+            mx = valid & ch.get("Ex_measured", valid)
+            my = valid & ch.get("Ey_measured", valid)
+            data += [np.where(mx, Ex, np.nan), np.where(my, Ey, np.nan)]
+            pred += [ex_p, ey_p]
+            gs.append(g)
+        dphase = fit_block_phase(data, pred, block, min_count)
+        ok = np.isfinite(dphase)
+        known = ok if it == 0 else known & ok
+        phase[ok] += dphase[ok]
+        phase[known] -= np.angle(np.mean(np.exp(1j * phase[known])))
+        phase = np.angle(np.exp(1j * phase))
+        step = float(np.degrees(np.median(np.abs(dphase[known]))))
+        updates.append(step)
+        if verbose:
+            print(
+                f"iter {it}: {known.sum()} samples constrained, "
+                f"median update {step:.2f} deg",
+                flush=True,
+            )
+        if step < tol_deg:
+            break
+    phase[~known] = np.nan
+    return phase, dict(n_iter=it + 1, updates_deg=updates, g=gs)
 
 
 def compare_to_truth(u_hat, u_true, absurd="mad", n_mad=5.0, min_pixels=20):
