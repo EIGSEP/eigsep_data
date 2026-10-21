@@ -41,12 +41,12 @@ import pandas as pd
 
 from ..index import MetadataIndex
 from ..paths import get_campaign_root
+from ..provenance import sha256
 from ._common import (
     code_provenance,
     config_record,
     load_config,
     product_dir,
-    sha256,
     unix,
 )
 

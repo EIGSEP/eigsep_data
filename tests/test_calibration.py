@@ -15,6 +15,7 @@ import pytest
 from eigsep_data.calibration import _common
 from eigsep_data.calibration import build_tcal as bt
 from eigsep_data.calibration import validate_tcal as vt
+from eigsep_data.provenance import sha256
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -145,7 +146,7 @@ def test_config_record_is_relative_to_the_campaign_tree(tmp_path):
     p.write_text("{}")
     rec = _common.config_record(p, tmp_path)
     assert rec["path"] == "derived/tcal/v0009/config.json"
-    assert rec["sha256"] == _common.sha256(p)
+    assert rec["sha256"] == sha256(p)
     outside = tmp_path.parent / "elsewhere.json"
     outside.write_text("{}")
     assert _common.config_record(outside, tmp_path)["path"] == str(outside)

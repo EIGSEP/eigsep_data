@@ -1,12 +1,12 @@
-"""Helpers shared by the calibration-product builders: configs, checksums,
-code provenance."""
+"""Helpers shared by the calibration-product builders: configs and code
+provenance."""
 
-import hashlib
 import json
-import subprocess
 from pathlib import Path
 
 import pandas as pd
+
+from ..provenance import package_rev, sha256
 
 #: Each product version's choices live beside it, in the campaign tree.
 CONFIG_NAME = "config.json"
@@ -44,37 +44,6 @@ def config_record(path, root):
     }
 
 
-def sha256(path):
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def git_rev(path):
-    """Commit, branch and dirtiness of the checkout holding ``path``.
-
-    Dirtiness is checked in ``path``'s own directory. An installed (not
-    editable) package is not in a checkout; that is recorded instead."""
-
-    def run(*args):
-        return subprocess.run(
-            ["git", "-C", str(path), *args], capture_output=True, text=True
-        ).stdout.strip()
-
-    commit = run("rev-parse", "HEAD")
-    if not commit:
-        return {"commit": None, "note": f"{path} is not in a git checkout"}
-    return {
-        "commit": commit,
-        "branch": run("branch", "--show-current"),
-        "dirty": bool(
-            run("status", "--porcelain", "--untracked-files=no", "--", ".")
-        ),
-    }
-
-
 def code_provenance():
     """Commits of the packages a calibration product is built with."""
     import eigsep_cal
@@ -82,8 +51,8 @@ def code_provenance():
     import eigsep_data
 
     return {
-        "eigsep_data": git_rev(Path(eigsep_data.__file__).parent),
-        "eigsep_cal": git_rev(Path(eigsep_cal.__file__).parent),
+        "eigsep_data": package_rev(eigsep_data),
+        "eigsep_cal": package_rev(eigsep_cal),
     }
 
 

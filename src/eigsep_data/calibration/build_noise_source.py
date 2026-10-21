@@ -26,7 +26,8 @@ from ..index import MetadataIndex
 from ..noise_source_bench import BenchSetup, measure
 from ..paths import get_campaign_root
 from ..products import noise_source
-from ._common import code_provenance, config_record, load_config, sha256
+from ..provenance import sha256
+from ._common import code_provenance, config_record, load_config
 
 
 def main(argv=None):

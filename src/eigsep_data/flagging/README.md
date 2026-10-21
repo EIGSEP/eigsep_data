@@ -24,6 +24,8 @@ non-RFI and needs a new flags version.
 
 ## Recent changes
 
+- 2026-10-21 (Claude Code, for Aaron): `build_masks` takes its checksum and
+  git helpers from `eigsep_data.provenance`; the manifest is unchanged.
 - 2026-10-20 (Claude Code, for Charlie): `persistent_track` no longer fails
   on NumPy 2.4+, which refuses `float()` of a one-element array; the line
   flags it returns are unchanged.

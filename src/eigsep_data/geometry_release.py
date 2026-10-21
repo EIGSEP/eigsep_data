@@ -26,11 +26,9 @@ that move is deliberately not visible in what a release records.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import re
-import subprocess
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -38,6 +36,7 @@ from pathlib import Path
 import numpy as np
 
 from .paths import get_campaign_root
+from .provenance import git, sha256
 
 #: Set by ``--terrain`` / ``EIGSEP_TERRAIN_ROOT``; None means "beside the
 #: campaign", which is where it has always been.
@@ -83,23 +82,12 @@ EXCLUDED = {
 }
 
 
-def sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1 << 20), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
 def write_json(path: Path, value) -> None:
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
 
 
 def git_value(*args: str) -> str:
-    return subprocess.run(
-        ["git", "-C", str(_terrain()), *args], check=True,
-        capture_output=True, text=True,
-    ).stdout.strip()
+    return git(_terrain(), *args, check=True)
 
 
 def relative(path: Path) -> str:
@@ -112,23 +100,19 @@ def source_record(path: Path) -> dict:
     return {"path": relative(path), "sha256": sha256(path)}
 
 
-def workspace_git(repo: Path, *args: str) -> str:
-    return subprocess.run(["git", "-C", str(repo), *args], check=True,
-                          capture_output=True, text=True).stdout.strip()
-
-
 def repository_record(repo: Path) -> dict:
     # Name the repository by its shared .git directory, so a run from a
     # worktree records "eigsep_data", not the worktree's directory name.
     # (git 2.25 here has no --path-format; a relative answer is relative to repo.)
-    common = Path(workspace_git(repo, "rev-parse", "--git-common-dir"))
+    common = Path(git(repo, "rev-parse", "--git-common-dir", check=True))
     if not common.is_absolute():
         common = Path(repo) / common
     common = common.resolve()
     return {"repository": common.parent.name,
-            "commit": workspace_git(repo, "rev-parse", "HEAD"),
-            "tracked_worktree_dirty": bool(workspace_git(
-                repo, "status", "--porcelain", "--untracked-files=no"))}
+            "commit": git(repo, "rev-parse", "HEAD", check=True),
+            "tracked_worktree_dirty": bool(git(
+                repo, "status", "--porcelain", "--untracked-files=no",
+                check=True))}
 
 
 def publish(release: dict, fit_root: Path, release_id: str) -> None:
