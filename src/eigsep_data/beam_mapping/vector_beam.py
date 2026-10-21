@@ -24,19 +24,17 @@ The component of u along r_hat is never measured: E1 and E2 are always
 transverse, so the prior row alone sets it, however many visits a pixel
 has. More visits only improve the transverse plane.
 
-Geometry comes from either of two conventions: :func:`fields_from_model`
-takes a :class:`~eigsep_data.beam_mapping.TxGeometryModel` (the
+Geometry comes from :func:`fields_from_model`, which takes a
+:class:`~eigsep_data.beam_mapping.TxGeometryModel` (the
 ``eigsep_base.rotations`` mount convention the production beam fit uses;
-arm 0 at the model's alpha, arm 1 at alpha + 90), and
-:func:`transmitter_fields` takes the older :mod:`eigsep_data.beam_sim`
-angles (``RotatingAntennaCartesian`` / ``TransmitterAntenna``). Both
-return the same four arrays, and everything downstream is convention
-free.
+arm 0 at the model's alpha, arm 1 at alpha + 90). Everything downstream
+of the four arrays it returns is convention free, so
+:func:`eigsep_data.beam_sim.transmitter_fields`, the same arrays in
+``beam_sim``'s older convention, also works as input.
 
 Public API
 ----------
 fields_from_model
-transmitter_fields
 group_by_pixel
 solve_pixel
 solve_sampled_beam
@@ -49,24 +47,14 @@ compare_to_truth
 """
 
 import numpy as np
-import jax
-import jax.numpy as jnp
-from healjax.coord import angles_to_coord
 from scipy.optimize import minimize
 
-from .beam_sim import (
-    RotatingAntennaCartesian,
-    TransmitterAntenna,
-    _px_th_ph_vmapped,
-)
-from .rfi import (
+from ..rfi import (
     fit_dpss_interleaved_fix,
     flag_absurd_cells,
     flag_dpss_interleaved_outliers,
     flag_unbracketed_fills,
 )
-
-jax.config.update("jax_enable_x64", True)
 
 #: Default D-term seed: the single global phase used before g was fit
 #: per channel by closure.
@@ -90,13 +78,18 @@ def fields_from_model(model, params, az_deg, el_deg, nside):
 
     Returns
     -------
-    pxs, r_hat, E1v, E2v : as :func:`transmitter_fields`, with E1v the
-        field of transmitter arm 0 and E2v of arm 1, in the body frame
-        the HFSS ``beam_cart`` is expressed in.
+    pxs : np.ndarray of int, shape (nsample,)
+        Pixel of the arrival direction in the sky antenna's frame.
+    r_hat : np.ndarray, shape (nsample, 3)
+        Unit arrival direction (continuous, not snapped to the pixel
+        centre).
+    E1v, E2v : np.ndarray, shape (nsample, 3)
+        Fields of transmitter arms 0 and 1, transverse to r_hat, in the
+        body frame the HFSS ``beam_cart`` is expressed in.
     """
     import healpy as hp
 
-    from .beam_mapping.tx_coupling import transmitter_frame
+    from .tx_coupling import transmitter_frame
 
     R = model.rotations(az_deg, el_deg, params)
     theta, phi, r_hat, e = transmitter_frame(
@@ -108,62 +101,6 @@ def fields_from_model(model, params, az_deg, el_deg, nside):
         np.asarray(r_hat, dtype=float),
         np.asarray(e[0], dtype=float),
         np.asarray(e[1], dtype=float),
-    )
-
-
-def transmitter_fields(theta_deg, phi_deg, alpha_deg, az_rad, el_rad, nside):
-    """
-    Geometry of every sample for one transmitter placement.
-
-    Frequency independent: compute once per geometry and reuse for every
-    channel.
-
-    Parameters
-    ----------
-    theta_deg, phi_deg : float
-        Transmitter direction (``hpm.angles_to_coord`` convention).
-    alpha_deg : float
-        Polarization angle of transmitter arm 1; arm 2 is at alpha + 90.
-    az_rad, el_rad : array-like, shape (nsample,)
-        Sky-antenna rotation angles in radians.
-    nside : int
-        HEALPix nside the samples are binned on.
-
-    Returns
-    -------
-    pxs : np.ndarray of int, shape (nsample,)
-        Pixel of the arrival direction in the sky antenna's frame.
-    r_hat : np.ndarray, shape (nsample, 3)
-        Unit arrival direction (continuous, not snapped to the pixel
-        centre).
-    E1v, E2v : np.ndarray, shape (nsample, 3)
-        Arm 1 and arm 2 incident fields in the sky antenna's frame,
-        projected transverse to r_hat.
-    """
-    npix = 12 * nside**2
-    rx = RotatingAntennaCartesian(
-        beam_cart=jnp.zeros((3, npix), dtype=jnp.complex128)
-    )
-    coord = angles_to_coord(theta_deg, phi_deg)
-    tx1 = TransmitterAntenna(
-        E1=0.0, E2=1.0, heading_top=coord, alpha=alpha_deg
-    )
-    tx2 = TransmitterAntenna(
-        E1=0.0, E2=1.0, heading_top=coord, alpha=alpha_deg + 90.0
-    )
-    az = jnp.asarray(az_rad)
-    el = jnp.asarray(el_rad)
-    Rs, ths, phis, pxs = _px_th_ph_vmapped(rx, tx1, az, el)
-    r_hat = rx.r_hat(ths, phis).astype(jnp.float64)
-    E1v = jax.vmap(tx1.E_rotated)(Rs)
-    E2v = jax.vmap(tx2.E_rotated)(Rs)
-    E1v = E1v - jnp.einsum("ij,ij->i", E1v, r_hat)[:, None] * r_hat
-    E2v = E2v - jnp.einsum("ij,ij->i", E2v, r_hat)[:, None] * r_hat
-    return (
-        np.asarray(pxs),
-        np.asarray(r_hat, dtype=float),
-        np.asarray(E1v, dtype=float),
-        np.asarray(E2v, dtype=float),
     )
 
 
@@ -236,7 +173,7 @@ def solve_pixel(sample_idx, E1v, E2v, r_hat, Ex, Ey, g=1.0 + 0j):
     sample_idx : array-like of int
         Samples landing in the pixel.
     E1v, E2v, r_hat : np.ndarray, shape (nsample, 3)
-        From :func:`transmitter_fields`.
+        From :func:`fields_from_model`.
     Ex, Ey : np.ndarray of complex, shape (nsample,)
         Arm 1 and arm 2 cross-correlations at one channel.
     g : complex
@@ -400,7 +337,7 @@ def reduce_cross(
     nmodes=23,
     NW=4.0,
     flag_fill_outliers=True,
-    require_bracketed_fill=False,
+    require_bracketed_fill=True,
 ):
     """
     Reduce raw cross-correlation spectra to per-arm Ex_hat, Ey_hat.
@@ -438,8 +375,8 @@ def reduce_cross(
         :func:`~eigsep_data.rfi.flag_dpss_interleaved_outliers`.
     require_bracketed_fill : bool
         NaN fills without a trusted measured same-arm tone on both sides
-        (:func:`~eigsep_data.rfi.flag_unbracketed_fills`). Default False
-        keeps the September 2026 reduction; True is recommended.
+        (:func:`~eigsep_data.rfi.flag_unbracketed_fills`). False
+        reproduces the September 2026 reduction.
 
     Returns
     -------

@@ -24,7 +24,6 @@ _EXTRAS = {
     "sph_fit": "JAX and healjax",
     "beam_sim": "JAX and healjax",
     "beam_mapping": "JAX and healjax",
-    "vector_beam": "JAX and healjax",
 }
 
 _SUBMODULES = {
@@ -51,7 +50,6 @@ _SUBMODULES = {
     "select_files",
     "sim",
     "sph_fit",
-    "vector_beam",
 }
 
 #: Public name -> the submodule that defines it.

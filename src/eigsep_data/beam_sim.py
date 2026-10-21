@@ -27,7 +27,7 @@ import jax
 import jax.numpy as jnp
 from jax_healpy import pixelfunc as jhp
 
-from healjax.coord import xyz2thphi
+from healjax.coord import angles_to_coord, xyz2thphi
 
 jax.config.update("jax_enable_x64", True)
 
@@ -500,7 +500,7 @@ def cross_sim(rx, tx1, tx2, az, el, g=1.0 + 0j):
     antenna's own complex Cartesian beam vector (``rx.beam_cart``) and
     E1/E2 are the two TX arms' incident fields in the RX frame. This is
     exactly the generative model that the per-pixel solve
-    (:func:`eigsep_data.vector_beam.solve_pixel`) inverts to
+    (:func:`eigsep_data.beam_mapping.vector_beam.solve_pixel`) inverts to
     recover *u* -- so noiseless output from this function, fed through
     that solver, isolates the solver's own recovery floor (geometry/
     pixelization/rank effects) from real measurement noise.
@@ -552,6 +552,67 @@ def cross_sim(rx, tx1, tx2, az, el, g=1.0 + 0j):
     Ey = g * jnp.einsum("ij,ij->i", E2v, u)
 
     return Ex, Ey, pxs, u, E1v, E2v, r_hat
+
+
+def transmitter_fields(theta_deg, phi_deg, alpha_deg, az_rad, el_rad, nside):
+    """
+    Geometry of every sample for one transmitter placement, in this
+    module's rotation convention: the inputs
+    :mod:`eigsep_data.beam_mapping.vector_beam` solves from.
+    :func:`~eigsep_data.beam_mapping.vector_beam.fields_from_model`
+    gives the same arrays in the production ``eigsep_base.rotations``
+    convention.
+
+    Frequency independent: compute once per geometry and reuse for every
+    channel.
+
+    Parameters
+    ----------
+    theta_deg, phi_deg : float
+        Transmitter direction (``hpm.angles_to_coord`` convention).
+    alpha_deg : float
+        Polarization angle of transmitter arm 1; arm 2 is at alpha + 90.
+    az_rad, el_rad : array-like, shape (nsample,)
+        Sky-antenna rotation angles in radians.
+    nside : int
+        HEALPix nside the samples are binned on.
+
+    Returns
+    -------
+    pxs : np.ndarray of int, shape (nsample,)
+        Pixel of the arrival direction in the sky antenna's frame.
+    r_hat : np.ndarray, shape (nsample, 3)
+        Unit arrival direction (continuous, not snapped to the pixel
+        centre).
+    E1v, E2v : np.ndarray, shape (nsample, 3)
+        Arm 1 and arm 2 incident fields in the sky antenna's frame,
+        projected transverse to r_hat.
+    """
+    npix = 12 * nside**2
+    rx = RotatingAntennaCartesian(
+        beam_cart=jnp.zeros((3, npix), dtype=jnp.complex128)
+    )
+    coord = angles_to_coord(theta_deg, phi_deg)
+    tx1 = TransmitterAntenna(
+        E1=0.0, E2=1.0, heading_top=coord, alpha=alpha_deg
+    )
+    tx2 = TransmitterAntenna(
+        E1=0.0, E2=1.0, heading_top=coord, alpha=alpha_deg + 90.0
+    )
+    az = jnp.asarray(az_rad)
+    el = jnp.asarray(el_rad)
+    Rs, ths, phis, pxs = _px_th_ph_vmapped(rx, tx1, az, el)
+    r_hat = rx.r_hat(ths, phis).astype(jnp.float64)
+    E1v = jax.vmap(tx1.E_rotated)(Rs)
+    E2v = jax.vmap(tx2.E_rotated)(Rs)
+    E1v = E1v - jnp.einsum("ij,ij->i", E1v, r_hat)[:, None] * r_hat
+    E2v = E2v - jnp.einsum("ij,ij->i", E2v, r_hat)[:, None] * r_hat
+    return (
+        np.asarray(pxs),
+        np.asarray(r_hat, dtype=float),
+        np.asarray(E1v, dtype=float),
+        np.asarray(E2v, dtype=float),
+    )
 
 
 def cross_sim_ground_ref(

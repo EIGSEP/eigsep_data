@@ -1,14 +1,16 @@
-"""Tests for eigsep_data.vector_beam, the per-pixel vector-beam solve."""
+"""Tests for eigsep_data.beam_mapping.vector_beam, the per-pixel
+vector-beam solve."""
 
 import numpy as np
 import jax.numpy as jnp
 import pytest
 
-from eigsep_data import vector_beam as vb
+from eigsep_data.beam_mapping import vector_beam as vb
 from eigsep_data.beam_sim import (
     RotatingAntennaCartesian,
     TransmitterAntenna,
     cross_sim,
+    transmitter_fields,
 )
 from healjax.coord import angles_to_coord
 from eigsep_data.rfi import (
@@ -242,7 +244,7 @@ class TestAgainstForwardModel:
         Ex, Ey, pxs_sim, *_ = cross_sim(
             rx, tx1, tx2, jnp.asarray(az), jnp.asarray(el), g=g
         )
-        pxs, r_hat, E1v, E2v = vb.transmitter_fields(
+        pxs, r_hat, E1v, E2v = transmitter_fields(
             theta, phi, alpha, az, el, nside
         )
         return dict(
@@ -381,10 +383,10 @@ def test_reduce_cross_require_bracketed_fill_drops_extrapolations():
     mask[0, 21] = True  # an Ey tone: Ey's fills at 20 and 22 lose a side
     scale = np.ones(ntone // 2)
     kw = dict(shift=0, tau_ns=91.65, nmodes=8, flag_fill_outliers=False)
-    Ex0, Ey0, *_ = vb.reduce_cross(cross, chs, mask, scale, freqs, **kw)
-    Ex1, Ey1, *_ = vb.reduce_cross(
-        cross, chs, mask, scale, freqs, require_bracketed_fill=True, **kw
+    Ex0, Ey0, *_ = vb.reduce_cross(
+        cross, chs, mask, scale, freqs, require_bracketed_fill=False, **kw
     )
+    Ex1, Ey1, *_ = vb.reduce_cross(cross, chs, mask, scale, freqs, **kw)
     assert np.isfinite(Ey0[0, [20, 22]]).all()
     assert np.isnan(Ey1[0, [20, 22]]).all()
     # Edge fills (Ex at the top column, Ey at the bottom) never are.

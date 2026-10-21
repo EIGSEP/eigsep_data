@@ -130,17 +130,14 @@ A product is a derived dataset keyed by the raw files —
 - `index.py`, `metadata.py`, `clock.py` — the per-integration index.
 - `data.py` — `EigsepData`, the spectra reader.
 - `bundle.py`, `products/` — the raw-plus-companions join.
-- `beam_mapping/` — beam fits, pointing fusion, TX forward model.
+- `beam_mapping/` — beam fits, pointing fusion, TX forward model, the
+  per-pixel vector-beam solve (`beam_mapping.vector_beam`).
 - `rfi.py`, `s11.py`, `quicklook.py`, `browse.py` — analysis utilities.
 - `select_files.py` (`eigsep-select-files`) — file-level campaign masks
   and observing-mode selection.
 - `flagging/` — writer for the `flags/v0` per-(time, channel) masks.
 - `beam_sim.py`, `sim.py`, `hpm.py`, `sph_fit.py` — simulation and
   spherical-harmonic work (needs the JAX/healjax extras).
-- `vector_beam.py` — per-pixel recovery of the receive antenna's complex
-  vector beam from transmitter cross-correlations, its closure D-term
-  fit, and held-out / split-half checks. Uses `beam_sim`'s geometry, not
-  `beam_mapping`'s `eigsep_base.rotations` convention (yet).
 
 ## Related repositories
 
@@ -154,6 +151,17 @@ A product is a derived dataset keyed by the raw files —
 
 ## Recent changes
 
+- 2026-10-21 (Claude Code, for Dominic): `vector_beam` moved to
+  `beam_mapping.vector_beam` (import `eigsep_data.beam_mapping.vector_beam`;
+  `eigsep_data.vector_beam` is gone). Its `beam_sim`-convention geometry,
+  `transmitter_fields`, moved to `beam_sim.transmitter_fields`, so
+  `beam_mapping` keeps one pointing convention and `vector_beam` no longer
+  imports JAX. New `rfi.flag_unbracketed_fills`; `reduce_cross` now NaNs
+  DPSS fills without a trusted measured same-arm tone on both sides by
+  default (`require_bracketed_fill=False` reproduces the September
+  reduction). On Marjum 2026-07 every fill >100x its channel median was such
+  an extrapolation; dropping them lifts the median held-out power
+  correlation 0.958 -> 0.970.
 - 2026-10-20 (Claude Code, for Dominic): added `vector_beam` (per-pixel
   complex vector-beam solve from cross-correlations, closure fit of the
   per-channel D-term, leave-one-out and dwell split-half checks) and
