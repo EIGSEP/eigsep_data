@@ -13,7 +13,7 @@ the flag product.
 | `bracket_cost.py` | `eigsep-tcal-bracket-cost <version>` | What wider interpolation limits cost in temperature, and whether the largest hole can be bridged; writes `bracket_cost.json`. The limits in the config come from it. |
 | `build_noise_source.py` | `eigsep-build-noise-source <version>` | Runs `eigsep_data.noise_source_bench.measure` on a bench run and writes `derived/noise_source/<version>/` with `products.noise_source.write`. |
 | `d5_yfactor.py` | — | Christian's minimal Y-factor chain, vendored from `data-analysis` (58c4c64) with changes that leave its results identical: `calkit` comes from `eigsep_cal`, not `cmt_vna`, and its dB and degC conversions use `eigsep_data.units`. The validation's independent reference, used for no product. |
-| `_common.py` | — | Config loading and the packages' commits; checksums and git state come from `eigsep_data.provenance`. |
+| `_common.py` | — | Config loading and the packages' commits. Checksums and git state come from `eigsep_data.provenance`, product paths from `eigsep_data.products.base`, times from `to_unix_time` and averaging from `eigsep_data.numerics`. |
 
 **Campaign choices live in the campaign tree, not here.** Each builder reads
 `derived/<product>/<version>/config.json` (or `--config`) and records its
@@ -28,6 +28,7 @@ command runs.
 
 ## Recent changes
 
+- 2026-10-21: the builders' own copies of the weighted mean, the complex interpolation onto channels, the product path and the time parser are gone in favour of the package's shared ones; the products they write are unchanged.
 - 2026-10-21: the validation's remaining fixed choices are keyword arguments of new functions, with the old values as defaults: in `validate_tcal`, `plumbing(tol_frac=0.05, max_channels_off=50)` (the output keys are built from them, so `channel_fraction_off_5pct` keeps its name) and `coverage(min_channel_fraction=0.99)`; in `bracket_cost`, `bracket_errors(brackets=...)` and `s11_hold_errors(holds=...)`, the spans scored. Output is unchanged.
 - 2026-10-21: `bracket_cost`'s matching tolerances are documented keyword arguments with the old values as defaults: `cycles(max_pair_s=300)` pairs a noise-source visit with the load visit of the same cycle, and the new `across_hole(cycle_tol_s=600, s11_tol_s=1800)` sets how closely a comparison span must match the hole's. degC to K goes through `eigsep_data.units.celsius_to_kelvin`. Results are unchanged.
 - 2026-10-21: checksums and git state come from `eigsep_data.provenance`, shared with the other product generators, instead of `_common.py`; manifests are unchanged.

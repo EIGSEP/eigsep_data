@@ -150,6 +150,8 @@ characterization of the noise source, an input to `tcal`, read with
   `config.json` in the campaign tree.
 - `units.py` — unit conversions: `to_dB`/`from_dB` for power ratios,
   `celsius_to_kelvin` (with `ZERO_CELSIUS_K` from `scipy.constants`).
+- `numerics.py` — small array helpers: `weighted_mean` (a masked weighted
+  mean) and `interp_complex` (a complex curve onto a frequency grid).
 - `provenance.py` — file checksums and git state, for the provenance
   records that product generators write into their manifests.
 - `beam_sim.py`, `sim.py`, `hpm.py`, `sph_fit.py` — simulation and
@@ -167,6 +169,7 @@ characterization of the noise source, an input to `tcal`, read with
 
 ## Recent changes
 
+- 2026-10-21: `numerics.weighted_mean` and `numerics.interp_complex`, and `products.base.derived_dir` and `versions_in`, replace the copies `calibration/`, `switched`, `noise_source_bench` and `products.noise_source` each had; `calibration/` reads times with `to_unix_time` and `noise_source_bench.measure` takes its default ENBW from `eigsep_cal.conventions`. Rebuilt with them, `tcal` v0004 and `noise_source` v0001 are bit-identical.
 - 2026-10-21: `noise_source_bench.measure` takes the sub-bands its validation reports as `report_bands_mhz` (default unchanged: 50-88, 108-150, 150-200, 200-245 MHz).
 - 2026-10-21: `units.celsius_to_kelvin` replaces the literal 273.15 in `noise_source_bench` and `calibration/`.
 - 2026-10-21: `units.to_dB` and `units.from_dB` (also `eigsep_data.to_dB`/`from_dB`) are the package's dB conversions for power ratios; `quicklook` and `calibration/d5_yfactor` use them, with identical results.

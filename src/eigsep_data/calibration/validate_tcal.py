@@ -34,7 +34,8 @@ import numpy as np
 
 from ..index import MetadataIndex
 from ..paths import get_campaign_root
-from ._common import load_config, product_dir
+from ..products.base import derived_dir
+from ._common import load_config
 
 
 def band_mask(f, band):
@@ -150,7 +151,7 @@ def main(argv=None):
     args = ap.parse_args(argv)
     root = get_campaign_root(required=True)
     proot = Path(args.products) if args.products else root
-    pdir = product_dir(proot, "tcal", args.version)
+    pdir = derived_dir(proot, "tcal", args.version)
     cfg, _ = load_config(proot, "tcal", args.version, args.config)
     vcfg = cfg["validation"]
     band = tuple(vcfg["band_mhz"])

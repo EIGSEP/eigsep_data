@@ -4,16 +4,11 @@ provenance."""
 import json
 from pathlib import Path
 
-import pandas as pd
-
+from ..products.base import derived_dir
 from ..provenance import package_rev, sha256
 
 #: Each product version's choices live beside it, in the campaign tree.
 CONFIG_NAME = "config.json"
-
-
-def product_dir(root, product, version):
-    return Path(root) / "derived" / product / version
 
 
 def load_config(root, product, version, path=None):
@@ -24,7 +19,7 @@ def load_config(root, product, version, path=None):
     path = (
         Path(path)
         if path
-        else product_dir(root, product, version) / CONFIG_NAME
+        else derived_dir(root, product, version) / CONFIG_NAME
     )
     if not path.is_file():
         raise SystemExit(
@@ -55,6 +50,3 @@ def code_provenance():
         "eigsep_cal": package_rev(eigsep_cal),
     }
 
-
-def unix(iso):
-    return pd.Timestamp(iso).timestamp()

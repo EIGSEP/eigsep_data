@@ -16,6 +16,7 @@ provenance.
 """
 
 import json
+from pathlib import Path
 
 import numpy as np
 
@@ -130,6 +131,23 @@ def locate_axis(full, sub, what):
             "both cover."
         )
     return start, stop
+
+
+def derived_dir(root, product, version=None):
+    """``<root>/derived/<product>``, or the directory of one ``version``."""
+    d = Path(root) / "derived" / product
+    return d if version is None else d / version
+
+
+def versions_in(base, payload="solutions.npz"):
+    """Sorted names of the version directories under ``base`` that hold
+    ``payload``; empty when ``base`` does not exist."""
+    base = Path(base)
+    if not base.is_dir():
+        return []
+    return sorted(
+        p.name for p in base.iterdir() if p.is_dir() and (p / payload).is_file()
+    )
 
 
 def read_manifest(path):

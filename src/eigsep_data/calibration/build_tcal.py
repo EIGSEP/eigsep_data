@@ -39,17 +39,14 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from ..clock import to_unix_time
 from ..index import MetadataIndex
+from ..numerics import interp_complex, weighted_mean
 from ..paths import get_campaign_root
+from ..products.base import derived_dir
 from ..provenance import sha256
 from ..units import celsius_to_kelvin
-from ._common import (
-    code_provenance,
-    config_record,
-    load_config,
-    product_dir,
-    unix,
-)
+from ._common import code_provenance, config_record, load_config
 
 
 def regime_of(files, windows):
@@ -172,10 +169,7 @@ def masked_mean(p, tau, rfi):
     samples masked.
     """
     bad = rfi | (p < 0)
-    w = np.where(bad, 0.0, tau[:, None])
-    wsum = w.sum(axis=0)
-    with np.errstate(invalid="ignore", divide="ignore"):
-        spec = np.where(wsum > 0, (w * p).sum(axis=0) / wsum, np.nan)
+    spec = weighted_mean(p, np.where(bad, 0.0, tau[:, None]), axis=0)
     return spec, float(bad.mean())
 
 
@@ -220,22 +214,15 @@ def s11_on_channels(s11_dir, switch_path, osl_path, freqs_mhz, cfg):
 
     s = S11(s11_dir).calibrate(switch_path, osl_path)
     fs = s.freqs / 1e6
-    split = unix(cfg["s11_epoch_split_utc"])
-    span = [unix(x) for x in cfg["span_utc"]]
+    split = to_unix_time(cfg["s11_epoch_split_utc"])
+    span = [to_unix_time(x) for x in cfg["span_utc"]]
     out, log = {}, {"skipped_files": [list(x) for x in s.skipped]}
     for dut in ("ant", "amb", "rec"):
         t, g = s.get_all_s11s(dut, "default")
         t = np.asarray(t, dtype=float)
         keep = (t >= span[0]) & (t < span[1])
         t, g = t[keep], np.asarray(g)[keep]
-        on = np.array(
-            [
-                np.interp(freqs_mhz, fs, x.real, left=np.nan, right=np.nan)
-                + 1j
-                * np.interp(freqs_mhz, fs, x.imag, left=np.nan, right=np.nan)
-                for x in g
-            ]
-        )
+        on = interp_complex(freqs_mhz, fs, g)
         epoch = np.where(t < split, "pre-gap", "post-gap")
         out[dut] = (t, on, epoch)
         log[dut] = {
@@ -334,7 +321,7 @@ def main(argv=None):
 
     root = get_campaign_root(required=True)
     proot = Path(args.products) if args.products else root
-    out_dir = product_dir(proot, "tcal", args.version)
+    out_dir = derived_dir(proot, "tcal", args.version)
     cfg, cfg_path = load_config(proot, "tcal", args.version, args.config)
     out_dir.mkdir(parents=True, exist_ok=True)
     switch = root / cfg["switch_sparams"]
@@ -363,7 +350,7 @@ def main(argv=None):
             r
             for r in (proot, root)
             if (
-                product_dir(r, "noise_source", ver) / "solutions.npz"
+                derived_dir(r, "noise_source", ver) / "solutions.npz"
             ).is_file()
         )
         ns = noise_source.load(ver, root=ns_root)
@@ -382,7 +369,7 @@ def main(argv=None):
         ns_input = {
             "version": ver,
             "sha256": sha256(
-                product_dir(ns_root, "noise_source", ver) / "solutions.npz"
+                derived_dir(ns_root, "noise_source", ver) / "solutions.npz"
             ),
             "provenance": ns.manifest.get("provenance", {}).get("code"),
         }

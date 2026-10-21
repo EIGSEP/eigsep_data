@@ -28,6 +28,7 @@ import numpy as np
 import pandas as pd
 
 from .flagging.detectors import overflow_mask, persistent_track, transient_track
+from .numerics import weighted_mean
 
 #: Steinhart-Hart coefficients (1/T = A + B ln R + C ln^3 R, T in K, R in
 #: Ohm) of the YSI 44909 (30 kOhm at 25 C, curve H), fit to YSI's table over
@@ -132,10 +133,7 @@ def dwell_means(meta, spec, flags=None, skip_first=0, columns=()):
     rows, means = [], []
     for d, g in meta[keep].groupby("dwell"):
         i = g.index.to_numpy()
-        ws = w[i].sum(axis=0)
-        num = (w[i] * np.where(good[i], spec[i], 0.0)).sum(axis=0)
-        with np.errstate(invalid="ignore", divide="ignore"):
-            means.append(np.where(ws > 0, num / ws, np.nan))
+        means.append(weighted_mean(spec[i], w[i], axis=0))
         tw = g["integration_time"].to_numpy(float)
         row = {"dwell": d, "t": np.average(g["time_best"], weights=tw), "n": len(i)}
         for c in columns:

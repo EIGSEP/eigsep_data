@@ -30,6 +30,7 @@ import numpy as np
 import pandas as pd
 
 from . import switched as sw
+from .numerics import interp_complex, weighted_mean
 from .units import celsius_to_kelvin
 
 
@@ -63,8 +64,7 @@ def _gamma_at(s11, dut, plane, freqs, t):
     ts, g = s11.get_all_s11s(dut, plane)
     ts, g = np.asarray(ts, float), np.asarray(g)
     fv = np.asarray(s11.freqs_mhz, float)
-    gc = np.array([np.interp(freqs, fv, x.real, left=np.nan, right=np.nan)
-                   + 1j * np.interp(freqs, fv, x.imag, left=np.nan, right=np.nan) for x in g])
+    gc = interp_complex(freqs, fv, g)
     u = np.interp(t, ts, np.arange(ts.size))
     lo = np.floor(u).astype(int)
     hi = np.minimum(lo + 1, ts.size - 1)
@@ -72,19 +72,9 @@ def _gamma_at(s11, dut, plane, freqs, t):
     return (1 - w) * gc[lo] + w * gc[hi]
 
 
-def _on_channels(freqs_mhz, f_meas_mhz, gamma):
-    return (np.interp(freqs_mhz, f_meas_mhz, np.real(gamma), left=np.nan, right=np.nan)
-            + 1j * np.interp(freqs_mhz, f_meas_mhz, np.imag(gamma), left=np.nan, right=np.nan))
-
-
-def _weighted_mean(x, w):
-    ok = np.isfinite(x) & np.isfinite(w) & (w > 0)
-    return float(np.sum(w[ok] * x[ok]) / np.sum(w[ok])) if ok.any() else float("nan")
-
-
 def measure(index, s11, gamma_ns, setup, *, steady_per_min=1.0, dwell_gap_s=5.0,
             sweep_guard=sw.SWEEP_GUARD_S, band_mhz=(50.0, 245.0), chi2_factor=3.0,
-            max_rel_err=0.05, enbw_hz=250e6 / 1024,
+            max_rel_err=0.05, enbw_hz=None,
             report_bands_mhz=((50.0, 88.0), (108.0, 150.0), (150.0, 200.0), (200.0, 245.0))):
     """The noise source's temperature at P from a bench run.
 
@@ -102,7 +92,8 @@ def measure(index, s11, gamma_ns, setup, *, steady_per_min=1.0, dwell_gap_s=5.0,
     setup : BenchSetup
     steady_per_min, dwell_gap_s, sweep_guard, band_mhz, chi2_factor,
     max_rel_err, enbw_hz
-        The run's choices (module docstring).
+        The run's choices (module docstring). ``enbw_hz`` defaults to
+        ``eigsep_cal.conventions.D5_ENBW_HZ``.
     report_bands_mhz : sequence of (lo, hi)
         Sub-bands whose weighted-mean temperatures the validation reports
         (``validation["bands"]``, keyed ``"lo-hi"``); they affect nothing else.
@@ -116,6 +107,7 @@ def measure(index, s11, gamma_ns, setup, *, steady_per_min=1.0, dwell_gap_s=5.0,
         JSON-ready dict); for diagnostics, the fits' inputs ``q`` and
         ``mismatch`` (``hot``, ``ref``, ``ns``), each cycles x channels.
     """
+    from eigsep_cal.conventions import D5_ENBW_HZ
     from eigsep_cal.dicke import calc_Tant_star, mismatch
     from eigsep_cal.noise_source import (
         fit_source_temperature,
@@ -123,6 +115,7 @@ def measure(index, s11, gamma_ns, setup, *, steady_per_min=1.0, dwell_gap_s=5.0,
         switched_ratio_noise,
     )
 
+    enbw_hz = D5_ENBW_HZ if enbw_hz is None else enbw_hz
     s = setup
     order = (s.ref, s.hot, s.non, s.noff)
     allmeta = index.select().meta
@@ -165,8 +158,8 @@ def measure(index, s11, gamma_ns, setup, *, steady_per_min=1.0, dwell_gap_s=5.0,
     g_rec = _gamma_at(s11, "rec", "default", freqs, t)
     g_hot = _gamma_at(s11, s.hot_s11, "lna", freqs, t)
     g_ref = _gamma_at(s11, s.ref_s11, "lna", freqs, t)
-    g_ns = _on_channels(freqs, gamma_ns["freqs_mhz"], gamma_ns["on"])
-    g_ns_off = _on_channels(freqs, gamma_ns["freqs_mhz"], gamma_ns["off"])
+    g_ns = interp_complex(freqs, gamma_ns["freqs_mhz"], gamma_ns["on"])
+    g_ns_off = interp_complex(freqs, gamma_ns["freqs_mhz"], gamma_ns["off"])
     m_hot, m_ref = np.real(mismatch(g_hot, g_rec)), np.real(mismatch(g_ref, g_rec))
     m_ns = np.real(mismatch(g_ns[None, :], g_rec))
     th, tr = cyc["T_hot"].to_numpy()[:, None], cyc["T_ref"].to_numpy()[:, None]
@@ -194,8 +187,8 @@ def measure(index, s11, gamma_ns, setup, *, steady_per_min=1.0, dwell_gap_s=5.0,
     fits = {k: fit_source_temperature(x, y, (cyc["kind"] == k).to_numpy())
             for k in ("steady", "heating", "cooling")}
     f_st = fits["steady"]
-    t_off = _weighted_mean(cyc.loc[steady, "T_board_off"].to_numpy(float),
-                           np.ones(int(steady.sum())))
+    t_off = float(weighted_mean(cyc.loc[steady, "T_board_off"].to_numpy(float),
+                                np.ones(int(steady.sum()))))
     ramp = {}
     for k in ("heating", "cooling"):
         fk = fits[k]
@@ -210,8 +203,8 @@ def measure(index, s11, gamma_ns, setup, *, steady_per_min=1.0, dwell_gap_s=5.0,
         k = good & (freqs >= lo) & (freqs < hi)
         w = 1.0 / f_st["sb"][k] ** 2
         return {"channels": int(k.sum()),
-                "t_non_k": _weighted_mean(f_st["b"][k], w),
-                "excess_k": _weighted_mean(f_st["b"][k] - t_off, w),
+                "t_non_k": float(weighted_mean(f_st["b"][k], w)),
+                "excess_k": float(weighted_mean(f_st["b"][k] - t_off, w)),
                 "min_excess_k": float(np.min(f_st["b"][k]) - t_off) if k.any() else None,
                 "max_excess_k": float(np.max(f_st["b"][k]) - t_off) if k.any() else None}
 

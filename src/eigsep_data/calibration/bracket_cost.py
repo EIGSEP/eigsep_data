@@ -30,8 +30,10 @@ from pathlib import Path
 
 import numpy as np
 
+from ..clock import to_unix_time
 from ..paths import get_campaign_root
-from ._common import load_config, product_dir, unix
+from ..products.base import derived_dir
+from ._common import load_config
 from .validate_tcal import reference_night
 
 
@@ -195,7 +197,7 @@ def main(argv=None):
     args = ap.parse_args(argv)
     root = get_campaign_root(required=True)
     proot = Path(args.products) if args.products else root
-    pdir = product_dir(proot, "tcal", args.version)
+    pdir = derived_dir(proot, "tcal", args.version)
     cfg, _ = load_config(proot, "tcal", args.version, args.config)
     vcfg = cfg["validation"]
     band = tuple(vcfg["band_mhz"])
@@ -233,7 +235,7 @@ def main(argv=None):
     )
 
     # 3. Across the hole: edges vs the same span elsewhere.
-    out["hole"] = across_hole(z, tc, gc, ih, b, unix(vcfg["raise_utc"]))
+    out["hole"] = across_hole(z, tc, gc, ih, b, to_unix_time(vcfg["raise_utc"]))
     (pdir / "bracket_cost.json").write_text(json.dumps(out, indent=2) + "\n")
     print(json.dumps(out, indent=2))
 

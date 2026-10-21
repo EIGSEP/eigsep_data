@@ -27,29 +27,24 @@ README says what the numbers are valid for.
 """
 
 from dataclasses import dataclass, field
-from pathlib import Path
 
 import numpy as np
 
 from ..paths import get_campaign_root
-from .base import read_manifest
+from .base import derived_dir, read_manifest, versions_in
 
 _ARRAYS = ("freqs", "t_non_k", "t_non_sigma_k", "excess_k", "good",
            "excess_smooth_k", "smooth_coef", "gamma_ns")
 
 
 def _base(root=None):
-    root = Path(root) if root is not None else Path(get_campaign_root(required=True))
-    return root / "derived" / "noise_source"
+    root = root if root is not None else get_campaign_root(required=True)
+    return derived_dir(root, "noise_source")
 
 
 def versions(root=None):
     """Versions of the product on disk, sorted."""
-    base = _base(root)
-    if not base.is_dir():
-        return []
-    return sorted(p.name for p in base.iterdir()
-                  if p.is_dir() and (p / "solutions.npz").is_file())
+    return versions_in(_base(root))
 
 
 @dataclass(frozen=True)
