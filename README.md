@@ -137,6 +137,10 @@ A product is a derived dataset keyed by the raw files —
 - `flagging/` — writer for the `flags/v0` per-(time, channel) masks.
 - `beam_sim.py`, `sim.py`, `hpm.py`, `sph_fit.py` — simulation and
   spherical-harmonic work (needs the JAX/healjax extras).
+- `vector_beam.py` — per-pixel recovery of the receive antenna's complex
+  vector beam from transmitter cross-correlations, its closure D-term
+  fit, and held-out / split-half checks. Uses `beam_sim`'s geometry, not
+  `beam_mapping`'s `eigsep_base.rotations` convention (yet).
 
 ## Related repositories
 
@@ -150,6 +154,20 @@ A product is a derived dataset keyed by the raw files —
 
 ## Recent changes
 
+- 2026-10-20 (Claude Code, for Dominic): added `vector_beam` (per-pixel
+  complex vector-beam solve from cross-correlations, closure fit of the
+  per-channel D-term, leave-one-out and dwell split-half checks) and
+  `beam_sim.cross_sim`, `cross_sim_ground_ref`, `ground_antenna_response`.
+  `rfi.fit_dpss_interleaved_fix` gains `trust_mask`,
+  `return_measured_mask`, `max_cond` and `return_cond`, and **no longer
+  fills a tone missing at its own arm's slot** from that arm's smooth
+  model: it stays NaN (the routine cross-arm fill is unchanged).
+  `build_frequency_trust_mask` and its callers gain `max_freq` and
+  `exclude_bands`; new `rfi.freq_axis_flag_reduced`,
+  `flag_dpss_interleaved_outliers` and `flag_absurd_cells`. On the
+  Marjum 2026-07 raster this reproduces the September 2026 study's
+  per-channel results exactly
+  (`data-analysis/notebooks/dominic/vector_beam/regression_check.py`).
 - 2026-10-08: `geometry_release` publishes releases from a `derived/geometry_posterior/vNNNN` product, numbered to match it (`v0004_marjum_geometry` is the first); the `terrain/` builder that made v0001 needs `--legacy-terrain`.
 - 2026-10-05: `rfi_supported` released as `v3` (default product version `v3`,
   status `released`, CLI `eigsep-rfi-v3`; `eigsep-rfi-v3-beta` still works). The

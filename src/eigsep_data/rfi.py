@@ -4,6 +4,8 @@ are adapted from hera_qm/xrfi.py, but without a lot of the
 array-level logic.
 """
 
+import warnings
+
 import hera_filters
 import numpy as np
 from scipy.interpolate import interp1d
@@ -546,21 +548,43 @@ def normalize_each_freq(x, valid=None, eps=1e-30):
 
 
 def build_frequency_trust_mask(
-    freqs, min_freq=50.0, fm_low=87.0, fm_high=108.0
+    freqs,
+    min_freq=50.0,
+    fm_low=87.0,
+    fm_high=108.0,
+    max_freq=None,
+    exclude_bands=(),
 ):
     """
     Return a boolean mask of trusted frequency channels.
 
-    Excludes channels below min_freq and the FM band [fm_low, fm_high].
-    All frequencies assumed to be in MHz.
+    Excludes channels below min_freq, above max_freq, the FM band
+    [fm_low, fm_high], and any [lo, hi] band in exclude_bands. All
+    frequencies assumed to be in MHz.
 
     Parameters
     ----------
     freqs : array-like, shape (nchan,)
     min_freq : float
-        Low-frequency cutoff in MHz.
+        Low-frequency cutoff in MHz. On the Marjum 2026-07 transmitter
+        raster, the weak transmitter arm's el=0 Malus's-law fit
+        (calibrate_weak_arm) is noise-dominated below the FM band, so a
+        beam reconstruction that combines both arms per channel should
+        pass ``min_freq=fm_low`` (87.0): the floor and the FM band then
+        form one contiguous untrusted region below ~108 MHz.
     fm_low, fm_high : float
         FM band edges in MHz to exclude.
+    max_freq : float, optional
+        High-frequency cutoff in MHz, e.g. the receive chain's lowpass
+        rolloff, above which comb-tone power collapses toward the noise
+        floor and a log-space continuum fit becomes unstable.
+    exclude_bands : sequence of (float, float), optional
+        Additional [lo, hi] MHz bands to exclude beyond the FM band.
+        Use with care when the mask feeds fit_dpss_interleaved_fix:
+        excluding channels that are normally well measured lowers every
+        row's good-channel count, and the per-row ``nmodes + 2``
+        good-channel gate there is global across the comb, so a few
+        excluded good channels can drop many rows band-wide.
 
     Returns
     -------
@@ -570,8 +594,12 @@ def build_frequency_trust_mask(
     trusted = np.isfinite(freqs)
     if min_freq is not None:
         trusted &= freqs >= min_freq
+    if max_freq is not None:
+        trusted &= freqs <= max_freq
     if fm_low is not None and fm_high is not None:
         trusted &= ~((freqs >= fm_low) & (freqs <= fm_high))
+    for lo, hi in exclude_bands or ():
+        trusted &= ~((freqs >= lo) & (freqs <= hi))
     return trusted
 
 
@@ -585,6 +613,8 @@ def make_dpss_fit_mask(
     min_freq=50.0,
     fm_low=87.0,
     fm_high=108.0,
+    max_freq=None,
+    exclude_bands=(),
 ):
     """
     Build a boolean mask of channels used in the DPSS bandpass fit.
@@ -603,7 +633,7 @@ def make_dpss_fit_mask(
         Channel range to fit within (default: full range).
     freqs : array-like, shape (nchan,), optional
         If provided, also applies build_frequency_trust_mask.
-    min_freq, fm_low, fm_high : float
+    min_freq, fm_low, fm_high, max_freq, exclude_bands :
         Passed to build_frequency_trust_mask when freqs is given.
 
     Returns
@@ -630,7 +660,7 @@ def make_dpss_fit_mask(
                 f"freqs must have shape ({nchan},), got {freqs.shape}"
             )
         fit_mask &= build_frequency_trust_mask(
-            freqs, min_freq, fm_low, fm_high
+            freqs, min_freq, fm_low, fm_high, max_freq, exclude_bands
         )
 
     for c in chs:
@@ -856,6 +886,8 @@ def fit_dpss_model_per_time(
     min_freq=50.0,
     fm_low=87.0,
     fm_high=108.0,
+    max_freq=None,
+    exclude_bands=(),
     use_log=True,
     ridge=1e-6,
     enforce_comb_upper=True,
@@ -882,8 +914,11 @@ def fit_dpss_model_per_time(
         Channels around comb tones excluded from the fit.
     fit_min_chan, fit_max_chan : int, optional
         Channel range restriction.
-    min_freq, fm_low, fm_high : float
-        Frequency trust mask parameters (MHz).
+    min_freq, fm_low, fm_high, max_freq, exclude_bands :
+        Frequency trust mask parameters (MHz), see build_frequency_trust_mask.
+        max_freq excludes the top-of-band region where measured comb power
+        collapses toward the receive chain's own lowpass rolloff and the
+        log-space fit becomes unstable.
     use_log : bool
         Fit in log-power space.
     ridge : float
@@ -918,7 +953,7 @@ def fit_dpss_model_per_time(
         )
 
     trusted_freq_mask = build_frequency_trust_mask(
-        freqs, min_freq, fm_low, fm_high
+        freqs, min_freq, fm_low, fm_high, max_freq, exclude_bands
     )
     trusted_comb_mask = trusted_freq_mask[chs]
     trusted_constraint_chs = chs[trusted_comb_mask]
@@ -940,6 +975,8 @@ def fit_dpss_model_per_time(
         min_freq=min_freq,
         fm_low=fm_low,
         fm_high=fm_high,
+        max_freq=max_freq,
+        exclude_bands=exclude_bands,
     )
     if verbose:
         print("number of fit channels:", np.sum(fit_mask))
@@ -1098,13 +1135,30 @@ def fit_dpss_interleaved_fix(
     nmodes=8,
     NW=4.0,
     max_bad_fraction=0.35,
+    return_measured_mask=False,
+    trust_mask=None,
+    max_cond=None,
+    return_cond=False,
 ):
     """
     Separate and reconstruct two interleaved tone sets (even/odd columns)
     with DPSS fits, preserving clean measured values.
 
-    Good measured tones are kept; missing or RFI-flagged tones are
-    reconstructed from the DPSS model interpolated onto the full grid.
+    Good measured tones are kept. At any given frequency slot, only ONE
+    of the two arms was ever physically measured there (the other arm's
+    tones live at the interleaved, opposite-parity frequencies) -- that
+    other arm's value is always reconstructed from its own DPSS model
+    interpolated onto this slot, every row, by construction (not just
+    at flagged/missing samples), so P1_hat/P6_hat/G_hat always combine
+    one arm's real measurement with the other arm's DPSS extrapolation.
+
+    A different situation -- a tone flagged or missing at a row where
+    that same arm's own native slot should have been a real measurement
+    -- is NOT reconstructed: it is left as NaN rather than fabricated
+    from that arm's smooth model at other frequencies. Where a dwell's
+    support for an arm is locally thin, that "rescue" fill can be
+    substantially wrong. Other visits to the same (channel, pixel) still
+    contribute when one dwell's same-arm reading is dropped this way.
 
     Parameters
     ----------
@@ -1118,6 +1172,45 @@ def fit_dpss_interleaved_fix(
     max_bad_fraction : float
         Time samples with more than this fraction of RFI-flagged channels
         are skipped entirely.
+    return_measured_mask : bool
+        If True, also return per-arm boolean masks marking which cells
+        are that arm's own direct measurement (as opposed to a DPSS fill,
+        whether from a same-arm gap or the routine cross-arm slot).
+    trust_mask : np.ndarray of bool, shape (nfreq,), optional
+        Restricts each arm's DPSS basis/fit to only the native slots
+        where trust_mask is True (e.g. from build_frequency_trust_mask).
+        Output is still evaluated/filled across the full freqs grid --
+        this only changes which slots the fit is BUILT from; a genuine
+        measurement outside trust_mask is still passed through verbatim.
+        Default None preserves the original full-domain behavior.
+
+        Why this matters: a stretch of native slots that is essentially
+        always unmeasured (e.g. below a weak arm's SNR floor) adds no
+        data to the fit but wrecks its conditioning. On the Marjum
+        2026-07 cross-correlation data, with 14 of 50 slots always empty
+        below the floor, cond(A) is ~1e10-1e11 at every dwell, and the
+        cross-arm fill there is numerically arbitrary (sometimes of the
+        wrong sign); restricting the fit to the 36 trusted slots brings
+        cond(A) down to single or low-triple digits. Excluding slots
+        that ARE normally measured is different: it removes real data
+        from every row's good-channel count (see
+        build_frequency_trust_mask's ``exclude_bands``).
+
+    max_cond : float, optional
+        Per-row, per-arm gate on the condition number of the good_fit
+        design matrix, guarding the routine cross-arm fill (the
+        same-arm-gap case is always left NaN, above). trust_mask removes
+        the worst conditioning; what remains depends on exactly which
+        trusted slots are flagged in a row, not how many, so a
+        good-channel count does not predict it (rows with the same count
+        range from cond ~2 to ~1e4 at nmodes=23 against ~27-31 points).
+        A row/arm above max_cond is treated as a failed fit: its
+        non-measured slots stay NaN, measured values still pass through.
+        Default None fits unconditionally.
+    return_cond : bool
+        If True, also return per-row, per-arm condition numbers of the
+        good_fit design matrix actually used (NaN where the fit was
+        skipped). Useful for choosing max_cond empirically.
 
     Returns
     -------
@@ -1126,6 +1219,10 @@ def fit_dpss_interleaved_fix(
     G_hat  : np.ndarray, shape (nsample, nfreq)  — P1_hat + P6_hat
     bad_time : np.ndarray of bool, shape (nsample,)
     rfi_occupancy : np.ndarray, shape (nsample,)
+    P1_measured, P6_measured : np.ndarray of bool, shape (nsample, nfreq)
+        Only returned if return_measured_mask is True.
+    P1_cond, P6_cond : np.ndarray, shape (nsample,)
+        Only returned if return_cond is True.
     """
     P_meas = np.asarray(P_meas, dtype=float)
     freqs = np.asarray(freqs, dtype=float)
@@ -1141,12 +1238,26 @@ def fit_dpss_interleaved_fix(
     idx1, idx6 = np.arange(0, nfreq, 2), np.arange(1, nfreq, 2)
     f1, f6 = freqs[idx1], freqs[idx6]
 
-    nm1, nm6 = min(nmodes, len(idx1)), min(nmodes, len(idx6))
-    B1 = dpss(len(idx1), NW=NW, Kmax=nm1).T
-    B6 = dpss(len(idx6), NW=NW, Kmax=nm6).T
+    if trust_mask is not None:
+        trust_mask = np.asarray(trust_mask, dtype=bool)
+        if trust_mask.shape != freqs.shape:
+            raise ValueError("trust_mask must have the same shape as freqs")
+        keep1, keep6 = trust_mask[idx1], trust_mask[idx6]
+    else:
+        keep1 = np.ones(len(idx1), dtype=bool)
+        keep6 = np.ones(len(idx6), dtype=bool)
+
+    nm1, nm6 = min(nmodes, int(keep1.sum())), min(nmodes, int(keep6.sum()))
+    B1 = dpss(int(keep1.sum()), NW=NW, Kmax=nm1).T
+    B6 = dpss(int(keep6.sum()), NW=NW, Kmax=nm6).T
+    f1_fit, f6_fit = f1[keep1], f6[keep6]
 
     P1_hat = np.full_like(P_meas, np.nan)
     P6_hat = np.full_like(P_meas, np.nan)
+    P1_measured = np.zeros_like(P_meas, dtype=bool)
+    P6_measured = np.zeros_like(P_meas, dtype=bool)
+    P1_cond = np.full(nsample, np.nan)
+    P6_cond = np.full(nsample, np.nan)
 
     rfi_occupancy = np.mean(rfi_mask, axis=1)
     bad_time = rfi_occupancy > max_bad_fraction
@@ -1155,25 +1266,332 @@ def fit_dpss_interleaved_fix(
         if bad_time[si]:
             continue
 
-        for y_sub, bad_sub, B_sub, f_sub, idx_sub, P_hat in [
-            (P_meas[si, idx1], rfi_mask[si, idx1], B1, f1, idx1, P1_hat),
-            (P_meas[si, idx6], rfi_mask[si, idx6], B6, f6, idx6, P6_hat),
+        for (
+            y_sub,
+            bad_sub,
+            keep,
+            B_sub,
+            f_sub,
+            idx_sub,
+            P_hat,
+            measured,
+            cond_arr,
+        ) in [
+            (
+                P_meas[si, idx1],
+                rfi_mask[si, idx1],
+                keep1,
+                B1,
+                f1_fit,
+                idx1,
+                P1_hat,
+                P1_measured,
+                P1_cond,
+            ),
+            (
+                P_meas[si, idx6],
+                rfi_mask[si, idx6],
+                keep6,
+                B6,
+                f6_fit,
+                idx6,
+                P6_hat,
+                P6_measured,
+                P6_cond,
+            ),
         ]:
-            good = ~(bad_sub | ~np.isfinite(y_sub))
-            if np.sum(good) < B_sub.shape[1] + 2:
-                continue
-            coeff, *_ = np.linalg.lstsq(B_sub[good], y_sub[good], rcond=None)
-            smooth = B_sub @ coeff
-            P_hat[si, :] = interp1d(
-                f_sub,
-                smooth,
-                kind="linear",
-                bounds_error=False,
-                fill_value="extrapolate",
-            )(freqs)
-            P_hat[si, idx_sub[good]] = y_sub[good]
+            # The basis is built/fit only from trust_mask-kept slots (restricts
+            # conditioning to the genuinely usable sub-domain). The measured-
+            # value passthrough below is UNCONDITIONAL -- independent of
+            # trust_mask and of whether the fit itself has enough trusted
+            # support to run -- since a genuine reading at any native
+            # position must never be dropped just because a DIFFERENT
+            # (cross-arm/extrapolated) position's fit was skipped that row.
+            good_all = ~(bad_sub | ~np.isfinite(y_sub))
+            good_fit = ~(bad_sub[keep] | ~np.isfinite(y_sub[keep]))
+            if np.sum(good_fit) >= B_sub.shape[1] + 2:
+                Asub = B_sub[good_fit]
+                cond = np.linalg.cond(Asub)
+                cond_arr[si] = cond
+                if max_cond is None or cond <= max_cond:
+                    coeff, *_ = np.linalg.lstsq(
+                        Asub, y_sub[keep][good_fit], rcond=None
+                    )
+                    smooth = B_sub @ coeff
+                    P_hat[si, :] = interp1d(
+                        f_sub,
+                        smooth,
+                        kind="linear",
+                        bounds_error=False,
+                        fill_value="extrapolate",
+                    )(freqs)
+                    # Never fabricate a same-arm value: idx_sub positions
+                    # are this arm's OWN native slots, so wherever this
+                    # arm's own reading was flagged/missing this row
+                    # (~good_all), the smooth-model guess above is a
+                    # "rescue" for something that should have just been
+                    # a real measurement -- the same kind of fabrication
+                    # this pipeline already rejects elsewhere (e.g. the
+                    # P_clean baseline-fill fix). Leave it NaN instead;
+                    # other visits to that (channel, pixel) still
+                    # contribute. This does NOT touch the complementary
+                    # positions (the other arm's native slots) here,
+                    # which are always a cross-arm extrapolation by
+                    # construction, every row, not a rescue of a missed
+                    # reading -- that part of the smooth fill is kept.
+                    P_hat[si, idx_sub[~good_all]] = np.nan
+            P_hat[si, idx_sub[good_all]] = y_sub[good_all]
+            measured[si, idx_sub[good_all]] = True
 
-    return P1_hat, P6_hat, P1_hat + P6_hat, bad_time, rfi_occupancy
+    G_hat = P1_hat + P6_hat
+    extra = ()
+    if return_measured_mask:
+        extra = extra + (P1_measured, P6_measured)
+    if return_cond:
+        extra = extra + (P1_cond, P6_cond)
+    return (P1_hat, P6_hat, G_hat, bad_time, rfi_occupancy) + extra
+
+
+def freq_axis_flag_reduced(
+    P,
+    sigma=6.0,
+    window=9,
+    floor_fraction=0.05,
+    chronic_thresh=0.10,
+    spike_multiple=10.0,
+):
+    """
+    Flag RFI along frequency in a comb-reduced quantity.
+
+    ``P`` holds one value per comb tone, arms interleaved (arm =
+    column % 2), e.g. a reduced tone residual or the magnitude of a
+    reduced cross-correlation. Each arm is checked with
+    :func:`flag_rfi_time` run along frequency instead of time, which
+    catches bursts clustered in time that drag a time-axis median up
+    with them.
+
+    A tone flagged more than ``chronic_thresh`` of the time is exempted
+    as a persistent hardware feature only if it also never exceeds
+    ``spike_multiple`` times its own median; a plain chronic-fraction
+    cut would exempt exactly the worst-contaminated tones.
+
+    Parameters
+    ----------
+    P : np.ndarray, shape (ntime, ntone)
+        Real-valued.
+    sigma, window, floor_fraction :
+        Passed to flag_rfi_time.
+    chronic_thresh : float
+    spike_multiple : float
+
+    Returns
+    -------
+    mask : np.ndarray of bool, shape (ntime, ntone)
+    """
+    P = np.asarray(P, dtype=float)
+    ntime, ntone = P.shape
+    mask = np.zeros((ntime, ntone), dtype=bool)
+    for arm in (0, 1):
+        idx = np.arange(arm, ntone, 2)
+        sub = P[:, idx]
+        mask_T, _, _ = flag_rfi_time(
+            sub.T, window=window, sigma=sigma, floor_fraction=floor_fraction
+        )
+        mask_sub = mask_T.T
+        frac = mask_sub.mean(axis=0)
+        med = np.nanmedian(sub, axis=0)
+        spikes = (sub > spike_multiple * med[None, :]).any(axis=0)
+        mask_sub[:, (frac > chronic_thresh) & ~spikes] = False
+        mask[:, idx] = mask_sub
+    return mask
+
+
+def _nan_rolling_median(x, window):
+    """
+    NaN-aware centered rolling median along axis 0, independently per
+    column, with edge-replicated padding. NaN inputs (already-excluded
+    points) are ignored by the median at every window position that
+    still has at least one non-NaN value; positions whose entire window
+    is NaN return NaN.
+    """
+    half = window // 2
+    padded = np.pad(x, ((half, half), (0, 0)), mode="edge")
+    windows = np.lib.stride_tricks.sliding_window_view(padded, window, axis=0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        return np.nanmedian(windows, axis=-1)
+
+
+def flag_dpss_interleaved_outliers(
+    P1_hat,
+    P6_hat,
+    P1_measured,
+    P6_measured,
+    window=31,
+    sigma=7.0,
+    rel_floor=0.3,
+    max_iter=5,
+):
+    """
+    Detect implausible values in fit_dpss_interleaved_fix's DPSS-modeled
+    (not genuinely measured) output and replace them with NaN.
+
+    A cell is model-derived, not a real measurement, whenever
+    P1_measured/P6_measured (from
+    fit_dpss_interleaved_fix(..., return_measured_mask=True)) is False
+    there -- this covers both the routine cross-arm component (always
+    modeled at every position of the *other* arm) and the rarer same-arm
+    gap case (a column's own tone happened to be unmeasured at that
+    specific time, so its own arm's smooth model filled it in instead).
+    Both are the output of the same per-time global least-squares DPSS
+    fit and carry the same instability risk: if a real anchor tone near
+    the frequency of interest happens to be missing at a given time, the
+    fit can become poorly conditioned and swing to an unrealistic value
+    there, even though every other time sample is fine. This isn't
+    caught by a simple whole-column magnitude check (e.g. ">15x column
+    median") when the column's own median is itself pulled up by
+    legitimate large values elsewhere (e.g. a real antenna dwell near a
+    scan turnaround) -- the blowup and the real large values can be
+    similar in magnitude, only the local (in time) context distinguishes
+    them.
+
+    Detection is iterative (sigma-clipping style, like robust_dpss_fit's
+    MAD clipping): a single pass can still be fooled when a blowup
+    episode is wide enough that a naive local window centered on its
+    interior is itself mostly filled with the episode, biasing the local
+    median toward the blowup's own level. Each iteration excludes
+    already-flagged cells from the local median/MAD computation (via a
+    NaN-aware rolling median) before re-testing every candidate cell
+    against that refined baseline, so a wide episode gets "eaten into"
+    from its edges over successive iterations until the whole episode is
+    caught. Iteration stops once nothing new is flagged.
+
+    Genuinely measured cells (P*_measured is True) are never flagged
+    here, regardless of how they look -- they're already subject to the
+    separate, already-tuned RFI detection on P_meas upstream (e.g.
+    flag_rfi_time), and re-checking them here with a different window
+    would double up on that decision with an unrelated threshold instead
+    of targeting this specific failure mode. They do, however,
+    contribute to the local baseline that unmeasured cells are compared
+    against (unless/until excluded by a later iteration), so a real
+    local trend (e.g. a genuine antenna dwell) is correctly used as
+    context rather than discarded.
+
+    Parameters
+    ----------
+    P1_hat, P6_hat : np.ndarray, shape (nsample, nfreq)
+        Output of fit_dpss_interleaved_fix (even/odd-indexed tone sets).
+    P1_measured, P6_measured : np.ndarray of bool, shape (nsample, nfreq)
+        The measured-mask outputs of the same fit_dpss_interleaved_fix
+        call (return_measured_mask=True).
+    window : int
+        Length of the sliding median window in time (forced odd).
+    sigma : float
+        Detection threshold in units of local robust sigma.
+    rel_floor : float
+        A flagged sample must also deviate from its local median by at
+        least this fraction of the local median's own magnitude, so
+        numerical noise near a near-zero baseline isn't flagged.
+    max_iter : int
+        Maximum number of clipping iterations. Stops early once a pass
+        flags nothing new.
+
+    Returns
+    -------
+    P1_clean, P6_clean : np.ndarray, shape (nsample, nfreq)
+        Copies of the inputs with detected model-derived outliers set to
+        NaN. Genuinely measured cells are always returned unchanged.
+    P1_outlier, P6_outlier : np.ndarray of bool, shape (nsample, nfreq)
+        Masks marking which cells were flagged (always False at
+        genuinely measured cells).
+    """
+    if window % 2 == 0:
+        window += 1
+
+    def _flag(P, measured):
+        P = np.asarray(P, dtype=float)
+        measured = np.asarray(measured, dtype=bool)
+        all_finite = np.isfinite(P)
+        candidate = all_finite & ~measured
+
+        flagged = np.zeros_like(candidate)
+        for _ in range(max_iter):
+            baseline_input = np.where(flagged, np.nan, P)
+            local_med = _nan_rolling_median(baseline_input, window)
+            local_mad = _nan_rolling_median(
+                np.abs(baseline_input - local_med), window
+            )
+            local_sigma = np.maximum(1.4826 * local_mad, 1e-30)
+
+            resid = P - local_med
+            new_flagged = (
+                candidate
+                & np.isfinite(local_med)
+                & (
+                    (
+                        (np.abs(resid) > sigma * local_sigma)
+                        & (np.abs(resid) > rel_floor * np.abs(local_med))
+                    )
+                    | (P < 0)
+                )
+            )
+            if np.array_equal(new_flagged, flagged):
+                break
+            flagged = new_flagged
+        return flagged
+
+    P1_outlier = _flag(P1_hat, P1_measured)
+    P6_outlier = _flag(P6_hat, P6_measured)
+
+    P1_clean = np.asarray(P1_hat, dtype=float).copy()
+    P6_clean = np.asarray(P6_hat, dtype=float).copy()
+    P1_clean[P1_outlier] = np.nan
+    P6_clean[P6_outlier] = np.nan
+    return P1_clean, P6_clean, P1_outlier, P6_outlier
+
+
+def flag_absurd_cells(vals, axis=None, n_mad=5.0):
+    """
+    Flag values that are implausibly large (or negative) relative to a
+    robust median + n_mad*MAD reference, in place of a fixed multiple
+    of the plain median (e.g. a ">15x median" rule).
+
+    Why: a fixed multiplier tuned on a well-behaved case is too loose
+    where the data are intrinsically noisier. On one poorly behaved
+    Marjum 2026-07 channel a >15x-median cutoff left 35 cells in the
+    5-15x range that still dominated a max-normalized map. The
+    median + n_mad*MAD reference scales with each case's own spread.
+
+    One-sided (high side, plus any negative value) by design: real deep
+    antenna nulls can legitimately be very small, so only an
+    unphysically large value is a safe "this can't be real" signal.
+
+    Parameters
+    ----------
+    vals : np.ndarray
+        Values to check. Can be any shape.
+    axis : int or None
+        Axis along which to compute the median/MAD reference (e.g. 0
+        for a per-column reference, matching this pipeline's existing
+        per-frequency-channel absurd-cell convention). None computes a
+        single reference over the whole array.
+    n_mad : float
+        Threshold in units of 1.4826*MAD above the median (1.4826
+        makes MAD a consistent estimator of the standard deviation for
+        normally-distributed data).
+
+    Returns
+    -------
+    absurd : np.ndarray of bool, same shape as vals
+    """
+    vals = np.asarray(vals, dtype=float)
+    positive = np.where(vals > 0, vals, np.nan)
+    med = np.nanmedian(positive, axis=axis, keepdims=(axis is not None))
+    mad = np.nanmedian(
+        np.abs(positive - med), axis=axis, keepdims=(axis is not None)
+    )
+    thresh = med + n_mad * 1.4826 * mad
+    return (np.abs(vals) > thresh) | (vals < 0)
 
 
 def fit_dpss_interleaved_log(P_meas, freqs, nmodes=4, NW=4.0, eps=1e-12):
