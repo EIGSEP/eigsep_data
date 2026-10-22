@@ -124,6 +124,11 @@ A product is a derived dataset keyed by the raw files —
 | `smooth_model` | one companion HDF5 per raw file | `(file, row)` |
 | `pointing` | one Parquet table | `(file, sample_idx)` |
 | `gain` | solutions on their own cadence | nearest time, bounded |
+| `tcal` | calibration measurements on their own cadences | bracketing in time, bounded |
+
+`products/noise_source.py` is a different kind: one bench
+characterization of the noise source, an input to `tcal`, read with
+`noise_source.load(version)` rather than joined to rows.
 
 ## Layout
 
@@ -135,6 +140,20 @@ A product is a derived dataset keyed by the raw files —
 - `select_files.py` (`eigsep-select-files`) — file-level campaign masks
   and observing-mode selection.
 - `flagging/` — writer for the `flags/v0` per-(time, channel) masks.
+- `switched.py` — switched calibration measurements: dwells, cycles,
+  the VNA-sweep guard, thermistors with measured pull-ups.
+- `noise_source_bench.py` — the noise source's temperature at P from a
+  bench run (`measure`), stored with `products.noise_source.write`.
+- `calibration/` — builders of the `tcal` and `noise_source` products
+  (`eigsep-build-tcal`, `eigsep-validate-tcal`, `eigsep-tcal-bracket-cost`,
+  `eigsep-build-noise-source`); each version's campaign choices are its
+  `config.json` in the campaign tree.
+- `units.py` — unit conversions: `to_dB`/`from_dB` for power ratios,
+  `celsius_to_kelvin` (with `ZERO_CELSIUS_K` from `scipy.constants`).
+- `numerics.py` — small array helpers: `weighted_mean` (a masked weighted
+  mean) and `interp_complex` (a complex curve onto a frequency grid).
+- `provenance.py` — file checksums and git state, for the provenance
+  records that product generators write into their manifests.
 - `beam_sim.py`, `sim.py`, `hpm.py`, `sph_fit.py` — simulation and
   spherical-harmonic work (needs the JAX/healjax extras).
 
@@ -150,6 +169,14 @@ A product is a derived dataset keyed by the raw files —
 
 ## Recent changes
 
+- 2026-10-21: `numerics.weighted_mean` and `numerics.interp_complex`, and `products.base.derived_dir` and `versions_in`, replace the copies `calibration/`, `switched`, `noise_source_bench` and `products.noise_source` each had; `calibration/` reads times with `to_unix_time` and `noise_source_bench.measure` takes its default ENBW from `eigsep_cal.conventions`. Rebuilt with them, `tcal` v0004 and `noise_source` v0001 are bit-identical.
+- 2026-10-21: `noise_source_bench.measure` takes the sub-bands its validation reports as `report_bands_mhz` (default unchanged: 50-88, 108-150, 150-200, 200-245 MHz).
+- 2026-10-21: `units.celsius_to_kelvin` replaces the literal 273.15 in `noise_source_bench` and `calibration/`.
+- 2026-10-21: `units.to_dB` and `units.from_dB` (also `eigsep_data.to_dB`/`from_dB`) are the package's dB conversions for power ratios; `quicklook` and `calibration/d5_yfactor` use them, with identical results.
+- 2026-10-21: `provenance` holds the file checksum and git helpers that `calibration/`, `flagging/`, `geometry_release` and `rfi_supported` each used to define for themselves. What each product records is unchanged.
+- 2026-10-20: the `tcal` and `noise_source` builders move here from `data-analysis` as `calibration/` with four commands, so no released product depends on `data-analysis`. Each product version's campaign choices (span, flags, limits, bench wiring, thresholds) are a `config.json` beside it in the campaign tree, which the manifest records. Christian's chain (`calibration/d5_yfactor.py`), which the `tcal` validation compares against, is vendored unchanged.
+
+- 2026-10-20: `switched` (dwells and cycles of switched calibration measurements, the VNA-sweep guard, thermistors with measured pull-ups) the `noise_source` product reader and writer, and `noise_source_bench.measure` (the noise source's temperature from a bench run) added, for the bench-measured noise source; `tcal` accepts `t_ns_k` as one value per channel (from v0004) as well as one number (v0000-v0003).
 - 2026-10-08: `geometry_release` publishes releases from a `derived/geometry_posterior/vNNNN` product, numbered to match it (`v0004_marjum_geometry` is the first); the `terrain/` builder that made v0001 needs `--legacy-terrain`.
 - 2026-10-05: `rfi_supported` released as `v3` (default product version `v3`,
   status `released`, CLI `eigsep-rfi-v3`; `eigsep-rfi-v3-beta` still works). The

@@ -21,10 +21,8 @@ from __future__ import annotations
 
 import argparse
 import glob
-import hashlib
 import json
 import os
-import subprocess
 import sys
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
@@ -34,6 +32,7 @@ import h5py
 import numpy as np
 
 from ..paths import get_campaign_root
+from ..provenance import git, sha256
 from . import detectors as D
 
 VERSION = "v0"
@@ -166,21 +165,8 @@ def process_file(args):
         return fname, {}, None, f"{type(exc).__name__}: {exc}"
 
 
-def sha256(path, limit=None):
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
 def git_commit():
-    try:
-        return subprocess.check_output(
-            ["git", "rev-parse", "--short", "HEAD"], cwd=_root(),
-            stderr=subprocess.DEVNULL).decode().strip()
-    except Exception:
-        return "unknown"
+    return git(_root(), "rev-parse", "--short", "HEAD") or "unknown"
 
 
 def main(argv=None):

@@ -35,6 +35,8 @@ from scipy.linalg import cho_factor, cho_solve, eigh
 from scipy.ndimage import maximum_filter, median_filter
 from scipy.sparse.linalg import LinearOperator, cg
 
+from .provenance import sha256
+
 REPORT_BANDS = {
     "50-88 (DTV-lo)": (50.0, 88.0),
     "88-108 (FM)": (88.0, 108.0),
@@ -1075,14 +1077,6 @@ def run_selection(
     return result
 
 
-def _sha256(path):
-    digest = hashlib.sha256()
-    with open(path, "rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
 def _jsonable(value):
     if isinstance(value, (np.integer, np.floating)):
         return value.item()
@@ -1104,7 +1098,7 @@ def parameter_sha256(config):
 
 def algorithm_source_sha256():
     """Hash the exact flagger source used to generate a product."""
-    return _sha256(Path(__file__).resolve())
+    return sha256(Path(__file__).resolve())
 
 
 def _atomic_json(path, value):
@@ -1266,7 +1260,7 @@ def _write_products_unlocked(
         # raw row, so restore that order before writing every payload.
         positions = _raw_row_positions(result, fname)
         source = source_dir / fname
-        source_hash = _sha256(source)
+        source_hash = sha256(source)
         record = {
             "antenna": antenna,
             "source": (

@@ -32,6 +32,7 @@ _SUBMODULES = {
     "beam_sim",
     "browse",
     "bundle",
+    "calibration",
     "clock",
     "data",
     "flagging",
@@ -40,9 +41,11 @@ _SUBMODULES = {
     "imu",
     "index",
     "metadata",
+    "noise_source_bench",
     "paths",
     "plot",
     "products",
+    "provenance",
     "quicklook",
     "rfi",
     "rfi_supported",
@@ -50,6 +53,8 @@ _SUBMODULES = {
     "select_files",
     "sim",
     "sph_fit",
+    "switched",
+    "units",
 }
 
 #: Public name -> the submodule that defines it.
@@ -70,6 +75,8 @@ _ATTRS = {
     "Selection": "index",
     "format_time": "clock",
     "to_unix_time": "clock",
+    "to_dB": "units",
+    "from_dB": "units",
 }
 
 __all__ = sorted(_SUBMODULES | set(_ATTRS) | {"__version__"})

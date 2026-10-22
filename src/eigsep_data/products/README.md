@@ -20,7 +20,8 @@ others. See `DATASET_LOADER_PLAN.md` in the parent meta-repo.
 | `smooth_model.py` | DPSS smooth-band model, one companion HDF5 per raw file. |
 | `pointing.py` | Calibrated pointing, one Parquet table, joined on `(file, sample_idx)`. |
 | `gain.py` | Receiver gain / noise temperature, solutions on their own cadence, joined by nearest time within an explicit tolerance. |
-| `tcal.py` | Temperature calibration from nearby field measurements: load/noise-source visits and S11 interpolated in time, nearest load thermistor. Returns per-row coefficients; `Bundle.calibrated` and `Bundle.t_star` apply them, leaving `Bundle.data` raw. |
+| `tcal.py` | Temperature calibration from nearby field measurements: load/noise-source visits and S11 interpolated in time, nearest load thermistor. Returns per-row coefficients; `Bundle.calibrated` and `Bundle.t_star` apply them, leaving `Bundle.data` raw. `t_ns_k` is one number (v0000-v0003) or one value per channel (v0004 on), applied to every row. |
+| `noise_source.py` | The bench-measured noise source: its temperature at P per channel, the excess over its off state, a smooth fit of it, the mask and the noise-source path's reflection at P. Not joined to rows: read with `noise_source.load(version)`, written with `noise_source.write`; `tcal` v0004 builds `t_ns_k` from it. |
 
 ## Join shapes
 
@@ -74,6 +75,7 @@ the join logic is tested.
 
 ## Recent changes
 
+- 2026-10-20: `noise_source` reader added (a campaign-level calibration input, not a row companion); `tcal` takes `t_ns_k` as a spectrum on its own axis, cut to the bundle's band.
 - 2026-10-01: added `tcal`, the field temperature calibration of
   box-air at reference plane P, and `Bundle.calibrated` / `Bundle.t_star`
   to apply it. Raw data stay in `Bundle.data`, so rows with no nearby
