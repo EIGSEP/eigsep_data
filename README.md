@@ -135,7 +135,8 @@ characterization of the noise source, an input to `tcal`, read with
 - `index.py`, `metadata.py`, `clock.py` — the per-integration index.
 - `data.py` — `EigsepData`, the spectra reader.
 - `bundle.py`, `products/` — the raw-plus-companions join.
-- `beam_mapping/` — beam fits, pointing fusion, TX forward model.
+- `beam_mapping/` — beam fits, pointing fusion, TX forward model, the
+  per-pixel vector-beam solve (`beam_mapping.vector_beam`).
 - `rfi.py`, `s11.py`, `quicklook.py`, `browse.py` — analysis utilities.
 - `select_files.py` (`eigsep-select-files`) — file-level campaign masks
   and observing-mode selection.
@@ -174,9 +175,41 @@ characterization of the noise source, an input to `tcal`, read with
 - 2026-10-21: `units.celsius_to_kelvin` replaces the literal 273.15 in `noise_source_bench` and `calibration/`.
 - 2026-10-21: `units.to_dB` and `units.from_dB` (also `eigsep_data.to_dB`/`from_dB`) are the package's dB conversions for power ratios; `quicklook` and `calibration/d5_yfactor` use them, with identical results.
 - 2026-10-21: `provenance` holds the file checksum and git helpers that `calibration/`, `flagging/`, `geometry_release` and `rfi_supported` each used to define for themselves. What each product records is unchanged.
+- 2026-10-21 (Claude Code, for Dominic): `beam_mapping.vector_beam` gains
+  `self_calibrate_phase` (with `predict_other_dwells`, `fit_block_phase`):
+  an HFSS-free estimate of a cross-correlation phase common to every
+  channel, one value per block of integrations, fitted only from
+  leave-one-dwell-out predictions on pixels seen in several dwells. On
+  Marjum 2026-07 the cross phase jumps by tens of degrees between dwells;
+  removing it takes the stripe-held-out solver error from 0.151 to 0.090,
+  and the same gain appears on channels left out of the estimate.
+- 2026-10-21 (Claude Code, for Dominic): `vector_beam` moved to
+  `beam_mapping.vector_beam` (import `eigsep_data.beam_mapping.vector_beam`;
+  `eigsep_data.vector_beam` is gone). Its `beam_sim`-convention geometry,
+  `transmitter_fields`, moved to `beam_sim.transmitter_fields`, so
+  `beam_mapping` keeps one pointing convention and `vector_beam` no longer
+  imports JAX. New `rfi.flag_unbracketed_fills`; `reduce_cross` now NaNs
+  DPSS fills without a trusted measured same-arm tone on both sides by
+  default (`require_bracketed_fill=False` reproduces the September
+  reduction). On Marjum 2026-07 every fill >100x its channel median was such
+  an extrapolation; dropping them lifts the median held-out power
+  correlation 0.958 -> 0.970.
 - 2026-10-20: the `tcal` and `noise_source` builders move here from `data-analysis` as `calibration/` with four commands, so no released product depends on `data-analysis`. Each product version's campaign choices (span, flags, limits, bench wiring, thresholds) are a `config.json` beside it in the campaign tree, which the manifest records. Christian's chain (`calibration/d5_yfactor.py`), which the `tcal` validation compares against, is vendored unchanged.
-
 - 2026-10-20: `switched` (dwells and cycles of switched calibration measurements, the VNA-sweep guard, thermistors with measured pull-ups) the `noise_source` product reader and writer, and `noise_source_bench.measure` (the noise source's temperature from a bench run) added, for the bench-measured noise source; `tcal` accepts `t_ns_k` as one value per channel (from v0004) as well as one number (v0000-v0003).
+- 2026-10-20 (Claude Code, for Dominic): added `vector_beam` (per-pixel
+  complex vector-beam solve from cross-correlations, closure fit of the
+  per-channel D-term, leave-one-out and dwell split-half checks) and
+  `beam_sim.cross_sim`, `cross_sim_ground_ref`, `ground_antenna_response`.
+  `rfi.fit_dpss_interleaved_fix` gains `trust_mask`,
+  `return_measured_mask`, `max_cond` and `return_cond`, and **no longer
+  fills a tone missing at its own arm's slot** from that arm's smooth
+  model: it stays NaN (the routine cross-arm fill is unchanged).
+  `build_frequency_trust_mask` and its callers gain `max_freq` and
+  `exclude_bands`; new `rfi.freq_axis_flag_reduced`,
+  `flag_dpss_interleaved_outliers` and `flag_absurd_cells`. On the
+  Marjum 2026-07 raster this reproduces the September 2026 study's
+  per-channel results exactly
+  (`data-analysis/notebooks/dominic/vector_beam/regression_check.py`).
 - 2026-10-08: `geometry_release` publishes releases from a `derived/geometry_posterior/vNNNN` product, numbered to match it (`v0004_marjum_geometry` is the first); the `terrain/` builder that made v0001 needs `--legacy-terrain`.
 - 2026-10-05: `rfi_supported` released as `v3` (default product version `v3`,
   status `released`, CLI `eigsep-rfi-v3`; `eigsep-rfi-v3-beta` still works). The

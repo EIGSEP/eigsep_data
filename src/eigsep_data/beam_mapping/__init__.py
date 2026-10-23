@@ -25,6 +25,9 @@ Layers, roughly in dependency order:
   (JAX), scoring.
 * :mod:`~eigsep_data.beam_mapping.tx_export` -- write a fitted beam in the
   HFSS beam-map format.
+* :mod:`~eigsep_data.beam_mapping.vector_beam` -- per-pixel complex
+  vector-beam solve from the transmitter cross-correlations, its closure
+  D-term fit and held-out checks.
 * :mod:`~eigsep_data.beam_mapping.diagnostics` -- v007 campaign loading,
   joint fits and standard diagnostic figures.
 
@@ -95,5 +98,7 @@ from .tx_model import (
 from .tx_teeth import isolation, neighbour_coherence, select_teeth, tooth_arms
 
 # diagnostics pulls in matplotlib; import it explicitly as
-# eigsep_data.beam_mapping.diagnostics rather than re-exporting here. tx_fit
+# eigsep_data.beam_mapping.diagnostics rather than re-exporting here.
+# vector_beam's generic names (solve_pixel, leave_one_out, ...) read best
+# qualified: import it as a module. tx_fit
 # imports JAX only inside JointBeamFit.fit.

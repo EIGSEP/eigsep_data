@@ -19,6 +19,7 @@ re-exports the common entry points; it contains no logic of its own.
 | `tx_teeth.py` | Model-free tooth selection: isolation and iterative neighbour coherence. |
 | `beam_basis.py` | Empirical-beam basis: real spherical harmonics (`select_lmax`) x a spectral basis, PCA (`pca_basis`, an `eigsep_base.spectral_basis.SpectralBasis`) or delay-limited DPSS with sinc continuation (`DPSSSpectralBasis`). |
 | `tx_fit.py` | The beam fit to transmitter teeth: `ToothData`, `stripe_split`, `TxGeometryModel`, `coarse_offset_alpha` (az offset x polarization grid), `fit_geometry` (nested geometry corrections), `JointBeamFit` (empirical beam + positive tooth gains, JAX float64 + L-BFGS-B), `score`. |
+| `vector_beam.py` | Per-pixel complex vector-beam solve from the transmitter cross-correlations (`fields_from_model` geometry from a `TxGeometryModel`, `reduce_cross`, `solve_sampled_beam`, closure D-term `fit_closure_g`, `leave_one_out`, `split_half_by_dwell`, `compare_to_truth`). No smooth basis and no HFSS prior: each sampled pixel is solved on its own. Import as a module; not re-exported. |
 | `tx_export.py` | `export_beam`: a fitted beam in the HFSS beam-map format (`read_beam`-compatible). |
 | `mapper.py` | Non-negative theta/phi gain recovery from alternating transmitter arms (`PolarizationBeamMapper`). |
 | `tx_model.py` | HFSS-backed simulation of transmitter spikes and correlator waterfalls (`HFSSBeamSet`, consumes Dominic's `hfss_beam_maps/bowtie_beam.npz` format), built on `tx_coupling`. |
@@ -27,6 +28,10 @@ re-exports the common entry points; it contains no logic of its own.
 
 ## Recent changes
 
+- 2026-10-21 (Claude Code, for Dominic): added `vector_beam`, moved from
+  `eigsep_data.vector_beam`. It now uses this package's pointing convention
+  only (`fields_from_model`); the `beam_sim`-convention geometry it used to
+  carry is `eigsep_data.beam_sim.transmitter_fields`.
 - 2026-10-03 (Claude Code, for Aaron): `diagnostics.py` comments no longer
   say the beam-scan comb is a "digital self-comb" and the transmitter is
   absent. Memo 001 shows the 8-channel comb in that window IS the
