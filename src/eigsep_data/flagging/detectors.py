@@ -362,7 +362,7 @@ def persistent_track(logp, valid_time, freqs, smooth_width=31, clip_sigma=6.0):
     in_band = (freqs >= BAND_ANALYSIS[0]) & (freqs <= BAND_ANALYSIS[1])
     if in_band.sum() < 32:
         return chan_flags, resid.astype(np.float32)
-    s = float(_mad(resid[in_band]))
+    s = _mad(resid[in_band]).item()
     if not np.isfinite(s) or s < 1e-9:
         return chan_flags, resid.astype(np.float32)
     chan_flags = (resid > clip_sigma * s) & in_band

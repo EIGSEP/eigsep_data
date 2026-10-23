@@ -24,6 +24,11 @@ non-RFI and needs a new flags version.
 
 ## Recent changes
 
+- 2026-10-21 (Claude Code, for Aaron): `build_masks` takes its checksum and
+  git helpers from `eigsep_data.provenance`; the manifest is unchanged.
+- 2026-10-20 (Claude Code, for Charlie): `persistent_track` no longer fails
+  on NumPy 2.4+, which refuses `float()` of a one-element array; the line
+  flags it returns are unchanged.
 - 2026-10-03 (Claude Code, for Aaron): comb labels renamed to match memo
   001: `digital_self` -> `transmitter`, `panda_emi` -> `boxair_emi`, and
   the docstrings that said neither comb was the transmitter are rewritten.

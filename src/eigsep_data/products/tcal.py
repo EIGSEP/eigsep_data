@@ -4,15 +4,19 @@
 ``README.md`` beside it. The payload is not a calibrated cube. It holds
 the measurements a calibration is built from, on their own cadences:
 
-- ``amb_t``/``amb_p`` and ``non_t``/``non_p``: one median spectrum per
-  ambient-load (RFAMB) and noise-source (RFNON) visit, with the
+- ``amb_t``/``amb_p`` and ``non_t``/``non_p``: one spectrum per
+  ambient-load (RFAMB) and noise-source (RFNON) visit (a masked,
+  integration-time-weighted mean since v0001; a median in v0000), with the
   receiver regime of each (``amb_regime``, ``non_regime``);
 - ``s11_<dut>_t``/``s11_<dut>`` for ``ant``, ``amb`` and ``rec``:
   reflection coefficients at reference plane P on the correlator
   channels, with an ``s11_<dut>_epoch`` label;
 - ``therm_t``/``therm_k``: every load-thermistor reading, which is
   logged whether or not the switch is cycling;
-- ``t_ns_k``, the noise-source excess, and the matching limits
+- ``t_ns_k``, the noise-source excess as the receiver takes it: one
+  number (v0000-v0003, the 917 K of a 35 dB ENR diode behind a 30 dB
+  pad), or one value per channel on ``freqs`` (from v0004, built from a
+  measured noise source), applied to every row; and the matching limits
   ``max_cal_gap_s``, ``max_s11_gap_s``, ``s11_hold_s``, ``therm_tol_s``;
 - ``keys``: the correlator inputs the calibration applies to.
 
@@ -191,7 +195,17 @@ class Tcal(Product):
             np.isfinite(t_load), therm_dt, np.nan
         )
 
-        t_ns = float(sols["t_ns_k"])
+        # One number for every channel, or one value per channel on this
+        # product's axis, cut to the bundle's band like every other spectrum.
+        t_ns = np.asarray(sols["t_ns_k"], dtype=float)
+        if t_ns.ndim == 1:
+            if t_ns.size != nchan:
+                raise ValueError(
+                    f"t_ns_k has {t_ns.size} channels, freqs has {nchan}"
+                )
+            t_ns = t_ns[band][None, :]
+        elif t_ns.ndim != 0:
+            raise ValueError("t_ns_k must be a number or a spectrum on freqs")
         a, b = tstar_coefficients(p["non"], p["amb"], t_ns, t_load[:, None])
         scale, offset = receiver_s11_coefficients(
             a, b, t_load[:, None], gam["ant"], gam["amb"], gam["rec"]

@@ -62,6 +62,10 @@ eigsep-rfi-v3-beta = "eigsep_data.rfi_run:main"  # old name, kept
 eigsep-select-files = "eigsep_data.select_files:main"
 eigsep-build-masks = "eigsep_data.flagging.build_masks:main"
 eigsep-publish-geometry-release = "eigsep_data.geometry_release:main"
+eigsep-build-tcal = "eigsep_data.calibration.build_tcal:main"
+eigsep-validate-tcal = "eigsep_data.calibration.validate_tcal:main"
+eigsep-tcal-bracket-cost = "eigsep_data.calibration.bracket_cost:main"
+eigsep-build-noise-source = "eigsep_data.calibration.build_noise_source:main"
 
 [project.optional-dependencies]
 vis = [
