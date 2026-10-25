@@ -76,6 +76,7 @@ from .tx_coupling import (
 from .tx_export import export_beam
 from .tx_fit import (
     PARAM_NAMES,
+    TILT_CANDIDATES,
     JointBeamFit,
     ToothData,
     TxGeometryModel,
