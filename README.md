@@ -75,7 +75,7 @@ model and its pointing, already lined up in time and frequency.*
 ```python
 b = sel.load_bundle(
     antenna="box-gnd",                              # resolved per file
-    products=["flags@v2", "smooth_model@v0", "pointing@v1.2"],
+    products=["flags@v3", "smooth_model@v0", "pointing@v4"],
     band_mhz=(45.0, 235.0),
 )
 
