@@ -12,6 +12,7 @@ when the package adopted one pointing convention).
 Public API
 ----------
 MOTOR_DEG_PER_STEP
+AZ_SENSE
 imu_elevation_deg
 PointingStreams
 simulate_pointing_streams
@@ -26,6 +27,11 @@ import numpy as np
 
 
 MOTOR_DEG_PER_STEP = 180.0 / 1.13e4
+# Sign of the pointing azimuth relative to the motor and potentiometer
+# readings. The Marjum 2026-07 azimuth is left-handed about the boresight
+# (memos 002, 003), and mount_rotation turns +az right-handedly, so the
+# readings are negated here, as in the pointing table from v5.
+AZ_SENSE = -1
 
 
 def imu_elevation_deg(accel_xyz):
@@ -69,9 +75,9 @@ def simulate_pointing_streams(true_az_deg, true_el_deg, pot_sigma_deg=0.5,
     az = np.asarray(true_az_deg, float); el = np.asarray(true_el_deg, float)
     slip_az = np.broadcast_to(slip_az_steps, az.shape).astype(float)
     slip_el = np.broadcast_to(slip_el_steps, el.shape).astype(float)
-    motor_az = az / MOTOR_DEG_PER_STEP + slip_az + rng.normal(0, motor_sigma_steps, az.shape)
+    motor_az = AZ_SENSE * az / MOTOR_DEG_PER_STEP + slip_az + rng.normal(0, motor_sigma_steps, az.shape)
     motor_el = el / MOTOR_DEG_PER_STEP + slip_el + rng.normal(0, motor_sigma_steps, el.shape)
-    pot = az + rng.normal(0, pot_sigma_deg, az.shape)
+    pot = AZ_SENSE * az + rng.normal(0, pot_sigma_deg, az.shape)
     # Invert the v007 IMU elevation convention: ay=sin(el), -az=cos(el).
     accel = np.stack([np.zeros_like(el), np.sin(np.deg2rad(el)),
                       -np.cos(np.deg2rad(el))], axis=-1)
@@ -101,7 +107,8 @@ def fuse_pointing(motor_az_steps, motor_el_steps, pot_az_deg=None,
 
     Motor counts use the calibration from ``EIGSEP_data_explore_v007``.
     Missing values may be NaN.  Azimuth is combined on the circle; elevation
-    is combined linearly.  The returned table retains each input stream for
+    is combined linearly.  The fused azimuth is ``AZ_SENSE`` times the
+    readings' sense; ``az_motor_deg`` and ``az_pot_deg`` keep the readings'.  The returned table retains each input stream for
     diagnostics and fitting.
     """
     azm = MOTOR_DEG_PER_STEP * np.asarray(motor_az_steps, float)
@@ -112,6 +119,7 @@ def fuse_pointing(motor_az_steps, motor_el_steps, pot_az_deg=None,
     both = np.isfinite(azm) & np.isfinite(azp)
     az[both] = _circular_mean_deg(np.stack([azm[both], azp[both]]), [az_weight, 1 - az_weight])
     az[~np.isfinite(azm) & np.isfinite(azp)] = azp[~np.isfinite(azm) & np.isfinite(azp)]
+    az = AZ_SENSE * az
     el = elm.copy()
     both = np.isfinite(elm) & np.isfinite(eli)
     el[both] = (el_weight * elm[both] + (1 - el_weight) * eli[both])
