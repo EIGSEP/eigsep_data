@@ -1,6 +1,7 @@
 import numpy as np
 
 from eigsep_data.beam_mapping import (
+    AZ_SENSE,
     MOTOR_DEG_PER_STEP,
     PolarizationBeamMapper,
     TransmitterGeometry,
@@ -19,7 +20,8 @@ def test_pointing_fusion_matches_notebook_conventions():
     accel = np.array([[0.0, 0.0, -1.0], [0.0, 1.0, -1.0]])
     assert np.allclose(imu_elevation_deg(accel), [0, 45])
     table = fuse_pointing([0, 11300], [0, 11300], [10, 20], accel)
-    assert np.allclose(table.az_deg, [5, 100], atol=1e-10)
+    assert np.allclose(table.az_deg, [5 * AZ_SENSE, 100 * AZ_SENSE], atol=1e-10)
+    assert np.allclose(table.az_motor_deg, [0, 180])
     assert np.isclose(MOTOR_DEG_PER_STEP * 11300, 180)
 
 

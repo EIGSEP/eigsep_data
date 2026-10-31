@@ -28,6 +28,7 @@ re-exports the common entry points; it contains no logic of its own.
 
 ## Recent changes
 
+- 2026-10-28 (Claude Code, for Aaron): `AZ_SENSE = -1` in `geometry.py`. The Marjum azimuth is left-handed about the boresight (memos 002, 003), so `fuse_pointing` and `diagnostics.load_v007_data` now negate the motor/pot azimuth before it reaches `mount_rotation`, matching pointing table v5. `simulate_pointing_streams` writes readings with the same sense. Raw `az_motor_deg`/`az_pot_deg` keep the readings' sense.
 - 2026-10-21 (Claude Code, for Dominic): added `vector_beam`, moved from
   `eigsep_data.vector_beam`. It now uses this package's pointing convention
   only (`fields_from_model`); the `beam_sim`-convention geometry it used to
