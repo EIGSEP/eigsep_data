@@ -27,6 +27,7 @@ import numpy as np
 from scipy.optimize import minimize
 from scipy.spatial import cKDTree
 
+from .geometry import AZ_SENSE
 from .tx_coupling import TransmitterGeometry, ground_heading
 from .tx_model import HFSSBeamSet, simulate_hfss
 
@@ -149,7 +150,7 @@ def load_v007_data(data_path, require_comb=True, start=-185, stop=-150):
               f"of {len(files)}: {', '.join(comb_off_files)}")
     return {
         "files": files, "times": times, "accel": accel, "pot": pot,
-        "az_deg": azm * MOTOR_CAL, "el_deg": elm * MOTOR_CAL,
+        "az_deg": AZ_SENSE * azm * MOTOR_CAL, "el_deg": elm * MOTOR_CAL,
         "measured_tx": measured_tx, "measured_sigma": measured_sigma,
         "freqs": freqs, "comb_off_files": comb_off_files,
     }

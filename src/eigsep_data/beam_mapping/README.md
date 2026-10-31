@@ -28,6 +28,7 @@ re-exports the common entry points; it contains no logic of its own.
 
 ## Recent changes
 
+- 2026-10-28 (Claude Code, for Aaron): `AZ_SENSE = -1` in `geometry.py`. The Marjum azimuth is left-handed about the boresight (memos 002, 003), so `fuse_pointing` and `diagnostics.load_v007_data` now negate the motor/pot azimuth before it reaches `mount_rotation`, matching pointing table v5. `simulate_pointing_streams` writes readings with the same sense. Raw `az_motor_deg`/`az_pot_deg` keep the readings' sense.
 - 2026-10-25 (Claude Code, for Aaron, at eigsep-6d's request): `tx_fit` has a sixth
   geometry correction, `axle_tilt_delta_deg`, plus a fixed `TxGeometryModel.axle_tilt_deg`. The
   mount becomes `Rz(psi) Ry(tilt) Rx(el) Rz(az)`. The model could not tilt the beam

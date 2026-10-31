@@ -50,6 +50,7 @@ from .beam_rotations import (
     vector_to_spherical,
 )
 from .geometry import (
+    AZ_SENSE,
     MOTOR_DEG_PER_STEP,
     PointingStreams,
     PointingTable,
