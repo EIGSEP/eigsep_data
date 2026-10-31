@@ -18,7 +18,7 @@ re-exports the common entry points; it contains no logic of its own.
 | `tx_background.py` | Background under the comb teeth: local DPSS fit (`method='dpss'`, default) or gap averaging (`method='gap'`). |
 | `tx_teeth.py` | Model-free tooth selection: isolation and iterative neighbour coherence. |
 | `beam_basis.py` | Empirical-beam basis: real spherical harmonics (`select_lmax`) x a spectral basis, PCA (`pca_basis`, an `eigsep_base.spectral_basis.SpectralBasis`) or delay-limited DPSS with sinc continuation (`DPSSSpectralBasis`). |
-| `tx_fit.py` | The beam fit to transmitter teeth: `ToothData`, `stripe_split`, `TxGeometryModel`, `coarse_offset_alpha` (az offset x polarization grid), `fit_geometry` (nested geometry corrections), `JointBeamFit` (empirical beam + positive tooth gains, JAX float64 + L-BFGS-B), `score`. |
+| `tx_fit.py` | The beam fit to transmitter teeth: `ToothData`, `stripe_split`, `TxGeometryModel`, `coarse_offset_alpha` (az offset x polarization grid), `fit_geometry` (nested geometry corrections, including the elevation axle's tilt along the highline; `TILT_CANDIDATES` keeps the transmitter fixed), `JointBeamFit` (empirical beam + positive tooth gains, JAX float64 + L-BFGS-B), `score`. |
 | `vector_beam.py` | Per-pixel complex vector-beam solve from the transmitter cross-correlations (`fields_from_model` geometry from a `TxGeometryModel`, `reduce_cross`, `solve_sampled_beam`, closure D-term `fit_closure_g`, `leave_one_out`, `split_half_by_dwell`, `compare_to_truth`). No smooth basis and no HFSS prior: each sampled pixel is solved on its own. Import as a module; not re-exported. |
 | `tx_export.py` | `export_beam`: a fitted beam in the HFSS beam-map format (`read_beam`-compatible). |
 | `mapper.py` | Non-negative theta/phi gain recovery from alternating transmitter arms (`PolarizationBeamMapper`). |
@@ -29,6 +29,14 @@ re-exports the common entry points; it contains no logic of its own.
 ## Recent changes
 
 - 2026-10-28 (Claude Code, for Aaron): `AZ_SENSE = -1` in `geometry.py`. The Marjum azimuth is left-handed about the boresight (memos 002, 003), so `fuse_pointing` and `diagnostics.load_v007_data` now negate the motor/pot azimuth before it reaches `mount_rotation`, matching pointing table v5. `simulate_pointing_streams` writes readings with the same sense. Raw `az_motor_deg`/`az_pot_deg` keep the readings' sense.
+- 2026-10-25 (Claude Code, for Aaron, at eigsep-6d's request): `tx_fit` has a sixth
+  geometry correction, `axle_tilt_delta_deg`, plus a fixed `TxGeometryModel.axle_tilt_deg`. The
+  mount becomes `Rz(psi) Ry(tilt) Rx(el) Rz(az)`. The model could not tilt the beam
+  along the highline, so the transmitter-offset correction stood in for that tilt: in
+  beam fits v0012-v0014 it ran to its bound along the line. Box-air's IMU puts the axle
+  about 6 deg out of level during the 07-17 raster. `TILT_CANDIDATES` fits the tilt with
+  the transmitter fixed. Five-element parameter vectors from older products still load,
+  with zero tilt.
 - 2026-10-21 (Claude Code, for Dominic): added `vector_beam`, moved from
   `eigsep_data.vector_beam`. It now uses this package's pointing convention
   only (`fields_from_model`); the `beam_sim`-convention geometry it used to

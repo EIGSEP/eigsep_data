@@ -12,8 +12,11 @@ v0008-v0011:
 
 1. :func:`coarse_offset_alpha`: a grid over the az offset and the transmitter
    polarization centre, with the HFSS beam and zero geometry corrections.
-2. :func:`fit_geometry`: least squares over nested sets of the five geometry
+2. :func:`fit_geometry`: least squares over nested sets of the six geometry
    corrections (:data:`PARAM_NAMES`), each scored by held-out fractional RMS.
+   The sixth, the axle tilt, was added after v0014: the transmitter-offset
+   correction had been standing in for it (it ran to any bound along the
+   highline). Parameter vectors of length five are read with zero tilt.
 3. :class:`JointBeamFit`: the empirical beam, i.e. complex coefficients
    ``C (nmodes, 3 nlm)`` of a spectral x spherical-harmonic basis
    (:mod:`~eigsep_data.beam_mapping.beam_basis`), fitted jointly with one
@@ -29,6 +32,7 @@ PARAM_NAMES
 ToothData
 stripe_split
 TxGeometryModel
+TILT_CANDIDATES
 tooth_fields
 hfss_power
 score
@@ -61,11 +65,27 @@ from .tx_teeth import tooth_arms
 log = logging.getLogger(__name__)
 
 PARAM_NAMES = ('polarization_delta_deg', 'az_zero_delta_deg', 'el_zero_delta_deg',
-               'tx_east_delta_m', 'tx_north_delta_m')
-DEFAULT_BOUNDS = (30.0, 10.0, 10.0, 1.5 / np.sqrt(2), 1.5 / np.sqrt(2))
+               'tx_east_delta_m', 'tx_north_delta_m', 'axle_tilt_delta_deg')
+DEFAULT_BOUNDS = (30.0, 10.0, 10.0, 1.5 / np.sqrt(2), 1.5 / np.sqrt(2), 15.0)
 GEOMETRY_CANDIDATES = (('fixed', ()), ('polarization', (0,)), ('az_el', (1, 2)),
                        ('tx_position', (3, 4)), ('polarization_az_el', (0, 1, 2)),
                        ('all', (0, 1, 2, 3, 4)))
+# Candidates that tilt the axle and keep the transmitter where the site geometry puts it.
+TILT_CANDIDATES = (('fixed', ()), ('polarization', (0,)), ('az_el', (1, 2)),
+                   ('polarization_az_el', (0, 1, 2)), ('axle_tilt', (5,)),
+                   ('az_el_tilt', (1, 2, 5)), ('polarization_az_el_tilt', (0, 1, 2, 5)))
+
+
+def _corrections(params):
+    """Corrections as a (6,) array; a length-5 vector (fits before the axle tilt) gets zero tilt."""
+    p = np.asarray(params, float)
+    return np.concatenate([p, np.zeros(len(PARAM_NAMES) - len(p))]) if len(p) < len(PARAM_NAMES) else p
+
+
+def _ry(angle_deg):
+    a = np.deg2rad(float(angle_deg))
+    c, s = np.cos(a), np.sin(a)
+    return np.array([[c, 0.0, s], [0.0, 1.0, 0.0], [-s, 0.0, c]])
 
 
 @dataclass
@@ -118,7 +138,10 @@ class TxGeometryModel:
     ``psi_deg``: elevation-axle direction (deg ccw from East). ``antenna_enu``,
     ``transmitter_enu``: positions (m). ``alpha0_deg``: arm-0 polarization centre
     (see :class:`~eigsep_data.beam_mapping.tx_coupling.TransmitterGeometry`).
-    ``az_offset_deg``: added to the table az (the az-zero calibration). The five
+    ``az_offset_deg``: added to the table az (the az-zero calibration).
+    ``axle_tilt_deg``: tilt of the elevation axle out of the horizontal, a right-handed
+    rotation about the horizontal axis 90 deg ccw of ``psi``; positive lowers the
+    ``psi`` end. The mount is then ``Rz(psi) Ry(tilt) Rx(el) Rz(az)``. The six
     corrections in :data:`PARAM_NAMES` are applied on top by every method.
     """
 
@@ -127,16 +150,22 @@ class TxGeometryModel:
     transmitter_enu: np.ndarray
     alpha0_deg: float = 0.0
     az_offset_deg: float = 0.0
+    axle_tilt_deg: float = 0.0
 
     def transmitter(self, params):
-        p = np.asarray(params, float)
+        p = _corrections(params)
         tx = np.asarray(self.transmitter_enu, float) + np.array([p[3], p[4], 0.0])
         return TransmitterGeometry(heading_between(self.antenna_enu, tx), self.alpha0_deg + p[0])
 
     def rotations(self, az_deg, el_deg, params):
-        p = np.asarray(params, float)
-        return mount_rotation(np.asarray(az_deg) + self.az_offset_deg + p[1], np.asarray(el_deg) + p[2],
-                              self.psi_deg)
+        p = _corrections(params)
+        R = mount_rotation(np.asarray(az_deg) + self.az_offset_deg + p[1], np.asarray(el_deg) + p[2],
+                           self.psi_deg)
+        tilt = self.axle_tilt_deg + p[5]
+        if tilt == 0.0:
+            return R
+        axle = mount_rotation(0.0, 0.0, self.psi_deg)        # Rz(psi)
+        return axle @ _ry(tilt) @ axle.T @ R
 
     def frame(self, data, params, indices=None):
         """Transmitter (theta, phi) and both arms' fields ``e`` (2, n, 3) in the body frame."""
@@ -205,7 +234,7 @@ def coarse_offset_alpha(data, fields_teeth, model, offsets=np.arange(-60.0, 60.0
         for off in offset_values:
             for a in alpha_values:
                 m = dataclasses.replace(model, az_offset_deg=float(off), alpha0_deg=float(a) % 180)
-                r = _train_rms(data, fields_teeth, m, np.zeros(5), idx, scale, usef)
+                r = _train_rms(data, fields_teeth, m, np.zeros(len(PARAM_NAMES)), idx, scale, usef)
                 rows.append(dict(az_offset_deg=float(off), alpha_deg=float(a) % 180,
                                  normalized_rms=float(np.sqrt(np.mean(r ** 2)))))
 
@@ -228,7 +257,7 @@ def fit_geometry(data, fields_teeth, model, candidates=GEOMETRY_CANDIDATES, boun
     scored on all samples with gains fitted on the training stripes, and the
     candidate with the lowest median validation fractional RMS is chosen.
     Returns ``(params, name, table, predictions)``: the chosen corrections
-    (5,), its name, one summary dict per candidate, and each candidate's
+    (6,), its name, one summary dict per candidate, and each candidate's
     (nteeth, n) prediction.
     """
     train = data.split == 0
@@ -239,11 +268,11 @@ def fit_geometry(data, fields_teeth, model, candidates=GEOMETRY_CANDIDATES, boun
     table, predictions, parameters = [], {}, {}
     for name, free in candidates:
         free = list(free)
-        x = np.zeros(5)
+        x = np.zeros(len(PARAM_NAMES))
         condition = 1.0
         if free:
             def unpack(v, free=free):
-                p = np.zeros(5)
+                p = np.zeros(len(PARAM_NAMES))
                 p[free] = v
                 return p
 

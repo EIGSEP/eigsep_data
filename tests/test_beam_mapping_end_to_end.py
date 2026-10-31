@@ -115,6 +115,23 @@ def test_geometry_is_recovered_with_the_true_beam(sim, fitted):
     assert abs(params[1]) < 0.3
 
 
+def test_axle_tilt_is_recovered_and_otherwise_mimicked_by_a_transmitter_shift(sim, fitted):
+    tilted = bm.TxGeometryModel(PSI, ANT, TX, alpha0_deg=TRUE_ALPHA, az_offset_deg=TRUE_OFFSET,
+                                axle_tilt_deg=4.0)
+    clean = sim["signal"] / bm.hfss_power(sim["truth_teeth"], sim["data"], sim["truth_model"], TRUE_PARAMS) \
+        * bm.hfss_power(sim["truth_teeth"], sim["data"], tilted, TRUE_PARAMS)
+    data = bm.ToothData(**{**sim["data"].__dict__, "data": clean})
+    model = fitted["model"]
+    params, _, _, _ = bm.fit_geometry(data, sim["truth_teeth"], model, candidates=(("az_el_tilt", (1, 2, 5)),))
+    assert params[5] == pytest.approx(4.0, abs=0.2)
+    assert params[2] == pytest.approx(TRUE_PARAMS[2], abs=0.1)
+    # Without the tilt term, the transmitter offset runs along the axle to its bound.
+    params, _, _, _ = bm.fit_geometry(data, sim["truth_teeth"], model, candidates=(("az_el_tx", (1, 2, 3, 4)),))
+    shift = params[3:5] / np.linalg.norm(params[3:5])
+    axle = np.array([np.cos(np.deg2rad(PSI)), np.sin(np.deg2rad(PSI))])
+    assert abs(shift @ axle) > 0.9
+
+
 def test_joint_fit_recovers_the_hfss_beam_on_held_out_stripes(sim, fitted):
     assert fitted["info"]["success"]
     prior, recovered = held_out_error(sim, fitted["prior"]), held_out_error(sim, fitted["prediction"])

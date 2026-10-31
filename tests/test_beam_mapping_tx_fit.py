@@ -58,3 +58,26 @@ def test_nan_data_is_masked():
     data.data[0, 3] = np.nan
     data = bm.ToothData(**{**data.__dict__})
     assert not data.good[0, 3]
+
+
+def test_axle_tilt_lowers_the_psi_end_of_the_axle():
+    model = bm.TxGeometryModel(PSI, [0, 0, 91.0], [7, 3, 0], axle_tilt_deg=4.0)
+    R = model.rotations(np.array([0.0]), np.array([0.0]), np.zeros(6))[0]
+    psi = np.deg2rad(PSI)
+    tau = np.deg2rad(4.0)
+    # at az = el = 0 the dipole arm (+x body) lies along the axle
+    np.testing.assert_allclose(R @ [1, 0, 0], [np.cos(psi) * np.cos(tau), np.sin(psi) * np.cos(tau), -np.sin(tau)],
+                               atol=1e-12)
+    np.testing.assert_allclose(R @ R.T, np.eye(3), atol=1e-12)
+
+
+def test_axle_tilt_correction_adds_to_the_model_tilt_and_five_params_mean_no_tilt():
+    data = small_data()
+    base = bm.TxGeometryModel(PSI, [0, 0, 91.0], [7, 3, 0])
+    five = np.array([1.0, 0.5, -0.4, 0.3, -0.2])
+    np.testing.assert_allclose(base.rotations(data.az_deg, data.el_deg, five),
+                               base.rotations(data.az_deg, data.el_deg, np.r_[five, 0.0]), atol=0)
+    tilted = bm.TxGeometryModel(PSI, [0, 0, 91.0], [7, 3, 0], axle_tilt_deg=2.5)
+    np.testing.assert_allclose(tilted.rotations(data.az_deg, data.el_deg, np.r_[five, 1.0]),
+                               base.rotations(data.az_deg, data.el_deg, np.r_[five, 3.5]), atol=1e-12)
+    assert len(bm.PARAM_NAMES) == 6 and bm.PARAM_NAMES[5] == 'axle_tilt_delta_deg'
