@@ -215,6 +215,16 @@ def main(argv=None):
     else:
         t_ns = np.full(fb.size, float(t_ns))
     wide = band_mask(fb, vcfg["plumbing_band_mhz"])
+    # A T_NS spectrum may leave channels undefined (NaN; noise_source
+    # v0002's smooth fit outside its range and over excluded bands): the
+    # product calibrates nothing there, so checks 2 and 4 score the rest.
+    undefined = ~np.isfinite(t_ns)
+    if (undefined & (bb | wide)).any():
+        out["channels_without_t_ns"] = {
+            "band": int((bb & undefined).sum()),
+            "plumbing_band": int((wide & undefined).sum()),
+        }
+        bb, wide = bb & ~undefined, wide & ~undefined
     out["plumbing"] = plumbing(ts, tl, st, t_ns, bb, wide)
     out["coverage"] = coverage(b.calibrated, st, bb, t0, t1)
 
