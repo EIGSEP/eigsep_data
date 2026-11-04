@@ -15,7 +15,11 @@ reference plane P:
 - the noise-source excess as the receiver takes it, ``t_ns_k``: an assumed
   value, or one value per channel built from a bench-measured
   ``derived/noise_source/<version>/`` (:func:`noise_source_tns`), applied
-  to every integration.
+  to every integration. Two options of the config's ``t_ns`` (absent in
+  v0004, whose behaviour is the default): ``t_off``, the noise path's
+  temperature when off taken as the noise-diode board's thermistor rather
+  than the load's (:func:`board_minus_load`), and ``load_path``, the
+  ambient load's noise carried to P through its switch path.
 
 The campaign's choices (span, switched input, flag product, visit
 rejection, interpolation limits, the noise source) are the version's
@@ -240,7 +244,7 @@ def s11_on_channels(s11_dir, switch_path, osl_path, freqs_mhz, cfg):
             assert (
                 cfg["limits"]["s11_hold_s"] < (post.min() - pre.max()) / 2
             ), dut
-    return out, log
+    return out, log, fs
 
 
 def thermistor(index, cfg):
@@ -266,16 +270,53 @@ def thermistor(index, cfg):
     )
 
 
-def noise_source_tns(ns, freqs, s11, therm_k, check_band_mhz):
+def board_minus_load(index, cfg, board_c, window_utc=None, valid_c=(5, 60)):
+    """The noise-diode board's thermistor minus the load's, per reading.
+
+    Rows of ``index`` in ``window_utc`` (default the config's span) where
+    both read inside ``valid_c`` (deg C; outside it a thermistor is
+    unplugged or railed), one per timestamp. Returns the times and the
+    differences (K)."""
+    sel = index.select(time=tuple(window_utc or cfg["span_utc"]))
+    m = sel.meta
+    t = m.time_best.to_numpy(dtype=float)
+    tb = pd.to_numeric(m[board_c], errors="coerce").to_numpy(float)
+    tl = pd.to_numeric(m[cfg["load_thermistor_c"]], errors="coerce")
+    tl = tl.to_numpy(float)
+    lo, hi = valid_c
+    ok = np.isfinite(t) & (tb > lo) & (tb < hi) & (tl > lo) & (tl < hi)
+    t, d = t[ok], (tb - tl)[ok]
+    order = np.argsort(t, kind="stable")
+    t, first = np.unique(t[order], return_index=True)
+    return t, d[order][first]
+
+
+def noise_source_tns(
+    ns,
+    freqs,
+    s11,
+    therm_k,
+    check_band_mhz,
+    dt_board_k=None,
+    load_gain=None,
+):
     """``t_ns_k`` per channel from a ``noise_source`` product.
 
-    ``T_NS = M_NS (T_load + T_ex) - M_amb T_load``
+    ``T_NS = M_NS (T_off + T_ex) - M_amb T_load``
     (``eigsep_cal.noise_source.tns_as_received``): the bench excess at P (the
     product's smooth fit), the noise-source path's reflection at P (lab) and
     the field receiver's and ambient load's reflections at P, averaged over
     the campaign's sweeps, with T_load the mean load thermistor. One spectrum
     for every integration; the check records how far it would move if each
-    receiver sweep (with its nearest ambient-load sweep) were used."""
+    receiver sweep (with its nearest ambient-load sweep) were used.
+
+    By default T_off = T_load. ``dt_board_k`` (times, differences), from
+    :func:`board_minus_load`, sets T_off = T_load + their mean, the diode
+    board's temperature, and the check then also records how far T_NS
+    would move if each reading's own difference were used. ``load_gain``
+    (per channel) carries the ambient load to P through its switch path:
+    ``T_load,P = G T_load + (1 - G) T_off`` in the load term."""
+    from eigsep_cal.dicke import mismatch
     from eigsep_cal.noise_source import tns_as_received
 
     t_ex = ns.on(freqs, smooth=True)
@@ -283,12 +324,55 @@ def noise_source_tns(ns, freqs, s11, therm_k, check_band_mhz):
     g_ns = ns.gamma_ns[np.clip(idx, 0, ns.freqs.size - 1)]
     (tr, gr, _), (ta, ga, _) = s11["rec"], s11["amb"]
     t_load = float(np.mean(therm_k))
-    t_ns = tns_as_received(
-        t_ex, g_ns, np.mean(gr, axis=0), np.mean(ga, axis=0), t_load
-    )
     near = np.array([np.argmin(np.abs(ta - t)) for t in tr])
-    per_sweep = tns_as_received(t_ex, g_ns, gr, ga[near], t_load)
     b = (freqs >= check_band_mhz[0]) & (freqs <= check_band_mhz[1])
+    extra = {}
+    if dt_board_k is None and load_gain is None:
+        t_ns = tns_as_received(
+            t_ex, g_ns, np.mean(gr, axis=0), np.mean(ga, axis=0), t_load
+        )
+        per_sweep = tns_as_received(t_ex, g_ns, gr, ga[near], t_load)
+    else:
+        dt = 0.0 if dt_board_k is None else float(np.mean(dt_board_k[1]))
+        t_off = t_load + dt
+        gain = 1.0 if load_gain is None else np.asarray(load_gain, float)
+        t_load_p = gain * t_load + (1.0 - gain) * t_off
+        g_rec, g_amb = np.mean(gr, axis=0), np.mean(ga, axis=0)
+        t_ns = tns_as_received(t_ex, g_ns, g_rec, g_amb, t_load_p, t_off)
+        per_sweep = tns_as_received(
+            t_ex, g_ns, gr, ga[near], t_load_p, t_off
+        )
+        extra["t_off_k"] = t_off
+        if load_gain is not None:
+            extra["load_path_gain_in_band"] = [
+                float(np.nanmin(gain[b])),
+                float(np.nanmax(gain[b])),
+            ]
+        if dt_board_k is not None:
+            # d T_NS / d T_off at fixed T_load: M_NS - (1 - G) M_amb.
+            m_ns = np.real(mismatch(g_ns, g_rec))
+            m_amb = np.real(mismatch(g_amb, g_rec))
+            slope = np.nanmean(((m_ns - (1.0 - gain) * m_amb) / t_ns)[b])
+            d = np.asarray(dt_board_k[1], float)
+            frac = slope * (d - dt)
+            hours = np.floor(np.asarray(dt_board_k[0]) / 3600.0)
+            hourly = pd.Series(frac).groupby(hours).mean().to_numpy()
+            extra["board_minus_load_k"] = {
+                "readings": int(d.size),
+                "mean": dt,
+                "std": float(np.std(d)),
+                "p05_p95": [float(np.percentile(d, 5)),
+                            float(np.percentile(d, 95))],
+                "min_max": [float(d.min()), float(d.max())],
+            }
+            extra["frac_change_if_per_reading"] = {
+                "band_mean_dtns_dtoff_per_k": float(slope),
+                "rms": float(np.sqrt(np.mean(frac**2))),
+                "p05_p95": [float(np.percentile(frac, 5)),
+                            float(np.percentile(frac, 95))],
+                "max_abs": float(np.max(np.abs(frac))),
+                "hourly_mean_max_abs": float(np.max(np.abs(hourly))),
+            }
     dev = (per_sweep[:, b] - t_ns[b]) / t_ns[b]
     check = {
         "band_mhz": list(check_band_mhz),
@@ -300,6 +384,7 @@ def noise_source_tns(ns, freqs, s11, therm_k, check_band_mhz):
             float(np.nanmin(t_ns[b])),
             float(np.nanmax(t_ns[b])),
         ],
+        **extra,
     }
     return t_ns.astype(float), check
 
@@ -335,7 +420,7 @@ def main(argv=None):
     amb, freqs, amb_log = visits(index, "RFAMB", windows, cfg)
     non, freqs_n, non_log = visits(index, "RFNON", windows, cfg)
     assert np.array_equal(freqs, freqs_n)
-    s11, s11_log = s11_on_channels(
+    s11, s11_log, vna_mhz = s11_on_channels(
         root / "data" / "s11", switch, osl, freqs, cfg
     )
     therm_t, therm_k, therm_log = thermistor(index, cfg)
@@ -354,16 +439,59 @@ def main(argv=None):
             ).is_file()
         )
         ns = noise_source.load(ver, root=ns_root)
+        dt_board, load_gain = None, None
+        formula = (
+            "M_NS (T_load + T_ex) - M_amb T_load, campaign-mean field "
+            "Gamma_rec and Gamma_amb at P, lab Gamma_NS at P, mean load "
+            "thermistor"
+        )
+        if "t_off" in tns_cfg:
+            to = tns_cfg["t_off"]
+            dt_board = board_minus_load(
+                index,
+                cfg,
+                to["board_thermistor_c"],
+                to.get("window_utc"),
+                tuple(to.get("valid_c", (5, 60))),
+            )
+        if "load_path" in tns_cfg:
+            from ..noise_source_bench import path_gain
+
+            with np.load(switch) as sp:
+                g = path_gain(np.zeros(vna_mhz.size), sp[tns_cfg["load_path"]])
+            load_gain = np.interp(freqs, vna_mhz, g, left=np.nan, right=np.nan)
+        if dt_board is not None or load_gain is not None:
+            formula = (
+                "M_NS (T_off + T_ex) - M_amb T_load,P; T_off = T_load + "
+                "mean(diode board - load thermistor)"
+                if dt_board is not None
+                else "M_NS (T_load + T_ex) - M_amb T_load,P; T_off = T_load"
+            )
+            formula += (
+                "; T_load,P = G T_load + (1 - G) T_off, G the "
+                f"{tns_cfg['load_path']} path's available gain (Gamma = 0)"
+                if load_gain is not None
+                else "; T_load,P = T_load"
+            )
+            formula += (
+                "; campaign-mean field Gamma_rec and Gamma_amb at P, lab "
+                "Gamma_NS at P, mean load thermistor"
+            )
         t_ns, check = noise_source_tns(
-            ns, freqs, s11, therm_k, tns_cfg["check_band_mhz"]
+            ns,
+            freqs,
+            s11,
+            therm_k,
+            tns_cfg["check_band_mhz"],
+            dt_board_k=dt_board,
+            load_gain=load_gain,
         )
         t_ns_model = {
             "t_ns_k": "spectrum on freqs (solutions.npz)",
             "t_ns_source": f"derived/noise_source/{ver}: bench-measured excess at P "
             "(smooth fit), converted to the field receiver with "
             "eigsep_cal.noise_source.tns_as_received",
-            "t_ns_formula": "M_NS (T_load + T_ex) - M_amb T_load, campaign-mean field Gamma_rec "
-            "and Gamma_amb at P, lab Gamma_NS at P, mean load thermistor",
+            "t_ns_formula": formula,
             "t_ns_check": check,
         }
         ns_input = {
