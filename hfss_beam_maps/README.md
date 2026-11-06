@@ -74,7 +74,7 @@ does not survive a non-editable install. See the repo root README.
 
 ## Recent changes
 
-- 2026-11-06 (Richard): added `tx_reflector_beam_with_top_ring.npz`, Bahram's transmitter
+- 2026-11-06: added `tx_reflector_beam_with_top_ring.npz`, Bahram's transmitter
   antenna simulation (with the top ring).
 - 2026-10-02: corrected the description: this is box-air's bowtie antenna, not the
   transmitter's (Aaron). The file is unchanged.
