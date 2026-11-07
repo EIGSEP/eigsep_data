@@ -126,6 +126,74 @@ class TestInterpolation:
         np.testing.assert_allclose(tc["offset"], np.broadcast_to(of, tc["offset"].shape))
 
 
+class TestLoadWindow:
+    """Binned rows can ask for the mean thermistor reading over each
+    bin; the bundle's per-integration call is unchanged."""
+
+    def fetch(self, root, **kw):
+        from eigsep_data import products as P
+        from eigsep_data.bundle import Campaign
+
+        tc = P.get("tcal")
+        tc._cache.clear()
+        return tc.fetch(
+            Campaign(root), "v0000", None, None, "4", None, _times(root),
+            **kw,
+        )
+
+    def test_the_default_adds_nothing(self, campaign):
+        write_solutions(campaign)
+        out = self.fetch(campaign)
+        assert "tcal_therm_n" not in out
+        b = bundle(campaign)
+        for k, v in out.items():
+            if k != "_fp":
+                np.testing.assert_array_equal(v, b.products["tcal"][k])
+
+    def test_a_window_takes_the_mean_of_its_readings(self, campaign):
+        s = write_solutions(campaign)
+        t = _times(campaign)
+        window = (np.full(t.size, s["therm_t"][0]),
+                  np.full(t.size, s["therm_t"][1]))
+        out = self.fetch(campaign, t_load_window=window)
+        np.testing.assert_array_equal(out["tcal_t_load_k"], 301.0)
+        np.testing.assert_array_equal(out["tcal_therm_n"], 2)
+        t0, t1 = s["amb_t"]
+        w = ((t - t0) / (t1 - t0))[:, None]
+        a, off = tstar_coefficients(110 + 10 * w, 10 + 10 * w, T_NS, 301.0)
+        sc, of = receiver_s11_coefficients(a, off, 301.0, 0.5, 0.05, 0.3j)
+        shape = out["scale"].shape
+        np.testing.assert_allclose(
+            out["scale"], np.broadcast_to(np.real(sc), shape)
+        )
+        np.testing.assert_allclose(
+            out["offset"], np.broadcast_to(np.real(of), shape)
+        )
+
+    def test_an_empty_window_falls_back_to_the_nearest(self, campaign):
+        write_solutions(campaign)
+        t = _times(campaign)
+        near = self.fetch(campaign)
+        out = self.fetch(campaign, t_load_window=(t, t))
+        np.testing.assert_array_equal(out["tcal_therm_n"], 0)
+        np.testing.assert_array_equal(
+            out["tcal_t_load_k"], near["tcal_t_load_k"]
+        )
+
+    def test_another_input_gets_no_load_temperature(self, campaign):
+        write_solutions(campaign)
+        from eigsep_data import products as P
+        from eigsep_data.bundle import Campaign
+
+        t = _times(campaign)
+        out = P.get("tcal").fetch(
+            Campaign(campaign), "v0000", None, None, "0", None, t,
+            t_load_window=(t - 1e4, t + 1e4),
+        )
+        assert np.isnan(out["tcal_t_load_k"]).all()
+        np.testing.assert_array_equal(out["tcal_therm_n"], 0)
+
+
 class TestNoiseSourceSpectrum:
     """From v0004 t_ns_k can be one value per channel; it is applied to
     every row, channel by channel, and cut to the bundle's band."""
