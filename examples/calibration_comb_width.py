@@ -89,15 +89,12 @@ def main():
         st, sc = mean(pt), mean(pc)
         band = (f >= 30) & (f <= 245)
 
-        # Fixed +/-2 channel continuum is a width diagnostic, not a DUT model.
-        def profile(p):
-            with np.errstate(divide="ignore", invalid="ignore"):
-                return p[:, 2:-2] / ((p[:, :-4] + p[:, 4:]) / 2) - 1
-
-        xt, xc = profile(pt), profile(pc)
-        ff = f[2:-2]
-        offset = ff - np.round(ff)
-        use = (ff >= 30) & (ff <= 245)
+        # Compare independent row-group means at the SAME native channel.
+        # A local neighbour denominator can itself contain another comb tooth.
+        with np.errstate(divide="ignore", invalid="ignore"):
+            contrast = st / sc - 1
+        offset = f - np.round(f)
+        use = band
         core = use & (np.abs(offset) < 0.15)
         neighbour = use & (np.abs(offset) >= 0.15) & (np.abs(offset) < 0.4)
         rec = dict(
@@ -108,23 +105,35 @@ def main():
             control_rows=int(control.sum()),
             all_detected_rows=int(d["selected"].sum()),
             control="same switch state, not detected; not certified clean",
-            core_mean_test=float(np.nanmean(xt[:, core])),
-            core_mean_control=float(np.nanmean(xc[:, core])),
-            neighbour_mean_test=float(np.nanmean(xt[:, neighbour])),
-            neighbour_mean_control=float(np.nanmean(xc[:, neighbour])),
+            core_mean_contrast=float(np.nanmean(contrast[core])),
+            neighbour_mean_contrast=float(np.nanmean(contrast[neighbour])),
+            neighbour_max_contrast=float(np.nanmax(contrast[neighbour])),
         )
         records.append(rec)
-        for label, values in [("detected", xt), ("control", xc)]:
-            folded = []
-            for lo, hi in zip(edges[:-1], edges[1:]):
-                m = use & (offset >= lo) & (offset < hi)
-                folded.append(
-                    float(np.nanmean(values[:, m])) if m.any() else np.nan
-                )
-            axes[k, 1].plot(
-                (edges[:-1] + edges[1:]) / 2, folded, "o-", ms=3, label=label
+        folded = []
+        for lo, hi in zip(edges[:-1], edges[1:]):
+            m = use & (offset >= lo) & (offset < hi)
+            folded.append(
+                float(np.nanmean(contrast[m])) if m.any() else np.nan
             )
-            arrays[f"{k}_{label}_folded"] = folded
+        axes[k, 1].scatter(
+            offset[use],
+            contrast[use],
+            s=4,
+            alpha=0.25,
+            color="0.3",
+            label="native channels",
+        )
+        axes[k, 1].plot(
+            (edges[:-1] + edges[1:]) / 2,
+            folded,
+            "o-",
+            ms=3,
+            label="mean contrast",
+        )
+        axes[k, 1].axhline(0, color="0.5", lw=0.6)
+        arrays[f"{k}_contrast_folded"] = folded
+        arrays[f"{k}_native_contrast"] = contrast
         axes[k, 0].plot(f[band], st[band], lw=0.8, label="detected")
         axes[k, 0].plot(f[band], sc[band], lw=0.8, label="control")
         axes[k, 0].set_yscale("log")
@@ -142,14 +151,16 @@ def main():
         axes[k, 1].set(
             xlim=(-0.5, 0.5),
             xlabel="offset from integer MHz [MHz]",
-            ylabel="power / local continuum − 1",
+            ylabel="detected mean / control mean − 1",
         )
         axes[k, 1].set_yscale("symlog", linthresh=0.05)
-        axes[k, 1].set_ylim(-2, 200)
         axes[k, 0].legend(fontsize=8)
         axes[k, 1].legend(fontsize=8)
     limits = [ax.get_ylim() for ax in axes[:, 0]]
     for ax in axes[:, 0]:
+        ax.set_ylim(min(x[0] for x in limits), max(x[1] for x in limits))
+    limits = [ax.get_ylim() for ax in axes[:, 1]]
+    for ax in axes[:, 1]:
         ax.set_ylim(min(x[0] for x in limits), max(x[1] for x in limits))
     fig.savefig(args.output / "raw_comb_width.pdf")
     fig.savefig(args.output / "raw_comb_width.png", dpi=140)
@@ -177,8 +188,8 @@ def main():
         "Three bounded raw input4 comparisons, 30–245 MHz, using the pinned "
         "native-row comb detections. Left: detected and same-state "
         "non-detected "
-        "mean raw spectra; right: the folded ratio to the mean of the two "
-        "channels +/-2 native channels away, minus one. Shading is the "
+        "mean raw spectra; right: their ratio at the same native frequency, "
+        "minus one, folded around integer MHz. Shading is the "
         "unchanged +/-0.15MHz window. Nonpositive power is omitted, no RFI "
         "flags or fills applied. The third control is the earlier file. "
         "This tests observed widths and neighbours, "
