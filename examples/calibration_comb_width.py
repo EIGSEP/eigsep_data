@@ -108,8 +108,16 @@ def main():
             core_mean_contrast=float(np.nanmean(contrast[core])),
             neighbour_mean_contrast=float(np.nanmean(contrast[neighbour])),
             neighbour_max_contrast=float(np.nanmax(contrast[neighbour])),
+            neighbour_peak_frequency_mhz=float(
+                f[neighbour][np.nanargmax(contrast[neighbour])]
+            ),
         )
         records.append(rec)
+        arrays["frequency_mhz"] = f
+        arrays[f"{k}_detected_rows"] = np.flatnonzero(test)
+        arrays[f"{k}_control_rows"] = np.flatnonzero(control)
+        arrays[f"{k}_detected_time_best"] = d["time_best"][test]
+        arrays[f"{k}_control_time_best"] = c["time_best"][control]
         folded = []
         for lo, hi in zip(edges[:-1], edges[1:]):
             m = use & (offset >= lo) & (offset < hi)
