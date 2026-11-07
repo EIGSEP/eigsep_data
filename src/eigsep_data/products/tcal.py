@@ -31,7 +31,9 @@ the measurements a calibration is built from, on their own cadences:
   The builder keeps ``s11_hold_s`` under half of every gap between
   epochs, so a held sweep is always from the row's own epoch;
 - the load temperature is the thermistor reading nearest the row,
-  within ``therm_tol_s``.
+  within ``therm_tol_s``; or, when the caller passes a time window per
+  row (``t_load_window``, e.g. a bin's first and last row times), the
+  mean of the readings inside it (see :func:`load_temperature`).
 
 Anything that fails a limit is NaN, never extrapolated. The calibration
 is linear in the row's power, ``T = scale * P + offset``
@@ -88,6 +90,56 @@ def _interp(values, left, right, w, ok):
     return out
 
 
+def load_temperature(therm_t, therm_k, t, tol_s, window=None):
+    """Load temperature at each time in *t* from the thermistor stream.
+
+    Without *window*, the reading nearest each time, NaN where it is
+    more than *tol_s* away. That is right for one integration, whose
+    own reading it is, but not for a bin of many: the thermistor reads
+    white at ~0.2 K per reading, and a single reading's error enters
+    the calibrated temperature as the same kelvin offset at every
+    channel of the bin.
+
+    With ``window=(start, stop)``, arrays broadcastable to *t*, the
+    load temperature is the mean of the finite readings with
+    ``start <= therm_t <= stop``, its error falling as 1/sqrt(n). Where
+    the window holds none (or an edge is NaN), it falls back to the
+    nearest reading within *tol_s*.
+
+    *therm_t* must be sorted, as the builder writes it.
+
+    Returns ``(t_load, dt, n)``: ``dt`` is the distance to the nearest
+    reading; ``n`` is the number of readings averaged, 0 where the
+    nearest reading was used (``None`` without *window*).
+    """
+    tt, tk = therm_t, therm_k
+    i = np.clip(np.searchsorted(tt, t), 1, max(tt.size - 1, 1))
+    i = np.where(np.abs(tt[i - 1] - t) <= np.abs(tt[i] - t), i - 1, i)
+    dt = np.abs(tt[i] - t)
+    t_load = np.where(dt <= tol_s, tk[i], np.nan)
+    if window is None:
+        return t_load, dt, None
+
+    start, stop = np.broadcast_arrays(*window, t)[:2]
+    if np.any(stop < start):
+        raise ValueError("t_load_window: a window ends before it starts")
+    # In float64 (the builder stores float32) and relative to one
+    # reading, so 300 K x 1e5 readings costs no precision.
+    kk = np.asarray(tk, dtype=float)
+    good = np.isfinite(kk)
+    ref = kk[good][0] if good.any() else 0.0
+    cs = np.concatenate([[0.0], np.cumsum(np.where(good, kk - ref, 0.0))])
+    cn = np.concatenate([[0], np.cumsum(good)])
+    lo = np.searchsorted(tt, start, side="left")
+    hi = np.searchsorted(tt, stop, side="right")
+    n = np.where(
+        np.isfinite(start) & np.isfinite(stop), cn[hi] - cn[lo], 0
+    )
+    with np.errstate(invalid="ignore", divide="ignore"):
+        mean = ref + (cs[hi] - cs[lo]) / n
+    return np.where(n > 0, mean, t_load), dt, n
+
+
 @register
 class Tcal(Product):
     kind = "tcal"
@@ -127,7 +179,20 @@ class Tcal(Product):
             )
         return np.asarray(sols["freqs"], dtype=float)
 
-    def fetch(self, campaign, version, fname, rows, key, band, times):
+    def fetch(
+        self, campaign, version, fname, rows, key, band, times,
+        t_load_window=None,
+    ):
+        """The calibration coefficients at *times* (see the module).
+
+        *t_load_window* is an optional ``(start, stop)`` pair of arrays
+        like *times*: each row's load temperature is then the mean of
+        the thermistor readings in its window, and the output gains
+        ``tcal_therm_n``, the number averaged (0 where the nearest
+        reading stood in). Pass the bin's first and last row times when
+        the rows are bins of binned data. Without it (the bundle's
+        per-integration call) the nearest reading is used, as before.
+        """
         sols = self._solutions(campaign, version)
         if sols is None:
             return None
@@ -182,18 +247,21 @@ class Tcal(Product):
             gam[dut] = g
             out_cols[f"tcal_s11_{dut}_dt_s"] = np.where(use, dt, np.nan)
 
-        # Load temperature: the nearest thermistor reading.
-        tt, tk = sols["therm_t"], sols["therm_k"]
-        i = np.clip(np.searchsorted(tt, t), 1, max(tt.size - 1, 1))
-        i = np.where(np.abs(tt[i - 1] - t) <= np.abs(tt[i] - t), i - 1, i)
-        therm_dt = np.abs(tt[i] - t)
-        t_load = np.where(
-            applies & (therm_dt <= float(sols["therm_tol_s"])), tk[i], np.nan
+        # Load temperature: the nearest thermistor reading, or the mean
+        # of the readings in each row's window.
+        t_load, therm_dt, therm_n = load_temperature(
+            sols["therm_t"], sols["therm_k"], t,
+            float(sols["therm_tol_s"]), t_load_window,
         )
+        t_load = np.where(applies, t_load, np.nan)
         out_cols["tcal_t_load_k"] = t_load
         out_cols["tcal_therm_dt_s"] = np.where(
             np.isfinite(t_load), therm_dt, np.nan
         )
+        if therm_n is not None:
+            out_cols["tcal_therm_n"] = np.where(
+                np.isfinite(t_load), therm_n, 0
+            )
 
         # One number for every channel, or one value per channel on this
         # product's axis, cut to the bundle's band like every other spectrum.
