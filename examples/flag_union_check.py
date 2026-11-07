@@ -20,6 +20,7 @@ from eigsep_data.flag_union import (
     read_self_emi,
     self_emi_mask,
     write_diagnostic,
+    calibration_comb_mask,
 )
 
 
@@ -38,8 +39,8 @@ def main():
     ).strip():
         raise ValueError("commit implementation and fixtures before execution")
     fixtures = sorted((root / "tests/data/flag_union").glob("*.h5.json"))
-    if len(fixtures) != 2:
-        raise ValueError("exactly two reviewed real fixtures required")
+    if len(fixtures) != 3:
+        raise ValueError("exactly three reviewed real fixtures required")
     candidate_table = None
     candidate_sha = None
     if args.candidate_rows:
@@ -65,7 +66,7 @@ def main():
                     product="boxair_emi_presence",
                     original_sha256=next(iter(curation_hashes)),
                     extraction=(
-                        "exact two fixture file records; "
+                        "exact three fixture file records; "
                         "no inferred records"
                     ),
                 )
@@ -109,21 +110,28 @@ def main():
             candidates = [
                 candidate_rows(
                     base,
-                    "calibration_comb_row_candidate",
+                    "calibration_comb_detection_rows",
                     selected.row.to_numpy(dtype=int),
                     candidate_sha,
                 )
             ]
-        result = compose(
-            base, schema, [self_emi_mask(base, table)], candidates=candidates
-        )
+        sources = [self_emi_mask(base, table)]
+        calibration = np.zeros(flags.shape, bool)
+        if candidates:
+            source = calibration_comb_mask(
+                base, candidates[0]["rows"], candidate_sha
+            )
+            sources.append(source)
+            calibration = source.mask
+        result = compose(base, schema, sources, candidates=candidates)
         before = (flags & np.uint16(65535 ^ ((1 << 9) | (1 << 10)))) != 0
         emi = np.broadcast_to(
             np.array([abs(float(f) - round(float(f))) < 0.15 for f in freq]),
             flags.shape,
         )
+        emi = emi & packet["curation_entry"]["boxair_emi"]
         after = schema.excluded(result.flags, "sky")
-        np.testing.assert_array_equal(after, before | emi)
+        np.testing.assert_array_equal(after, before | emi | calibration)
         rows.append(
             dict(
                 file=base.file,
@@ -134,6 +142,8 @@ def main():
                 native_identity_preserved=True,
                 candidate_rows=len(candidates[0]["rows"]) if candidates else 0,
                 candidate_pixel_exclusion=False,
+                identified_calibration_comb_cells=int(calibration.sum()),
+                calibration_comb_pixel_exclusion=True,
             )
         )
         blocks.append(result)
@@ -151,7 +161,7 @@ def main():
         )
     report = dict(
         label="diagnostic",
-        scope="two released input4 masks; no fit",
+        scope="three released input4 masks; known calibration comb; no fit",
         commit=subprocess.check_output(
             ["git", "-C", str(root), "rev-parse", "HEAD"], text=True
         ).strip(),

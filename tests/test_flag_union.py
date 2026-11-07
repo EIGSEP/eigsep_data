@@ -20,7 +20,10 @@ from eigsep_data.flag_union import (
     read_self_emi,
     self_emi_mask,
     write_diagnostic,
+    calibration_comb_mask,
 )
+
+import eigsep_data.flag_union as union
 
 DATA = Path(__file__).parent / "data/flag_union"
 SHA = "a" * 64
@@ -96,7 +99,7 @@ def test_unknown_bits_missing_policy_and_ambiguous_sources_fail():
     schema, base = _small()
     with pytest.raises(ValueError, match="unknown bits"):
         compose(
-            replace(base, flags=np.full((2, 2), 2048, np.uint16)), schema, []
+            replace(base, flags=np.full((2, 2), 4096, np.uint16)), schema, []
         )
     with pytest.raises(ValueError, match="policy"):
         schema.excluded(base.flags, "unpublished")
@@ -155,6 +158,97 @@ def test_row_candidate_is_evidence_without_pixel_exclusion():
         candidate_rows(base, "calibration_comb", [2], SHA)
     with pytest.raises(TypeError, match="MaskSource"):
         compose(base, schema, [record])
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"rows": [-1, 999999]},
+        {"rows": [0, 0]},
+        {"rows": [0.5]},
+        {"name": ""},
+        {"source_sha256": "invalid"},
+        {"coordinate_sha256": "b" * 64},
+        {"pixel_exclusion": True},
+    ],
+)
+def test_untrusted_candidate_records_fail_every_boundary(tmp_path, change):
+    schema, base = _small()
+    record = candidate_rows(base, "generic_candidate", [0], SHA)
+    bad = dict(record, **change)
+    with pytest.raises(ValueError):
+        replace(base, candidates=(bad,))
+    with pytest.raises(ValueError):
+        compose(base, schema, [], candidates=[bad])
+    inherited = replace(base, candidates=(dict(record),))
+    inherited.candidates[0].update(change)
+    with pytest.raises(ValueError):
+        compose(inherited, schema, [])
+    with pytest.raises(ValueError):
+        write_diagnostic(tmp_path / "bad-diagnostic", schema, [inherited])
+    out = compose(base, schema, [], candidates=[record])
+    directory = tmp_path / "read-diagnostic"
+    manifest = write_diagnostic(directory, schema, [out])
+    import h5py
+
+    day = directory / "flags_20260716.h5"
+    with h5py.File(day, "a") as h:
+        h[f"identity/{base.file}/4"].attrs["candidates_json"] = json.dumps(
+            [bad]
+        )
+    manifest["files"][day.name] = hashlib.sha256(day.read_bytes()).hexdigest()
+    (directory / "manifest.json").write_text(json.dumps(manifest))
+    with pytest.raises(ValueError):
+        read_diagnostic(directory, base.file, "4")
+
+
+def test_identified_comb_uses_known_rows_and_channels_with_own_reason():
+    schema, base = _small()
+    source = calibration_comb_mask(base, [0], SHA)
+    out = compose(base, schema, [source])
+    expected = np.array([[False, True], [False, False]])
+    np.testing.assert_array_equal(
+        schema.reason(out.flags, "identified_calibration_comb"), expected
+    )
+    assert not calibration_comb_mask(
+        replace(base, input_key="0"), [0], SHA
+    ).mask.any()
+    assert source.details["switch_states"] == "all"
+    with pytest.raises(ValueError):
+        calibration_comb_mask(base, [2], SHA)
+
+
+def test_bound_producer_source_runtime_and_historical_read(
+    tmp_path, monkeypatch
+):
+    schema, base = _small()
+    first = tmp_path / "first-diagnostic"
+    manifest = write_diagnostic(first, schema, [base])
+    original = json.loads((first / "producer.json").read_text())
+    monkeypatch.setattr(
+        union, "_EXECUTED_SOURCE", union._EXECUTED_SOURCE + b"\n# revision\n"
+    )
+    second = tmp_path / "second-diagnostic"
+    write_diagnostic(second, schema, [base])
+    changed = json.loads((second / "producer.json").read_text())
+    assert changed["source_sha256"] != original["source_sha256"]
+    # Historical source is verified against its own snapshot, not this reader.
+    read_diagnostic(first, base.file, "4")
+    record = dict(original)
+    record["runtime"] = {}
+    data = json.dumps(record).encode()
+    (first / "producer.json").write_bytes(data)
+    manifest["files"]["producer.json"] = hashlib.sha256(data).hexdigest()
+    manifest["producer_sha256"] = hashlib.sha256(data).hexdigest()
+    (first / "manifest.json").write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match="producer"):
+        read_diagnostic(first, base.file, "4")
+    mpath = second / "manifest.json"
+    missing = json.loads(mpath.read_text())
+    missing.pop("producer_sha256")
+    mpath.write_text(json.dumps(missing))
+    with pytest.raises(ValueError, match="producer"):
+        read_diagnostic(second, base.file, "4")
 
 
 @pytest.mark.parametrize(

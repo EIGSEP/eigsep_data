@@ -22,7 +22,8 @@ root = Path('/mnt/data02/eigsep/marjum-2026-07')
 curation = root / 'curation/boxair_emi_presence.jsonl'
 entries = [json.loads(x) for x in curation.read_text().splitlines()]
 out = []
-for name in ['corr_20260716_011800Z.h5', 'corr_20260717_085537Z.h5']:
+for name in ['corr_20260716_011800Z.h5', 'corr_20260717_085328Z.h5',
+             'corr_20260717_085537Z.h5']:
     path = root / 'flags/v3' / ('flags_' + name[5:13] + '.h5')
     with h5py.File(path, 'r') as h:
         d = h['mask/' + name + '/4']
@@ -72,9 +73,12 @@ def main():
         raise RuntimeError(result.stderr)
     for record in json.loads(result.stdout):
         target = Path(__file__).parent / (record["file"] + ".json")
+        payload = json.dumps(record, indent=2) + "\n"
         if target.exists():
-            raise FileExistsError(target)
-        target.write_text(json.dumps(record, indent=2) + "\n")
+            if target.read_text() != payload:
+                raise FileExistsError(target)
+            continue
+        target.write_text(payload)
         print(target.name, target.stat().st_size)
 
 

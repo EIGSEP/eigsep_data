@@ -7,12 +7,17 @@ run a detector, infer switch state, fill data or change legacy defaults.
 
 from dataclasses import dataclass, field, replace
 import hashlib
+import importlib.metadata
 import json
 from pathlib import Path
+import platform
 import re
+import subprocess
 
 import h5py
 import numpy as np
+
+_EXECUTED_SOURCE = Path(__file__).read_bytes()
 
 BLOCKING_GATES = (
     "missing_switch_state_inference",
@@ -20,7 +25,6 @@ BLOCKING_GATES = (
     "per_input_validity",
     "pair_evidence_split",
     "guard_review",
-    "candidate_channel_footprint",
     "held_out_detector_validation",
     "consumer_policy_migration",
     "downstream_mask_and_noise_validation",
@@ -107,6 +111,9 @@ class NativeFlags:
             raise ValueError("source provenance required")
         # Reject unserializable/nonfinite provenance before any output writes.
         _json(self.provenance)
+        object.__setattr__(
+            self, "candidates", _validate_candidates(self, self.candidates)
+        )
 
     @property
     def coordinates(self):
@@ -183,16 +190,20 @@ class FlagSchema:
             reasons.append(reason)
         if any(r["bit"] >= 10 for r in reasons):
             raise ValueError("expected pinned v3 bits0..9 before EMI addition")
-        reasons.append(
-            dict(
-                bit=10,
-                name="identified_self_emi",
-                kind="rfi",
-                value=1024,
-                rfi=True,
-                advisory=False,
+        for bit, name in [
+            (10, "identified_self_emi"),
+            (11, "identified_calibration_comb"),
+        ]:
+            reasons.append(
+                dict(
+                    bit=bit,
+                    name=name,
+                    kind="rfi",
+                    value=1 << bit,
+                    rfi=True,
+                    advisory=False,
+                )
             )
-        )
         return cls(
             tuple(reasons),
             dict(
@@ -269,25 +280,45 @@ def candidate_rows(block, name, rows, source_sha256):
     rows = np.asarray(rows)
     if (
         rows.ndim != 1
-        or rows.dtype.kind not in "iu"
+        or (rows.size and rows.dtype.kind not in "iu")
         or len(np.unique(rows)) != len(rows)
         or not np.isin(rows, block.rows).all()
-        or not name
+        or not isinstance(name, str)
+        or not re.fullmatch(r"[\w-]+", name)
     ):
         raise ValueError("invalid candidate native rows")
     return dict(
         name=name,
         coordinate_sha256=block.coordinate_sha256,
         source_sha256=_sha(source_sha256),
-        rows=rows.tolist(),
+        rows=rows.astype(int).tolist(),
         channel_footprint=None,
         pixel_exclusion=False,
     )
 
 
+def _validate_candidates(block, records):
+    """Validate raw/inherited evidence even when callers bypass the helper."""
+    valid = []
+    for item in records:
+        if not isinstance(item, dict):
+            raise ValueError("candidate evidence must be a record")
+        try:
+            expected = candidate_rows(
+                block, item["name"], item["rows"], item["source_sha256"]
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("invalid candidate evidence") from exc
+        if item != expected:
+            raise ValueError("candidate coordinates/row-only contract differ")
+        valid.append(json.loads(_json(expected)))
+    return tuple(valid)
+
+
 def compose(base, schema, sources, *, candidates=()):
     """Preserve all base reasons and OR reviewed reasons without resampling."""
     schema.validate(base.flags)
+    _validate_candidates(base, base.candidates)
     out, records, seen = base.flags.copy(), [], set()
     for source in sources:
         if not isinstance(source, MaskSource):
@@ -312,13 +343,7 @@ def compose(base, schema, sources, *, candidates=()):
                 details=source.details,
             )
         )
-    for item in candidates:
-        if (
-            item.get("coordinate_sha256") != base.coordinate_sha256
-            or item.get("pixel_exclusion") is not False
-            or item.get("channel_footprint") is not None
-        ):
-            raise ValueError("candidate evidence cannot set pixel exclusions")
+    candidates = _validate_candidates(base, candidates)
     return replace(
         base,
         flags=out,
@@ -382,6 +407,7 @@ def self_emi_mask(block, table):
     channels = (
         np.abs(block.frequencies_mhz - np.round(block.frequencies_mhz)) < 0.15
     )
+
     on = block.input_key == "4" and entry.get("boxair_emi", False)
     mask = np.broadcast_to(channels & on, block.flags.shape).copy()
     return MaskSource(
@@ -404,6 +430,123 @@ def self_emi_mask(block, table):
     )
 
 
+def calibration_comb_mask(block, detected_rows, source_sha256):
+    """Exact identified rows times the established integer-MHz footprint.
+
+    Applies to input4, phase C, in every switch state. The +/-0.15MHz
+    strict rule is inherited, not fitted to these data. Wider neighbours
+    remain a validation question, not a reason to discard known teeth.
+    """
+    evidence = candidate_rows(
+        block, "identified_calibration_comb", detected_rows, source_sha256
+    )
+    if block.phase != "C":
+        raise ValueError("calibration comb is scoped to phase C")
+    row_mask = np.isin(block.rows, evidence["rows"]) & (block.input_key == "4")
+    channel_mask = (
+        np.abs(block.frequencies_mhz - np.round(block.frequencies_mhz)) < 0.15
+    )
+    return MaskSource(
+        "identified_calibration_comb",
+        block,
+        row_mask[:, None] & channel_mask[None, :],
+        "identified_calibration_comb_rows",
+        source_sha256,
+        dict(
+            native_rows=evidence["rows"],
+            input_key="4",
+            phase="C",
+            switch_states="all",
+            frequency_rule="abs(f_MHz-round(f_MHz)) < 0.15",
+        ),
+    )
+
+
+def producer_identity():
+    """Identify the imported composer bytes and actual numerical runtime."""
+    root = Path(__file__).resolve().parents[2]
+    git = dict(
+        available=False, commit=None, dirty=None, source_matches_head=None
+    )
+    try:
+        commit = subprocess.check_output(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+        dirty = bool(
+            subprocess.check_output(
+                ["git", "-C", str(root), "status", "--porcelain"], text=True
+            )
+        )
+        head_source = subprocess.check_output(
+            [
+                "git",
+                "-C",
+                str(root),
+                "show",
+                "HEAD:src/eigsep_data/flag_union.py",
+            ],
+            stderr=subprocess.DEVNULL,
+        )
+        git.update(
+            available=True,
+            commit=commit,
+            dirty=dirty,
+            source_matches_head=head_source == _EXECUTED_SOURCE,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
+    return dict(
+        schema="flag-union-producer-v1",
+        source_file="producer_source.py",
+        source_sha256=_digest(_EXECUTED_SOURCE),
+        git=git,
+        runtime=dict(
+            python=platform.python_version(),
+            implementation=platform.python_implementation(),
+            numpy=importlib.metadata.version("numpy"),
+            h5py=importlib.metadata.version("h5py"),
+        ),
+    )
+
+
+def _verify_producer(directory, manifest):
+    """Verify bound historical provenance without comparing to current code."""
+    required = {"producer.json", "producer_source.py"}
+    if required - set(manifest["files"]) or not manifest.get(
+        "producer_sha256"
+    ):
+        raise ValueError("missing bound producer provenance")
+    raw = (directory / "producer.json").read_bytes()
+    if _digest(raw) != manifest["producer_sha256"]:
+        raise ValueError("producer provenance hash differs")
+    record = json.loads(raw)
+    try:
+        runtime, git = record["runtime"], record["git"]
+        if (
+            record["schema"] != "flag-union-producer-v1"
+            or record["source_file"] != "producer_source.py"
+            or _sha(record["source_sha256"])
+            != _digest((directory / "producer_source.py").read_bytes())
+            or not all(
+                isinstance(runtime[k], str) and runtime[k]
+                for k in ("python", "implementation", "numpy", "h5py")
+            )
+            or type(git["available"]) is not bool
+        ):
+            raise ValueError("invalid producer provenance")
+        if git["available"] and (
+            not re.fullmatch(r"[0-9a-f]{40}", git["commit"])
+            or type(git["dirty"]) is not bool
+            or type(git["source_matches_head"]) is not bool
+        ):
+            raise ValueError("invalid producer Git evidence")
+    except (KeyError, TypeError) as exc:
+        raise ValueError("malformed producer provenance") from exc
+    return record
+
+
 def write_diagnostic(directory, schema, blocks):
     """Write an immutable opt-in diagnostic in the existing day-file layout.
 
@@ -418,6 +561,7 @@ def write_diagnostic(directory, schema, blocks):
     seen, frequencies, raw_hashes = set(), {}, {}
     for b in blocks:
         schema.validate(b.flags)
+        _validate_candidates(b, b.candidates)
         if (b.file, b.input_key) in seen:
             raise ValueError("duplicate native file/input coverage")
         seen.add((b.file, b.input_key))
@@ -437,6 +581,10 @@ def write_diagnostic(directory, schema, blocks):
     if not directory.name.endswith("-diagnostic"):
         raise ValueError("this component requires a diagnostic version name")
     directory.mkdir(parents=True, exist_ok=False)
+    producer = producer_identity()
+    (directory / "producer_source.py").write_bytes(_EXECUTED_SOURCE)
+    producer_bytes = _json(producer) + b"\n"
+    (directory / "producer.json").write_bytes(producer_bytes)
     for b in blocks:
         path = directory / f"flags_{b.file[5:13]}.h5"
         with h5py.File(path, "a") as h:
@@ -467,7 +615,8 @@ def write_diagnostic(directory, schema, blocks):
         product="flags",
         version=directory.name,
         status="diagnostic",
-        schema="native-flag-union-v1",
+        schema="native-flag-union-v2",
+        producer_sha256=_digest(producer_bytes),
         blocking_gates=list(BLOCKING_GATES),
         coverage=[
             dict(
@@ -483,15 +632,23 @@ def write_diagnostic(directory, schema, blocks):
     return manifest
 
 
-def read_diagnostic(directory, file, input_key):
+def read_diagnostic(directory, file, input_key, *, allow_legacy_unbound=False):
     """Read only verified explicit native coverage, with the stored policy."""
     directory = Path(directory)
     manifest = json.loads((directory / "manifest.json").read_text())
     if (
-        manifest.get("schema") != "native-flag-union-v1"
+        manifest.get("schema")
+        not in {"native-flag-union-v1", "native-flag-union-v2"}
         or manifest.get("status") != "diagnostic"
     ):
         raise ValueError("not a native-union diagnostic manifest")
+    if (
+        manifest["schema"] == "native-flag-union-v1"
+        and not allow_legacy_unbound
+    ):
+        raise ValueError(
+            "unbound historical producer; explicit legacy opt-in required"
+        )
     coverage = [
         r
         for r in manifest["coverage"]
@@ -507,6 +664,8 @@ def read_diagnostic(directory, file, input_key):
             raise ValueError("invalid manifest file identity")
         if _digest((directory / name).read_bytes()) != digest:
             raise ValueError(f"diagnostic hash mismatch: {name}")
+    if manifest["schema"] == "native-flag-union-v2":
+        _verify_producer(directory, manifest)
     definition = json.loads((directory / "flag_schema.json").read_text())
     schema = FlagSchema(
         tuple(definition["reasons"]),
