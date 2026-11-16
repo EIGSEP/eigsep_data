@@ -137,8 +137,12 @@ class NativeFlags:
 class FlagSchema:
     """Published reason definitions and named exclusion policies.
 
-    Policies enumerate reason names. No consumer may assume that bit9/10,
-    or any bit absent from a schema, is harmless. The ``rfi`` policy keeps
+    Policies enumerate reason names. No consumer may assume that bit9,
+    or any bit absent from a schema, is harmless. The identified reasons
+    use bits 12 and 13: bits 10 and 11 already carry meanings in the RFI
+    prototype lineage (retracted, post-DPSS residual) that some consumers
+    keep, while a consumer that excludes every non-advisory bit excludes
+    bits 12 and 13 without change. The ``rfi`` policy keeps
     non-sky/validity reasons distinct, so calibration rows can be inspected.
     This does not by itself validate calibration-row detector applicability.
     """
@@ -191,8 +195,8 @@ class FlagSchema:
         if any(r["bit"] >= 10 for r in reasons):
             raise ValueError("expected pinned v3 bits0..9 before EMI addition")
         for bit, name in [
-            (10, "identified_self_emi"),
-            (11, "identified_calibration_comb"),
+            (12, "identified_self_emi"),
+            (13, "identified_calibration_comb"),
         ]:
             reasons.append(
                 dict(

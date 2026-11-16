@@ -53,22 +53,26 @@ def _small():
     return schema, block
 
 
-def test_hard_bit10_is_decoded_by_policy_and_reasons_overlap():
+def test_hard_bit12_is_decoded_by_policy_and_reasons_overlap():
     schema, base = _small()
     mask = np.array([[False, True], [True, False]])
     src = MaskSource("identified_self_emi", base, mask, "curation", SHA)
     out = compose(base, schema, [src])
-    np.testing.assert_array_equal(out.flags, [[0, 1536], [1028, 0]])
+    np.testing.assert_array_equal(out.flags, [[0, 4608], [4100, 0]])
     np.testing.assert_array_equal(base.flags, [[0, 512], [4, 0]])
     np.testing.assert_array_equal(schema.excluded(out.flags, "sky"), mask)
     assert schema.reason(out.flags, "scatter")[0, 1]
     assert schema.reason(out.flags, "auto")[1, 0]
-    # The current consumer constant would lose the new hard bit10.
+    # Bits 10 and 11 stay unset: the RFI prototype lineage gives them
+    # meanings (retracted, residual) that existing consumers keep.
+    assert not (out.flags & np.uint16((1 << 10) | (1 << 11))).any()
+    # The existing consumer constant (exclude all but bits 9 and 10)
+    # excludes the new hard reason without change.
     legacy = (out.flags & np.uint16(~((1 << 9) | (1 << 10)) & 65535)) != 0
-    assert not legacy[0, 1] and schema.excluded(out.flags, "sky")[0, 1]
+    np.testing.assert_array_equal(legacy, schema.excluded(out.flags, "sky"))
     assert not schema.excluded(np.array([[512]], np.uint16), "sky").any()
     np.testing.assert_array_equal(
-        schema.excluded(np.array([[1, 4, 1024]], np.uint16), "rfi"),
+        schema.excluded(np.array([[1, 4, 4096]], np.uint16), "rfi"),
         [[False, True, True]],
     )
 
@@ -99,7 +103,9 @@ def test_unknown_bits_missing_policy_and_ambiguous_sources_fail():
     schema, base = _small()
     with pytest.raises(ValueError, match="unknown bits"):
         compose(
-            replace(base, flags=np.full((2, 2), 4096, np.uint16)), schema, []
+            replace(base, flags=np.full((2, 2), 1 << 15, np.uint16)),
+            schema,
+            [],
         )
     with pytest.raises(ValueError, match="policy"):
         schema.excluded(base.flags, "unpublished")
@@ -294,6 +300,9 @@ def test_released_real_union_has_exact_pixel_set_and_roundtrip(
     actual = schema.excluded(out.flags, "sky")
     np.testing.assert_array_equal(actual, legacy_bad | emi)
     assert int((actual & ~legacy_bad).sum()) == extra
+    # The existing consumer constant now excludes the new reasons too.
+    legacy_new = (out.flags & np.uint16(65535 ^ ((1 << 9) | (1 << 10)))) != 0
+    np.testing.assert_array_equal(legacy_new, actual)
     np.testing.assert_array_equal(out.flags & np.uint16(1023), flags)
     directory = tmp_path / "v4-c9-diagnostic"
     manifest = write_diagnostic(directory, schema, [out])

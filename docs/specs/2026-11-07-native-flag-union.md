@@ -54,12 +54,15 @@ a release gate.
   hashes. Publication status is always diagnostic. Missing input coverage,
   mixed axes, partial native-row numbering and modified products fail.
 
-The new named self-EMI reason occupies bit10 in this opt-in schema. **Current
-consumers keep bit10**, so they cannot consume this product correctly until
-they use `schema.excluded(flags, policy)` instead of their keep-bit constant.
-The real-fixture test demonstrates that failure. The diagnostic name/status
-and `consumer_policy_migration` gate prevent a claim of ready adoption;
-no existing version or consumer is changed here.
+The new named self-EMI reason occupies bit12 and the calibration comb bit13
+in this opt-in schema. Bits 10 and 11 are left unused: in the RFI prototype
+lineage they mean retracted and post-DPSS residual, and existing consumers
+(e.g. the raster sky/Sun scripts) keep bit10. A consumer that excludes every
+non-advisory bit, v3's documented default, therefore excludes the new
+reasons without change; `schema.excluded(flags, policy)` remains the
+explicit route and is required for the `rfi`/`sky` distinction.
+The diagnostic name/status and `consumer_policy_migration` gate prevent a
+claim of ready adoption; no existing version or consumer is changed here.
 
 ## Bounded primary checks
 
@@ -125,7 +128,7 @@ products, retaining their absence of bound writer provenance without inventing
 one. Missing provenance in schema v2 fails.
 
 CHB confirmed the identified calibration comb has known integer-MHz teeth.
-Its new bit11 is distinct from file-wide self-EMI bit10 and preserves overlap.
+Its new bit13 is distinct from file-wide self-EMI bit12 and preserves overlap.
 The frozen table supplies205/9/91 exact rows in the three bounded files,
 independent of receiver switch state. The established strict +/-0.15MHz rule
 is applied without tuning. Generic unidentified row evidence retains its
