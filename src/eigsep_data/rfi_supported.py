@@ -1,6 +1,9 @@
 """Supported separable-DPSS RFI flagging and product writing.
 
-This is the ``v3`` algorithm (developed as ``v3-beta`` in the Marjum RFI notebooks).
+This is the ``v4`` algorithm: ``v3`` (developed as ``v3-beta`` in the
+Marjum RFI notebooks) with MISSING switch rows inferred from the data,
+per-input validity and the identified reasons of bits 12-15
+(:mod:`eigsep_data.flag_union`).
 It fits one smooth time/frequency background without forming a separate
 frequency inverse for every flag pattern.  A design-support calculation
 marks places where that fit is too weakly constrained; the public model is
@@ -35,6 +38,12 @@ from scipy.linalg import cho_factor, cho_solve, eigh
 from scipy.ndimage import maximum_filter, median_filter
 from scipy.sparse.linalg import LinearOperator, cg
 
+from .flag_union import (
+    UNION_BITS,
+    UNION_MEANINGS,
+    add_release_bits,
+    band_power,
+)
 from .provenance import sha256
 
 REPORT_BANDS = {
@@ -74,8 +83,12 @@ FLAG_MEANINGS = {
     "high_scatter": "advisory, not excluded by default: the channel's residual scatter exceeds max_scatter_ratio times radiometer noise, so detection there is weak (e.g. a moving antenna)",
 }
 BIT_BY_REASON = {v["name"]: int(k) for k, v in FLAG_BITS.items()}
-DEFAULT_VERSION = "v3"
-ALGORITHM_REVISION = "supported-dpss-v3-beta-lowband-5-scatter-advisory"
+# The product's bits: the flagger's (0-9) and the identified reasons that
+# the release run adds (12-15), excluded by default like any other.
+FLAG_BITS_UNION = {**FLAG_BITS, **UNION_BITS}
+FLAG_MEANINGS_UNION = {**FLAG_MEANINGS, **UNION_MEANINGS}
+DEFAULT_VERSION = "v4"
+ALGORITHM_REVISION = "supported-dpss-v4"
 # Products generated from this committed source predate the explicit revision
 # field but use the same numerical flagger. The later change only restores raw
 # row order while writing complete, time-permuted files.
@@ -86,7 +99,7 @@ LEGACY_COMPATIBLE_SOURCE_SHA256 = frozenset(
 
 @dataclass(frozen=True)
 class RFIConfig:
-    """Parameters for the supported-DPSS v3 algorithm."""
+    """Parameters for the supported-DPSS v4 algorithm."""
 
     band_mhz: tuple[float, float] = (35.0, 250.0)
     tested_band_mhz: tuple[float, float] = (35.0, 235.0)
@@ -185,7 +198,7 @@ class RFIResult:
     def rfi_mask(self):
         """Boolean mask containing only reasons classified as RFI."""
         value = np.uint16(0)
-        for bit, spec in FLAG_BITS.items():
+        for bit, spec in FLAG_BITS_UNION.items():
             if spec["rfi"]:
                 value |= np.uint16(1 << int(bit))
         return (self.flags & value) != 0
@@ -1081,6 +1094,33 @@ def switch_states(meta, config, fm, times):
     return states, {str(f): config.sky_state for f in pd.unique(files)}
 
 
+def antenna_states(air, antenna, config):
+    """Per-row switch states of ``antenna``'s bundle, and assumed files.
+
+    Only ``config.switch_antenna`` follows the switch (MISSING rows
+    inferred by :func:`switch_states`); the other antenna is
+    ``sky_state`` except while the switch reports one of
+    ``other_antenna_nonsky_prefixes``.
+    """
+    if "rfswitch" not in air.meta or "integration_time" not in air.meta:
+        raise ValueError(
+            "selection metadata lacks rfswitch or integration_time"
+        )
+    if antenna == config.switch_antenna:
+        return switch_states(
+            air.meta, config, fm_excess(air.data, air.freqs_mhz), air.t
+        )
+    recorded = air.meta.rfswitch.to_numpy(dtype=object)
+    nonsky = np.array(
+        [
+            str(state).startswith(config.other_antenna_nonsky_prefixes)
+            for state in recorded
+        ],
+        dtype=bool,
+    )
+    return np.where(nonsky, recorded, config.sky_state).astype(object), {}
+
+
 def run_selection(
     selection,
     *,
@@ -1088,8 +1128,14 @@ def run_selection(
     ground_antenna="box-gnd",
     config=None,
     resolution_policy=None,
+    release=None,
 ):
-    """Resolve physical antennas per file and run supported-DPSS flagging."""
+    """Resolve physical antennas per file and run supported-DPSS flagging.
+
+    ``release`` adds bits 12-15 (:func:`add_release_bits`): a dict with
+    ``self_emi`` and ``comb_rows`` (the curation maps) and ``reference``,
+    this antenna's ``{phase: {state: power}}`` over the deployment.
+    """
     config = RFIConfig() if config is None else config
     bundles = load_selection_inputs(
         selection,
@@ -1099,25 +1145,7 @@ def run_selection(
         resolution_policy=resolution_policy,
     )
     air = bundles["air"]
-    if "rfswitch" not in air.meta or "integration_time" not in air.meta:
-        raise ValueError(
-            "selection metadata lacks rfswitch or integration_time"
-        )
-    if air_antenna == config.switch_antenna:
-        states, assumed = switch_states(
-            air.meta, config, fm_excess(air.data, air.freqs_mhz), air.t
-        )
-    else:
-        recorded = air.meta.rfswitch.to_numpy(dtype=object)
-        nonsky = np.array(
-            [
-                str(state).startswith(config.other_antenna_nonsky_prefixes)
-                for state in recorded
-            ],
-            dtype=bool,
-        )
-        states = np.where(nonsky, recorded, config.sky_state).astype(object)
-        assumed = {}
+    states, assumed = antenna_states(air, air_antenna, config)
     result = flag_arrays(
         air.data,
         bundles["ground"].data,
@@ -1129,6 +1157,16 @@ def run_selection(
         config=config,
         meta=air.meta.copy(),
     )
+    if release is not None:
+        dt = air.meta.integration_time.to_numpy(dtype=float)
+        result.flags = add_release_bits(
+            result.flags,
+            air.meta,
+            air.freqs_mhz,
+            band_power(air.data, air.freqs_mhz, dt),
+            states,
+            **release,
+        )
     result.diagnostics["assumed_switch_state"] = assumed
     result.diagnostics["antennas"] = {
         "air": str(air_antenna),
@@ -1357,6 +1395,7 @@ def _write_products_unlocked(
             "assumed_switch_state": result.diagnostics.get(
                 "assumed_switch_state", {}
             ).get(fname),
+            "curation_sha256": result.diagnostics.get("curation_sha256"),
             "generated_utc": generated,
         }
         # One record per flagged antenna (each is its own input dataset); the
@@ -1455,9 +1494,9 @@ def _write_products_unlocked(
                     "name": spec["name"],
                     "rfi": spec["rfi"],
                     "advisory": bool(spec.get("advisory", False)),
-                    "meaning": FLAG_MEANINGS[spec["name"]],
+                    "meaning": FLAG_MEANINGS_UNION[spec["name"]],
                 }
-                for bit, spec in FLAG_BITS.items()
+                for bit, spec in FLAG_BITS_UNION.items()
             ],
         },
     )
@@ -1475,7 +1514,7 @@ def _write_products_unlocked(
                 "product": kind,
                 "version": version,
                 "status": "released",
-                "algorithm": "supported separable DPSS v3",
+                "algorithm": "supported separable DPSS v4",
                 "algorithm_source_sha256": algorithm_hash,
                 "algorithm_revision": ALGORITHM_REVISION,
                 "axes": {

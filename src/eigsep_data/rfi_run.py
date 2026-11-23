@@ -1,4 +1,4 @@
-"""Plan and run supported-DPSS ``v3`` campaign products."""
+"""Plan and run supported-DPSS ``v4`` campaign products."""
 
 from __future__ import annotations
 
@@ -31,13 +31,23 @@ import numpy as np
 
 from .antenna_policy import AntennaResolutionPolicy
 from .clock import to_unix_time
+from .flag_union import (
+    DEAD_BAND_MHZ,
+    band_power,
+    read_calibration_comb,
+    read_self_emi,
+    state_reference,
+)
 from .index import MetadataIndex
 from .paths import campaign_data_dir, get_campaign_root
+from .provenance import sha256
 from .rfi_supported import (
     ALGORITHM_REVISION,
     DEFAULT_VERSION,
+    FM_BAND_MHZ,
     LEGACY_COMPATIBLE_SOURCE_SHA256,
     RFIConfig,
+    antenna_states,
     algorithm_source_sha256,
     parameter_sha256,
     run_selection,
@@ -237,6 +247,7 @@ def _resume_files(
     config_hash,
     resolution_policy_hash,
     antenna="box-air",
+    curation_hash=None,
 ):
     flags = _read_manifest(root / "flags" / flags_version / "manifest.json")
     models = _read_manifest(
@@ -262,6 +273,7 @@ def _resume_files(
             if (
                 record.get("resolution_policy_sha256")
                 != resolution_policy_hash
+                or record.get("curation_sha256") != curation_hash
             ):
                 return False
             revision = record.get("algorithm_revision")
@@ -280,8 +292,9 @@ def _resume_files(
         preview = ", ".join(partial[:3])
         raise ValueError(
             "--resume found partial products, another parameter set, a "
-            "different flagger source, or a different antenna-resolution "
-            f"policy for {preview}; choose a new version or use --overwrite"
+            "different flagger source, different curation inputs, or a "
+            f"different antenna-resolution policy for {preview}; choose a "
+            "new version or use --overwrite"
         )
     return completed
 
@@ -344,6 +357,9 @@ def _failed_day(task, exc):
 def _run_day(task):
     index = MetadataIndex(Path(task["data_dir"]))
     policy = AntennaResolutionPolicy.load(task["resolution_policy"])
+    release = None
+    if task["curation"] is not None:
+        release = _release_inputs(task["curation"], task["air_antenna"])
     summaries = []
     failures = []
     for batch in task["batches"]:
@@ -356,7 +372,9 @@ def _run_day(task):
                 ground_antenna=task["ground_antenna"],
                 config=task["config"],
                 resolution_policy=policy,
+                release=release,
             )
+            result.diagnostics["curation_sha256"] = task["curation_hash"]
             if not task["dry_run"]:
                 stage = "write"
                 write_products(
@@ -382,6 +400,10 @@ def _run_day(task):
                 "excluded": int(result.mask.sum()),
                 "rfi": int(result.rfi_mask.sum()),
                 "supported": int(result.support_ok.sum()),
+                "bits": {
+                    str(bit): int(((result.flags >> bit) & 1).sum())
+                    for bit in (*range(10), 12, 13, 14, 15)
+                },
             }
         )
     return {"day": task["day"], "batches": summaries, "failures": failures}
@@ -390,7 +412,7 @@ def _run_day(task):
 def parser():
     out = argparse.ArgumentParser(
         description=(
-            "Plan or generate supported-DPSS v3 flags and smooth models "
+            "Plan or generate supported-DPSS v4 flags and smooth models "
             "from complete EIGSEP correlator files."
         )
     )
@@ -429,6 +451,24 @@ def parser():
         "--header-resolution",
         action="store_true",
         help="explicitly use raw input_to_ant headers instead of a policy",
+    )
+    for name, default, text in (
+        ("self-emi", "boxair_emi_presence.jsonl", "self-EMI files (bit 12)"),
+        ("comb-rows", "calibration_comb_rows.jsonl", "comb rows (bit 13)"),
+        ("dead-reference", "dead_input_reference.json", "bit 14 reference"),
+    ):
+        out.add_argument(
+            f"--{name}",
+            type=Path,
+            help=f"{text} (default: OUTPUT_ROOT/curation/{default})",
+        )
+    out.add_argument(
+        "--write-dead-reference",
+        action="store_true",
+        help=(
+            "compute the per-phase, per-state bit-14 reference over the "
+            "selection (use --all), write it to --dead-reference and stop"
+        ),
     )
     out.add_argument(
         "--set", action="append", default=[], metavar="NAME=VALUE"
@@ -485,6 +525,72 @@ def _resolution_policy(args, output_root):
     return AntennaResolutionPolicy.load(path)
 
 
+def _curation(args, output_root):
+    paths = {
+        "self_emi": args.self_emi or "boxair_emi_presence.jsonl",
+        "comb_rows": args.comb_rows or "calibration_comb_rows.jsonl",
+        "dead_reference": args.dead_reference or "dead_input_reference.json",
+    }
+    return {
+        k: str(output_root / "curation" / v) if isinstance(v, str) else str(v)
+        for k, v in paths.items()
+    }
+
+
+def _release_inputs(curation, antenna):
+    """Bits 12-15 inputs for :func:`run_selection` from curation files."""
+    with open(curation["dead_reference"]) as stream:
+        reference = json.load(stream)["reference"]
+    if antenna not in reference:
+        raise KeyError(f"no dead-input reference for {antenna}")
+    return {
+        "self_emi": read_self_emi(curation["self_emi"]),
+        "comb_rows": read_calibration_comb(curation["comb_rows"]),
+        "reference": reference[antenna],
+    }
+
+
+def _curation_sha256(curation, antenna):
+    """Hash the curation inputs after checking that they read."""
+    _release_inputs(curation, antenna)
+    return {k: sha256(Path(v)) for k, v in curation.items()}
+
+
+def dead_reference(index, batches, antennas, config, policy):
+    """Per antenna, ``{phase: {state: power}}`` over the given batches.
+
+    States and the low-band power are those the run uses (MISSING rows
+    inferred per batch), so this is :func:`state_reference` of every
+    row of the deployment, split by filter phase.
+    """
+    band = (DEAD_BAND_MHZ[0] - 1.0, FM_BAND_MHZ[1] + 1.0)
+    rows = {antenna: [] for antenna in antennas}
+    for batch in batches:
+        selection = index.select(files=batch["files"])
+        for antenna in antennas:
+            air = selection.load_bundle(
+                antenna=antenna,
+                band_mhz=band,
+                missing="raise",
+                resolution_policy=policy,
+            )
+            states, _ = antenna_states(air, antenna, config)
+            dt = air.meta.integration_time.to_numpy(dtype=float)
+            power = band_power(air.data, air.freqs_mhz, dt)
+            phase = air.meta.filter_phase.astype(str).to_numpy()
+            rows[antenna].append((phase, states, power))
+    out = {}
+    for antenna, parts in rows.items():
+        phase, states, power = (
+            np.concatenate([part[i] for part in parts]) for i in range(3)
+        )
+        out[antenna] = {
+            p: state_reference(power[phase == p], states[phase == p])
+            for p in np.unique(phase)
+        }
+    return out
+
+
 def main(argv=None):
     args = parser().parse_args(argv)
     if args.workers < 1:
@@ -497,6 +603,7 @@ def main(argv=None):
     algorithm_hash = algorithm_source_sha256()
     policy = _resolution_policy(args, output_root)
     policy_hash = None if policy is None else policy.sha256
+    curation = _curation(args, output_root)
     index = MetadataIndex(data_dir)
     requested = _selection(index, args)
     if policy is None:
@@ -506,6 +613,35 @@ def main(argv=None):
     else:
         approved_files, rejected, decisions = policy.partition(requested.meta)
     original_files = approved_files
+    if args.write_dead_reference:
+        batches = build_batches(
+            index.select(files=original_files),
+            files_per_batch=args.files_per_batch,
+            gap_s=args.batch_gap_s,
+        )
+        reference = dead_reference(
+            index,
+            batches,
+            (args.air_antenna, args.ground_antenna),
+            config,
+            policy,
+        )
+        record = {
+            "reference": reference,
+            "band_mhz": list(DEAD_BAND_MHZ),
+            "units": "median auto power per second of integration",
+            "files": len(original_files),
+            "parameter_sha256": config_hash,
+            "algorithm_revision": ALGORITHM_REVISION,
+            "resolution_policy_sha256": policy_hash,
+            "generated_utc": datetime.now(timezone.utc).isoformat(),
+        }
+        path = Path(curation["dead_reference"])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(record, indent=2) + "\n")
+        print(json.dumps(record, indent=2))
+        return
+    curation_hash = _curation_sha256(curation, args.air_antenna)
     policy_conflicts = _output_policy_conflicts(
         output_root, args.flags_version, args.model_version, policy_hash
     )
@@ -519,6 +655,7 @@ def main(argv=None):
             config_hash,
             policy_hash,
             antenna=args.air_antenna,
+            curation_hash=curation_hash,
         )
     pending = [name for name in original_files if name not in completed]
     if pending:
@@ -540,6 +677,8 @@ def main(argv=None):
         "algorithm_source_sha256": algorithm_hash,
         "algorithm_revision": ALGORITHM_REVISION,
         "resolution_policy": (None if policy is None else policy.provenance()),
+        "curation": curation,
+        "curation_sha256": curation_hash,
         "parameters": asdict(config),
         "requested_files": len(requested.files),
         "approved_files": len(original_files),
@@ -586,6 +725,8 @@ def main(argv=None):
         config=config,
         resolution_policy=(None if policy is None else policy.source),
         resolution_policy_hash=policy_hash,
+        curation=curation,
+        curation_hash=curation_hash,
         flags_version=args.flags_version,
         model_version=args.model_version,
         overwrite=args.overwrite,
@@ -649,6 +790,10 @@ def main(argv=None):
                 if cells
                 else None
             ),
+            "bit_cells": {
+                bit: sum(item["bits"][bit] for item in summaries)
+                for bit in (summaries[0]["bits"] if summaries else {})
+            },
             "supported_fraction": (
                 sum(item["supported"] for item in summaries) / cells
                 if cells

@@ -1,4 +1,4 @@
-# Supported-DPSS RFI products (`v3`)
+# Supported-DPSS RFI products (`v3`, `v4`)
 
 `eigsep_data.rfi_supported` fits a smooth background to an air
 autocorrelation and generates a reason-coded exclusion mask. It uses the
@@ -29,10 +29,15 @@ memo 006). It was developed as `v3-beta`, and older products and revision string
 keep that name. Name products explicitly, e.g. `flags@v3` and `smooth_model@v3`;
 the readers imply no default version. Improvements will be new product versions.
 
+`v4` (algorithm revision `supported-dpss-v4`, the runner's default version)
+is v3 with the changes in the sections "MISSING switch rows inferred from
+the data" and "Per-input validity" below, and the identified reasons of
+bits 12-15 written into the product (section "Bits 12-15").
+
 ## Planning and running a campaign
 
 ```sh
-eigsep-rfi-v3 --data-dir /path/to/campaign/data \
+eigsep-rfi-v4 --data-dir /path/to/campaign/data \
   --files corr_20260716_031155Z.h5 corr_20260716_033323Z.h5 \
   --plan
 ```
@@ -49,10 +54,10 @@ batch without fitting or writing. Inspect that JSON on the processing machine,
 then run, for example:
 
 ```sh
-eigsep-rfi-v3 --data-dir /data/marjum-2026-07/data --all \
+eigsep-rfi-v4 --data-dir /data/marjum-2026-07/data --all \
   --output-root /data/marjum-2026-07 \
   --resolution-policy /data/marjum-2026-07/curation/antenna_resolution.json \
-  --flags-version v3 --model-version v3 \
+  --flags-version v4 --model-version v4 \
   --files-per-batch 10 --workers 6 --resume
 ```
 
@@ -187,6 +192,31 @@ undefined and bit 4 is not set, also in a segment with no valid cross
 at all. In v3, rows where box-air was dead gave
 box-gnd bit 1 on 48 % of its tested pixels (0 % with both live).
 
+## Bits 12-15 (flags v4)
+
+The v4 runner ORs four identified reasons (`eigsep_data.flag_union`) into
+each batch's mask before writing it; `flag_bits.json` lists them, and like
+every non-advisory bit they are excluded by default. Three campaign
+curation files are required inputs, by default under
+`OUTPUT_ROOT/curation/` (`--self-emi`, `--comb-rows`, `--dead-reference`),
+and their SHA-256 are recorded per file (`curation_sha256`) and checked by
+`--resume`:
+
+- bit 12 `identified_self_emi`: `boxair_emi_presence.jsonl` (every file);
+- bit 13 `identified_calibration_comb`: `calibration_comb_rows.jsonl`,
+  native row ranges per file;
+- bit 14 `dead_input`: `dead_input_reference.json`, the median low-band
+  power of each antenna's switch states per filter phase over the
+  deployment, with MISSING rows inferred as in the run. Write it once
+  before the run:
+
+  ```sh
+  eigsep-rfi-v4 --data-dir /data/marjum-2026-07/data --all \
+    --output-root /data/marjum-2026-07 --write-dead-reference
+  ```
+
+- bit 15 `recurring_line`: static (152.10 MHz).
+
 ## Flag meanings
 
 Every nonzero value except the advisory bit 9 alone means that the cell is
@@ -205,10 +235,14 @@ want a conservative mask. Bits can overlap.
 | 7 | `unsupported_background` | no |
 | 8 | `guard` | no |
 | 9 | `high_scatter` (advisory) | no |
+| 12 | `identified_self_emi` | yes |
+| 13 | `identified_calibration_comb` | yes |
+| 14 | `dead_input` | no |
+| 15 | `recurring_line` | yes |
 
 `RFIResult.mask` includes every reason except the advisory bit 9;
 `RFIResult.mask_conservative` includes it too. `RFIResult.rfi_mask` includes only the
-four rows marked as RFI evidence above. A non-sky switch state is flagged over
+rows marked as RFI evidence above. A non-sky switch state is flagged over
 the entire frequency axis before fitting. Missing or nonpositive inputs and
 the untested domain are also excluded.
 

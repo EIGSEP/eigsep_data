@@ -167,6 +167,8 @@ def _runner_task(tmp_path, *, dry_run=False):
         overwrite=False,
         dry_run=dry_run,
         failure_report_dir=None if dry_run else str(tmp_path / "reports"),
+        curation=None,
+        curation_hash=None,
     )
 
 
@@ -179,6 +181,8 @@ def _runner_result():
         mask=np.zeros((2, 3), bool),
         rfi_mask=np.zeros((2, 3), bool),
         support_ok=np.ones((2, 3), bool),
+        flags=np.zeros((2, 3), np.uint16),
+        diagnostics={},
     )
 
 
@@ -286,11 +290,13 @@ def test_worker_failure_does_not_cancel_other_days(
                     excluded=0,
                     rfi=0,
                     supported=6,
+                    bits={},
                 )
             ],
         )
 
     monkeypatch.setattr(runner, "_run_day", day)
+    monkeypatch.setattr(runner, "_curation_sha256", lambda *args: {})
     runner.main(
         [
             "--data-dir",
@@ -340,3 +346,33 @@ def test_resume_is_per_antenna(tmp_path):
         path.write_text(json.dumps({"files": both}))
     assert _resume_files(tmp_path, "v3-beta", "v3-beta", [fname], digest, None,
                          antenna="box-gnd") == {fname}
+
+
+def test_dead_reference_and_release_bits_on_a_corr_file(tmp_path):
+    import numpy as np
+    from eigsep_data.index import MetadataIndex
+    from eigsep_data.rfi_run import dead_reference
+    from eigsep_data.rfi_supported import run_selection
+    from conftest import write_corr_file
+
+    fname = "corr_20260716_000000Z.h5"
+    write_corr_file(
+        tmp_path / fname, ntimes=60, keys=("0", "4", "04"),
+        input_to_ant={"0": "box-gnd", "4": "box-air"},
+        rfswitch=["RFANT"] * 40 + ["RFAMB"] * 20,
+        root_attrs={"filter_phase": "C"},
+    )
+    index = MetadataIndex(tmp_path, cache=False)
+    batches = build_batches(index.select())
+    ref = dead_reference(index, batches, ("box-air", "box-gnd"),
+                         RFIConfig(), None)
+    assert set(ref["box-air"]["C"]) == {"RFANT", "RFAMB"}
+    assert set(ref["box-gnd"]["C"]) == {"RFANT"}  # no switch board
+    release = dict(self_emi={fname: True}, comb_rows={fname: [0]},
+                   reference=ref["box-air"])
+    result = run_selection(index.select(), release=release)
+    line = np.abs(result.freqs_mhz - 152.10) < 0.12
+    comb = np.abs(result.freqs_mhz - np.round(result.freqs_mhz)) < 0.15
+    assert ((result.flags[:, comb] >> 12) & 1).all()
+    assert ((result.flags[:40][:, line] >> 15) & 1).all()
+    assert not ((result.flags[40:][:, line] >> 15) & 1).any()
