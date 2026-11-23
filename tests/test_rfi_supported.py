@@ -753,3 +753,24 @@ def test_missing_rows_are_sky_only_with_fm_and_no_switching():
     assert not sky[50:62].any() and not sky[100:180].any()
     assert not sky[200:].any() and states[-1] == "RFNON"
     assert assumed == {"a.h5": "RFANT"}
+
+
+def test_only_the_switch_antenna_follows_the_switch(tmp_path):
+    from eigsep_data.rfi_supported import run_selection
+
+    data = tmp_path / "data"
+    data.mkdir()
+    write_corr_file(
+        data / "corr_20260716_000000Z.h5", ntimes=60, keys=("0", "2", "02"),
+        input_to_ant={"0": "box-gnd", "2": "box-air"},
+        rfswitch=["RFANT"] * 30 + ["RFAMB"] * 30,
+    )
+    selection = MetadataIndex(data, cache=False).select()
+    nonsky = 1 << BIT_BY_REASON["non_sky_switch_state"]
+    air = run_selection(selection)
+    gnd = run_selection(
+        selection, air_antenna="box-gnd", ground_antenna="box-air"
+    )
+    assert (air.flags[30:] & nonsky).all()
+    assert not (air.flags[:30] & nonsky).any()
+    assert not (gnd.flags & nonsky).any()

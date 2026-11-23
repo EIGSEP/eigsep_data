@@ -94,6 +94,8 @@ class RFIConfig:
     # Calibration states flagged as well, each against its own background; their
     # rows keep bit 0 (not sky) and gain the RFI and support bits.
     extra_states: tuple[str, ...] = ("RFNON", "RFAMB")
+    # Only switch_antenna's box has a switch board (box-gnd has none, CHB
+    # 2026-11-22): every row of the other antenna is the antenna.
     # MISSING switch rows count as sky only where the switch antenna's FM
     # excess (fm_excess) reaches missing_fm_excess[1], inside a stretch of
     # MISSING rows with no load visit: a run of rows below
@@ -1083,12 +1085,13 @@ def run_selection(
         raise ValueError(
             "selection metadata lacks rfswitch or integration_time"
         )
-    switch = bundles[
-        "ground" if ground_antenna == config.switch_antenna else "air"
-    ]
-    states, assumed = switch_states(
-        air.meta, config, fm_excess(switch.data, switch.freqs_mhz), air.t
-    )
+    if air_antenna == config.switch_antenna:
+        states, assumed = switch_states(
+            air.meta, config, fm_excess(air.data, air.freqs_mhz), air.t
+        )
+    else:
+        states = np.full(len(air.t), config.sky_state, dtype=object)
+        assumed = {}
     result = flag_arrays(
         air.data,
         bundles["ground"].data,

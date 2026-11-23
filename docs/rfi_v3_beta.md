@@ -171,7 +171,9 @@ with no load visit: a 30-300 s run (`missing_visit_s`) below 1.02
 (`missing_fm_excess`). Loads read 1.01 and a dead box-air 1.05, so a dead
 spell is neither sky nor a visit. Other MISSING rows, in any file, stay
 non-sky (bit 0); `assumed_switch_state` lists the files with inferred sky
-rows.
+rows. Box-gnd has no switch board (CHB, 2026-11-22), so in its run every
+row is `RFANT` whatever box-air's switch reports; only `switch_antenna`'s
+rows follow `rfswitch`.
 
 ## Flag meanings
 
