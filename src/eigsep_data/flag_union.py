@@ -1,7 +1,8 @@
-"""Add identified exclusion reasons to a flags/v3 mask.
+"""Identified exclusion reasons, bits 12-15 of the flags mask.
 
-Opt-in. Each function ORs one identified reason into a v3 ``uint16``
-mask on its native (row, channel) axes and leaves bits 0-9 unchanged.
+Each function ORs one identified reason into the flagger's ``uint16``
+mask on its native (row, channel) axes and leaves bits 0-9 unchanged;
+:func:`add_release_bits` applies all four, as the v4 release run does.
 Both reasons are box-air's 1.000 MHz comb on input 4 in wiring phase
 C, on channels within 0.15 MHz of an integer MHz:
 
@@ -23,15 +24,13 @@ box-gnd in every state; it is set on that channel of every sky row
 Bits 10 and 11 stay free because the RFI prototype lineage gives them
 meanings (retracted, post-DPSS residual) that some consumers keep. A
 consumer that excludes every non-advisory bit, v3's default, excludes
-bits 12 and 13 without change.
+bits 12-15 without change.
 """
 
 import json
 from pathlib import Path
 
 import numpy as np
-
-from .rfi_supported import FLAG_BITS
 
 UNION_BITS = {
     "12": {"name": "identified_self_emi", "rfi": True},
@@ -58,7 +57,6 @@ UNION_MEANINGS = {
         "input"
     ),
 }
-FLAG_BITS_UNION = {**FLAG_BITS, **UNION_BITS}
 SELF_EMI_BIT = 12
 CALIBRATION_COMB_BIT = 13
 COMB_HALFWIDTH_MHZ = 0.15
@@ -225,4 +223,35 @@ def add_recurring_line(flags, freqs_mhz, lines=RECURRING_LINES_MHZ):
     sky = (block & np.uint16(1)) == 0
     block[sky] |= np.uint16(1 << RECURRING_LINE_BIT)
     out[:, chans] = block
+    return out
+
+
+def add_release_bits(
+    flags, meta, freqs_mhz, power, states, *, self_emi, comb_rows, reference
+):
+    """Return a copy of ``flags`` with bits 12-15 on a flagger result.
+
+    ``meta`` gives each row's ``file``, native ``row``, ``input_key``
+    and ``filter_phase``; ``power`` (:func:`band_power`) and ``states``
+    are per row. ``self_emi`` and ``comb_rows`` are
+    :func:`read_self_emi` and :func:`read_calibration_comb` maps (every
+    file must be in ``self_emi``); ``reference`` is ``{phase: {state:
+    power}}``, :func:`state_reference` per filter phase over the
+    deployment.
+    """
+    phase = meta.filter_phase.astype(str).to_numpy()
+    keys = np.char.add(np.char.add(phase, "/"), np.asarray(states, str))
+    flat = {
+        f"{p}/{s}": v for p, refs in reference.items() for s, v in refs.items()
+    }
+    out = add_dead_input(flags, power, keys, flat)
+    out = add_recurring_line(out, freqs_mhz)
+    native = meta.row.to_numpy(dtype=int)
+    for name, idx in meta.groupby("file", sort=False).indices.items():
+        if name not in self_emi:
+            raise KeyError(f"{name} is not in the self-EMI curation")
+        key, ph = str(meta.input_key.iloc[idx[0]]), phase[idx[0]]
+        block = add_self_emi(out[idx], freqs_mhz, key, ph, self_emi[name])
+        rows = np.flatnonzero(np.isin(native[idx], comb_rows.get(name, [])))
+        out[idx] = add_calibration_comb(block, freqs_mhz, key, ph, rows)
     return out

@@ -3,14 +3,22 @@ import json
 import numpy as np
 import pytest
 
+import pandas as pd
+
 from eigsep_data.flag_union import (
-    FLAG_BITS_UNION,
     add_calibration_comb,
+    add_release_bits,
     add_self_emi,
     comb_channels,
     read_self_emi,
 )
-from eigsep_data.rfi_supported import ADVISORY_VALUE, FLAG_BITS
+from eigsep_data.rfi_supported import (
+    ADVISORY_VALUE,
+    FLAG_BITS,
+    FLAG_BITS_UNION,
+    RFIConfig,
+    RFIResult,
+)
 
 FREQS = np.array([0.84, 0.9, 1.0, 1.1, 1.16, 1.5])
 COMB = np.array([False, True, True, True, False, False])
@@ -154,3 +162,49 @@ def test_recurring_line_is_one_channel_on_sky_rows():
     assert line[[0, 2]].sum(1).tolist() == [1, 1] and line[1].sum() == 0
     assert line[0, 623 - 612] == 1
     np.testing.assert_array_equal(out & 0x7FFF, flags)
+
+
+def test_release_bits_follow_files_native_rows_and_phase():
+    freqs = np.array([151.9, 152.1, 153.0, 153.5])  # line 623, comb 153
+    flags = np.zeros((6, 4), np.uint16)
+    flags[5] = 1  # a non-sky row
+    meta = pd.DataFrame(
+        {
+            "file": ["a"] * 3 + ["b"] * 3,
+            "row": [2, 0, 1, 0, 1, 2],  # time order is not raw order
+            "input_key": "4",
+            "filter_phase": ["C"] * 3 + ["B"] * 3,
+        }
+    )
+    power = np.array([1.0, 1.0, 0.1, 1.0, 0.1, 1.0])
+    states = np.array(["RFANT"] * 6, object)
+    out = add_release_bits(
+        flags, meta, freqs, power, states,
+        self_emi={"a": True, "b": True},
+        comb_rows={"a": np.array([0]), "b": np.array([0])},
+        reference={"C": {"RFANT": 1.0}},
+    )
+    bit = lambda b: (out >> b) & 1  # noqa: E731
+    np.testing.assert_array_equal(bit(12)[:, 2], [1, 1, 1, 0, 0, 0])
+    # bit 13 on a's native row 0 (position 1); phase B is out of scope
+    np.testing.assert_array_equal(bit(13)[:, 2], [0, 1, 0, 0, 0, 0])
+    # bit 14 only where phase C has a reference
+    np.testing.assert_array_equal(bit(14)[:, 0], [0, 0, 1, 0, 0, 0])
+    np.testing.assert_array_equal(bit(15)[:, 1], [1, 1, 1, 1, 1, 0])
+    assert not bit(15)[:, [0, 2, 3]].any()
+    with pytest.raises(KeyError, match="self-EMI"):
+        add_release_bits(
+            flags, meta, freqs, power, states, self_emi={"a": False},
+            comb_rows={}, reference={},
+        )
+
+
+def test_default_masks_exclude_release_bits():
+    flags = np.array([[1 << 12, 1 << 14, 1 << 15, 1 << 9]], np.uint16)
+    z = np.zeros(flags.shape)
+    result = RFIResult(
+        flags, z, z, z, z, z, {}, z, z, z, z, np.arange(4.0),
+        np.arange(1.0), None, RFIConfig(), {},
+    )
+    np.testing.assert_array_equal(result.mask, [[1, 1, 1, 0]])
+    np.testing.assert_array_equal(result.rfi_mask, [[1, 0, 1, 0]])
