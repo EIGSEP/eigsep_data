@@ -738,3 +738,16 @@ def test_daemonless_files_are_sky_but_gaps_in_recorded_files_are_not():
     assert assumed == {"a.h5": "RFANT"}
     states, assumed = switch_states(meta, replace(RFIConfig(), daemonless_switch_state=None))
     assert list(states[:3]) == ["MISSING"] * 3 and assumed == {}
+
+
+def test_validity_depends_only_on_the_flagged_input():
+    air, ground, cross, times, freqs, dt, states = _synthetic()
+    ground[100:120] = 0  # the other input is dead
+    result = flag_arrays(air, ground, cross, times, freqs, dt, states,
+                         config=replace(RFIConfig(), time_guard=0))
+    invalid = 1 << BIT_BY_REASON["invalid_input_or_domain"]
+    cross_bit = 1 << BIT_BY_REASON["cross_change"]
+    assert not np.any(result.flags[100:120] & invalid)
+    assert not np.any(result.flags[100:120] & cross_bit)
+    assert np.isfinite(result.model[100:120]).all()
+    assert np.isnan(result.cross_score[100:120]).all()

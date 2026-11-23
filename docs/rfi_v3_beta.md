@@ -161,6 +161,14 @@ missing inside a file that does carry switch records is not reassigned. In the
 Marjum products this covers 1,280 files (319,127 rows, mostly 07-15) that
 revision 3 left as non-sky.
 
+## Per-input validity (flags v4)
+
+Bit 1 now depends only on the flagged input's own data (finite, positive,
+in the tested domain). The other input and the cross gate only the cross
+detector: where either is missing or nonpositive the cross score is
+undefined and bit 4 is not set. In v3, rows where box-air was dead gave
+box-gnd bit 1 on 48 % of its tested pixels (0 % with both live).
+
 ## Flag meanings
 
 Every nonzero value except the advisory bit 9 alone means that the cell is

@@ -63,7 +63,7 @@ FLAG_BITS = {
 ADVISORY_VALUE = sum(1 << int(k) for k, v in FLAG_BITS.items() if v.get("advisory"))
 FLAG_MEANINGS = {
     "non_sky_switch_state": "receiver switch is not RFANT; not sky and not RFI",
-    "invalid_input_or_domain": "missing/nonpositive input or outside the tested 35-235 MHz domain",
+    "invalid_input_or_domain": "missing/nonpositive own input or outside the tested 35-235 MHz domain",
     "positive_auto_excess": "positive air-auto residual above its point threshold",
     "negative_or_model_failure": "large negative residual or nonfinite residual/model",
     "cross_change": "complex cross coherence changed relative to its robust smooth background",
@@ -637,6 +637,20 @@ def _detect(
     return reasons, z, {"band_events": band_events, "comb_scores": comb_scores}
 
 
+def _valid_inputs(data, ground, cross, freqs, config):
+    """Own-input validity (bit 1) and the pair validity the cross needs.
+
+    Each input's mask depends only on its own data: the other input
+    and the cross only gate the cross detector.
+    """
+    domain = (freqs >= config.tested_band_mhz[0]) & (
+        freqs < config.tested_band_mhz[1]
+    )
+    own = np.isfinite(data) & (data > 0) & domain[None, :]
+    pair = own & np.isfinite(ground) & (ground > 0) & np.isfinite(cross)
+    return own, pair
+
+
 def _one_segment(data, ground, cross, times, freqs, dt, sky, config):
     started = time.perf_counter()
     df_hz = float(np.median(np.diff(freqs))) * 1e6
@@ -644,17 +658,11 @@ def _one_segment(data, ground, cross, times, freqs, dt, sky, config):
     domain = (freqs >= config.tested_band_mhz[0]) & (
         freqs < config.tested_band_mhz[1]
     )
-    valid_input = (
-        np.isfinite(data)
-        & np.isfinite(ground)
-        & np.isfinite(cross)
-        & (data > 0)
-        & (ground > 0)
-        & domain[None, :]
-    )
+    valid_input, pair_valid = _valid_inputs(data, ground, cross, freqs, config)
     valid = valid_input & sky[:, None]
     cross_z = cross / np.sqrt(np.maximum(data, 1) * np.maximum(ground, 1))
     cross_z *= normalization
+    cross_z[~pair_valid] = np.nan
     channels = np.rint(freqs / (df_hz / 1e6)).astype(int)
     solver = _TensorFit(times, freqs, data[sky], config)
     reference = valid.copy()
@@ -807,17 +815,7 @@ def _unfitted_segment(
 ):
     """Represent unavailable background as explicit flags and NaNs."""
     shape = data.shape
-    domain = (freqs >= config.tested_band_mhz[0]) & (
-        freqs < config.tested_band_mhz[1]
-    )
-    valid_input = (
-        np.isfinite(data)
-        & np.isfinite(ground)
-        & np.isfinite(cross)
-        & (data > 0)
-        & (ground > 0)
-        & domain[None, :]
-    )
+    valid_input, _ = _valid_inputs(data, ground, cross, freqs, config)
     reasons = {name: np.zeros(shape, dtype=bool) for name in BIT_BY_REASON}
     reasons["non_sky_switch_state"] = np.broadcast_to(
         ~sky[:, None], shape
