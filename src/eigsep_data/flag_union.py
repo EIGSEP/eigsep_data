@@ -108,3 +108,33 @@ def add_calibration_comb(flags, freqs_mhz, input_key, phase, rows):
         sel = np.ix_(rows, np.flatnonzero(comb_channels(freqs_mhz)))
         out[sel] |= np.uint16(1 << CALIBRATION_COMB_BIT)
     return out
+
+
+def read_calibration_comb(path):
+    """Map file name to the identified comb rows from a curation JSONL.
+
+    One record per file: ``{"file": ..., "input": "4", "rows": [[first,
+    last], ...]}`` with inclusive native row ranges, as
+    :func:`add_calibration_comb` takes them. A provenance-only header
+    line is skipped. Duplicate files, other inputs and empty or
+    reversed ranges raise.
+    """
+    out = {}
+    for line in Path(path).read_text().splitlines():
+        if not line.strip():
+            continue
+        rec = json.loads(line)
+        if set(rec) == {"provenance"}:
+            continue
+        name = rec["file"]
+        if name in out:
+            raise ValueError(f"duplicate comb record for {name}")
+        if str(rec["input"]) != COMB_INPUT:
+            raise ValueError(f"{name}: comb rows are input {COMB_INPUT}")
+        ranges = np.asarray(rec["rows"], dtype=int).reshape(-1, 2)
+        if not len(ranges) or np.any(ranges[:, 1] < ranges[:, 0]):
+            raise ValueError(f"{name}: empty or reversed row range")
+        out[name] = np.unique(
+            np.concatenate([np.arange(a, b + 1) for a, b in ranges])
+        )
+    return out
