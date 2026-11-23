@@ -161,6 +161,18 @@ missing inside a file that does carry switch records is not reassigned. In the
 Marjum products this covers 1,280 files (319,127 rows, mostly 07-15) that
 revision 3 left as non-sky.
 
+## MISSING switch rows inferred from the data (flags v4)
+
+Revision 4's assumption fails where box-air was dead: on 07-17 its 55
+daemonless files fall in the battery outage. A MISSING row now counts as
+sky only if box-air (`switch_antenna`) shows FM, `fm_excess` (mean over
+median power in 88-108 MHz) at least 1.1, inside a stretch of MISSING rows
+with no load visit: a 30-300 s run (`missing_visit_s`) below 1.02
+(`missing_fm_excess`). Loads read 1.01 and a dead box-air 1.05, so a dead
+spell is neither sky nor a visit. Other MISSING rows, in any file, stay
+non-sky (bit 0); `assumed_switch_state` lists the files with inferred sky
+rows.
+
 ## Flag meanings
 
 Every nonzero value except the advisory bit 9 alone means that the cell is
