@@ -25,7 +25,7 @@ def _v3():
 
 def test_new_bits_extend_v3_without_collision():
     assert set(FLAG_BITS) < set(FLAG_BITS_UNION)
-    assert {"12", "13", "15"} == set(FLAG_BITS_UNION) - set(FLAG_BITS)
+    assert {"12", "13", "14", "15"} == set(FLAG_BITS_UNION) - set(FLAG_BITS)
     names = [v["name"] for v in FLAG_BITS_UNION.values()]
     assert len(set(names)) == len(names)
 
@@ -114,6 +114,32 @@ def test_read_calibration_comb_expands_inclusive_ranges(tmp_path):
         path.write_text("\n".join(json.dumps(r) for r in records[1:2] + [bad]))
         with pytest.raises(ValueError):
             read_calibration_comb(path)
+
+
+def test_dead_input_is_whole_row_against_its_own_state():
+    from eigsep_data.flag_union import (
+        DEAD_INPUT_BIT,
+        add_dead_input,
+        band_power,
+        state_reference,
+    )
+
+    freqs = np.linspace(60, 75, 61)
+    states = np.array(["RFANT"] * 4 + ["RFSP1"] * 2, dtype=object)
+    level = np.array([3.0, 3.0, 0.5, 0.0, 0.7, 0.7])  # rows 2, 3 dead
+    spectra = level[:, None] * np.ones(freqs.size)
+    power = band_power(spectra, freqs, np.full(6, 0.5))
+    np.testing.assert_allclose(power, 2 * level)
+    reference = state_reference(power, states)
+    assert reference == {"RFANT": 6.0, "RFSP1": 1.4}
+    flags = np.zeros((6, 5), np.uint16)
+    flags[0, 0] = 1
+    out = add_dead_input(flags, power, states, reference)
+    dead = (out >> DEAD_INPUT_BIT) & 1
+    assert dead[[2, 3]].all() and not dead[[0, 1, 4, 5]].any()
+    assert out[0, 0] == 1 and FLAG_BITS_UNION["14"]["rfi"] is False
+    unknown = add_dead_input(flags, power, states, {})
+    np.testing.assert_array_equal(unknown, flags)
 
 
 def test_recurring_line_is_one_channel_on_sky_rows():
