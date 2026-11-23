@@ -776,3 +776,31 @@ def test_only_the_switch_antenna_follows_the_switch(tmp_path):
     # box-gnd: sky except while box-air's switch is in a VNA state
     assert not (gnd.flags[:50] & nonsky).any()
     assert (gnd.flags[50:] & nonsky).all()
+
+
+def test_validity_depends_only_on_the_flagged_input():
+    air, ground, cross, times, freqs, dt, states = _synthetic()
+    ground[100:120] = 0  # the other input is dead
+    result = flag_arrays(air, ground, cross, times, freqs, dt, states,
+                         config=replace(RFIConfig(), time_guard=0))
+    invalid = 1 << BIT_BY_REASON["invalid_input_or_domain"]
+    cross_bit = 1 << BIT_BY_REASON["cross_change"]
+    assert not np.any(result.flags[100:120] & invalid)
+    assert not np.any(result.flags[100:120] & cross_bit)
+    assert np.isfinite(result.model[100:120]).all()
+    assert np.isnan(result.cross_score[100:120]).all()
+
+
+def test_segment_without_any_valid_cross_skips_the_cross_detector():
+    air, ground, cross, times, freqs, dt, states = _synthetic()
+    ground[:] = 0  # the other input is dead for the whole segment
+    result = flag_arrays(air, ground, cross, times, freqs, dt, states,
+                         config=replace(RFIConfig(), time_guard=0))
+    invalid = 1 << BIT_BY_REASON["invalid_input_or_domain"]
+    cross_bit = 1 << BIT_BY_REASON["cross_change"]
+    assert np.isnan(result.cross_score).all()
+    assert not np.any(result.flags & cross_bit)
+    assert not np.any(result.flags[states == "RFANT"] & invalid)
+    assert np.isfinite(result.model[states == "RFANT"]).mean() > 0.95
+    cross = result.diagnostics["segments"][0]["cross"]
+    assert cross["skipped"] and cross["iterations"] == 0

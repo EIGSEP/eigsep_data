@@ -93,6 +93,29 @@ def test_read_self_emi(tmp_path):
         read_self_emi(path)
 
 
+def test_read_calibration_comb_expands_inclusive_ranges(tmp_path):
+    from eigsep_data.flag_union import read_calibration_comb
+
+    path = tmp_path / "comb.jsonl"
+    records = [
+        {"provenance": {"source": "test"}},
+        {"file": "a.h5", "input": "4", "rows": [[0, 2], [5, 5]]},
+        {"file": "b.h5", "input": 4, "rows": [[239, 239]]},
+    ]
+    path.write_text("\n".join(json.dumps(r) for r in records))
+    rows = read_calibration_comb(path)
+    np.testing.assert_array_equal(rows["a.h5"], [0, 1, 2, 5])
+    np.testing.assert_array_equal(rows["b.h5"], [239])
+    for bad in (
+        {"file": "a.h5", "input": "4", "rows": [[1, 1]]},
+        {"file": "c.h5", "input": "0", "rows": [[1, 1]]},
+        {"file": "c.h5", "input": "4", "rows": [[3, 2]]},
+    ):
+        path.write_text("\n".join(json.dumps(r) for r in records[1:2] + [bad]))
+        with pytest.raises(ValueError):
+            read_calibration_comb(path)
+
+
 def test_dead_input_is_whole_row_against_its_own_state():
     from eigsep_data.flag_union import (
         DEAD_INPUT_BIT,
