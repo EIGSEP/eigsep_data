@@ -94,11 +94,21 @@ class RFIConfig:
     # Calibration states flagged as well, each against its own background; their
     # rows keep bit 0 (not sky) and gain the RFI and support bits.
     extra_states: tuple[str, ...] = ("RFNON", "RFAMB")
-    # Files with no switch record at all were taken with the switch daemon off,
-    # when the RF switch sat on the antenna (Aaron, 2026-10-04): treat their rows
-    # as this state. None keeps them non-sky. Rows missing inside a recorded file
-    # are never reassigned.
-    daemonless_switch_state: str | None = "RFANT"
+    # Only switch_antenna's box has a switch board (box-gnd has none, CHB
+    # 2026-11-22): every row of the other antenna is the antenna.
+    # MISSING switch rows count as sky only where the switch antenna's FM
+    # excess (fm_excess) reaches missing_fm_excess[1], inside a stretch of
+    # MISSING rows with no load visit: a run of rows below
+    # missing_fm_excess[0] (a load; a dead input sits between the two)
+    # lasting missing_visit_s. Otherwise they stay non-sky.
+    switch_antenna: str = "box-air"
+    # Exception: while the switch antenna's switch reports a state starting
+    # with one of these prefixes, the other antenna's rows keep that state
+    # (non-sky). Box-air's VNA sweeps put a stepped tone into box-gnd that
+    # distorts its background fit (CHB 2026-11-23).
+    other_antenna_nonsky_prefixes: tuple[str, ...] = ("VNA",)
+    missing_fm_excess: tuple[float, float] = (1.02, 1.1)
+    missing_visit_s: tuple[float, float] = (30.0, 300.0)
     freq_halfwidth_s: float = 50e-9
     spectral_correction_halfwidth_s: float = 300e-9
     spectral_correction_band_mhz: tuple[float, float] = (35.0, 88.0)
@@ -1010,23 +1020,65 @@ def load_selection_inputs(
 
 
 MISSING_SWITCH_STATES = ("MISSING",)
+FM_BAND_MHZ = (88.0, 108.0)
 
 
-def switch_states(meta, config):
-    """Per-row switch states, with files that carry no switch record at all set to
-    ``config.daemonless_switch_state``. Returns the states and ``{file: state}``
-    for the files reassigned."""
+def fm_excess(data, freqs_mhz):
+    """Per-row mean over median auto power in the FM band.
+
+    About 1.01 on a load, 1.05 on a dead (unpowered) input; FM
+    stations raise it above 1.1 on the antenna. NaN where the band's
+    median power is not positive (dropped or dead rows).
+    """
+    f = np.asarray(freqs_mhz, dtype=float)
+    band = np.asarray(data, dtype=float)[
+        :, (f >= FM_BAND_MHZ[0]) & (f < FM_BAND_MHZ[1])
+    ]
+    median = np.median(band, axis=1)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return np.where(median > 0, band.mean(axis=1) / median, np.nan)
+
+
+def _runs(mask):
+    """(start, stop) of each run of True values."""
+    edges = np.diff(np.r_[0, np.asarray(mask, dtype=int), 0])
+    return zip(np.flatnonzero(edges == 1), np.flatnonzero(edges == -1))
+
+
+def switch_states(meta, config, fm, times):
+    """Per-row switch states with MISSING rows inferred from the data.
+
+    ``fm`` is :func:`fm_excess` of the switch antenna on the same rows
+    and ``times`` their times. A stretch is a run of MISSING rows
+    without a time gap (as in flagging segments). It shows switching if
+    its finite-``fm`` rows hold a load visit, a run below
+    ``config.missing_fm_excess[0]`` lasting ``config.missing_visit_s``
+    (dropped all-zero rows are skipped); then all its rows stay non-sky.
+    Otherwise its rows at or above ``config.missing_fm_excess[1]`` become
+    ``config.sky_state``. Returns the states and ``{file: sky_state}``
+    for the files with inferred rows.
+    """
     states = meta.rfswitch.to_numpy(dtype=object).copy()
-    assumed = {}
-    if config.daemonless_switch_state is None:
-        return states, assumed
-    files = meta.file.to_numpy(dtype=object)
-    for fname in pd.unique(files):
-        rows = files == fname
-        if np.isin(states[rows], MISSING_SWITCH_STATES).all():
-            states[rows] = config.daemonless_switch_state
-            assumed[str(fname)] = config.daemonless_switch_state
-    return states, assumed
+    dt = meta.integration_time.to_numpy(dtype=float)
+    fm = np.asarray(fm, dtype=float)
+    load, has_fm = fm < config.missing_fm_excess[0], fm >= (
+        config.missing_fm_excess[1]
+    )
+    lo, hi = config.missing_visit_s
+    sky = np.zeros(len(states), dtype=bool)
+    for segment in _segments(np.asarray(times, float), dt, config.gap_factor):
+        missing = np.isin(states[segment], MISSING_SWITCH_STATES)
+        for a, b in _runs(missing):
+            rows = np.arange(segment.start + a, segment.start + b)
+            tested = rows[np.isfinite(fm[rows])]
+            visits = [
+                dt[tested[i:j]].sum() for i, j in _runs(load[tested])
+            ]
+            if not any(lo <= v <= hi for v in visits):
+                sky[rows] = has_fm[rows]
+    states[sky] = config.sky_state
+    files = meta.file.to_numpy(dtype=object)[sky]
+    return states, {str(f): config.sky_state for f in pd.unique(files)}
 
 
 def run_selection(
@@ -1051,7 +1103,21 @@ def run_selection(
         raise ValueError(
             "selection metadata lacks rfswitch or integration_time"
         )
-    states, assumed = switch_states(air.meta, config)
+    if air_antenna == config.switch_antenna:
+        states, assumed = switch_states(
+            air.meta, config, fm_excess(air.data, air.freqs_mhz), air.t
+        )
+    else:
+        recorded = air.meta.rfswitch.to_numpy(dtype=object)
+        nonsky = np.array(
+            [
+                str(state).startswith(config.other_antenna_nonsky_prefixes)
+                for state in recorded
+            ],
+            dtype=bool,
+        )
+        states = np.where(nonsky, recorded, config.sky_state).astype(object)
+        assumed = {}
     result = flag_arrays(
         air.data,
         bundles["ground"].data,

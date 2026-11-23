@@ -161,6 +161,23 @@ missing inside a file that does carry switch records is not reassigned. In the
 Marjum products this covers 1,280 files (319,127 rows, mostly 07-15) that
 revision 3 left as non-sky.
 
+## MISSING switch rows inferred from the data (flags v4)
+
+Revision 4's assumption fails where box-air was dead: on 07-17 its 55
+daemonless files fall in the battery outage. A MISSING row now counts as
+sky only if box-air (`switch_antenna`) shows FM, `fm_excess` (mean over
+median power in 88-108 MHz) at least 1.1, inside a stretch of MISSING rows
+with no load visit: a 30-300 s run (`missing_visit_s`) below 1.02
+(`missing_fm_excess`). Loads read 1.01 and a dead box-air 1.05, so a dead
+spell is neither sky nor a visit. Other MISSING rows, in any file, stay
+non-sky (bit 0); `assumed_switch_state` lists the files with inferred sky
+rows. Box-gnd has no switch board (CHB, 2026-11-22), so in its run every
+row is `RFANT` whatever box-air's switch reports; only `switch_antenna`'s
+rows follow `rfswitch`. The exception is box-air's S11 sweeps: while its
+switch reports a `VNA*` state (`other_antenna_nonsky_prefixes`), box-gnd's
+rows keep that state and are non-sky, since the sweep's stepped tone
+reaches box-gnd and distorts its background fit.
+
 ## Per-input validity (flags v4)
 
 Bit 1 now depends only on the flagged input's own data (finite, positive,

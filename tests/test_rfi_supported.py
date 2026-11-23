@@ -727,17 +727,55 @@ def test_duplicated_timestamps_fall_back_to_row_order():
     assert np.isfinite(result.model[sky]).mean() > 0.95
 
 
-def test_daemonless_files_are_sky_but_gaps_in_recorded_files_are_not():
-    from eigsep_data.rfi_supported import switch_states
+def test_missing_rows_are_sky_only_with_fm_and_no_switching():
+    from eigsep_data.rfi_supported import fm_excess, switch_states
+
+    freqs = np.linspace(80, 116, 145)
+    load = np.ones((1, freqs.size))
+    fm_row = load + 9 * (np.arange(freqs.size) % 7 == 0)
+    assert fm_excess(load, freqs)[0] == 1 and fm_excess(fm_row, freqs) > 1.1
+    assert np.isnan(fm_excess(fm_row - 1, freqs))  # zero median
+    n = 400
     meta = pd.DataFrame({
-        "file": ["a.h5"] * 3 + ["b.h5"] * 3,
-        "rfswitch": ["MISSING"] * 3 + ["RFANT", "MISSING", "RFNON"],
+        "file": ["a.h5"] * 200 + ["b.h5"] * 200,
+        "rfswitch": ["MISSING"] * 200 + ["MISSING"] * 199 + ["RFNON"],
+        "integration_time": np.full(n, 0.5),
     })
-    states, assumed = switch_states(meta, RFIConfig())
-    assert list(states) == ["RFANT"] * 3 + ["RFANT", "MISSING", "RFNON"]
+    times = np.r_[np.arange(200) * 0.5, 1e4 + np.arange(200) * 0.5]
+    fm = np.full(n, 1.5)
+    fm[50:60] = 1.0  # 5 s FM-free: not a visit
+    fm[60:62] = np.nan  # dropped rows are skipped
+    fm[100:180] = 1.05  # 40 s dead: neither sky nor a visit
+    fm[250:370] = 1.0  # 60 s FM-free run: a load visit
+    states, assumed = switch_states(meta, RFIConfig(), fm, times)
+    sky = states == "RFANT"
+    assert sky[:50].all() and sky[62:100].all() and sky[180:200].all()
+    assert not sky[50:62].any() and not sky[100:180].any()
+    assert not sky[200:].any() and states[-1] == "RFNON"
     assert assumed == {"a.h5": "RFANT"}
-    states, assumed = switch_states(meta, replace(RFIConfig(), daemonless_switch_state=None))
-    assert list(states[:3]) == ["MISSING"] * 3 and assumed == {}
+
+
+def test_only_the_switch_antenna_follows_the_switch(tmp_path):
+    from eigsep_data.rfi_supported import run_selection
+
+    data = tmp_path / "data"
+    data.mkdir()
+    write_corr_file(
+        data / "corr_20260716_000000Z.h5", ntimes=60, keys=("0", "2", "02"),
+        input_to_ant={"0": "box-gnd", "2": "box-air"},
+        rfswitch=["RFANT"] * 30 + ["RFAMB"] * 20 + ["VNAO"] * 10,
+    )
+    selection = MetadataIndex(data, cache=False).select()
+    nonsky = 1 << BIT_BY_REASON["non_sky_switch_state"]
+    air = run_selection(selection)
+    gnd = run_selection(
+        selection, air_antenna="box-gnd", ground_antenna="box-air"
+    )
+    assert (air.flags[30:] & nonsky).all()
+    assert not (air.flags[:30] & nonsky).any()
+    # box-gnd: sky except while box-air's switch is in a VNA state
+    assert not (gnd.flags[:50] & nonsky).any()
+    assert (gnd.flags[50:] & nonsky).all()
 
 
 def test_validity_depends_only_on_the_flagged_input():
