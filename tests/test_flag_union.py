@@ -25,7 +25,7 @@ def _v3():
 
 def test_new_bits_extend_v3_without_collision():
     assert set(FLAG_BITS) < set(FLAG_BITS_UNION)
-    assert {"12", "13", "14"} == set(FLAG_BITS_UNION) - set(FLAG_BITS)
+    assert {"12", "13", "14", "15"} == set(FLAG_BITS_UNION) - set(FLAG_BITS)
     names = [v["name"] for v in FLAG_BITS_UNION.values()]
     assert len(set(names)) == len(names)
 
@@ -95,7 +95,10 @@ def test_read_self_emi(tmp_path):
 
 def test_dead_input_is_whole_row_against_its_own_state():
     from eigsep_data.flag_union import (
-        DEAD_INPUT_BIT, add_dead_input, band_power, state_reference,
+        DEAD_INPUT_BIT,
+        add_dead_input,
+        band_power,
+        state_reference,
     )
 
     freqs = np.linspace(60, 75, 61)
@@ -114,3 +117,17 @@ def test_dead_input_is_whole_row_against_its_own_state():
     assert out[0, 0] == 1 and FLAG_BITS_UNION["14"]["rfi"] is False
     unknown = add_dead_input(flags, power, states, {})
     np.testing.assert_array_equal(unknown, flags)
+
+
+def test_recurring_line_is_one_channel_on_sky_rows():
+    from eigsep_data.flag_union import RECURRING_LINE_BIT, add_recurring_line
+
+    freqs = np.arange(612, 635) * 250 / 1024  # channel 623 = 152.0996 MHz
+    flags = np.zeros((3, freqs.size), np.uint16)
+    flags[1] = 1  # a non-sky row
+    flags[0, 0] = 1 << 2
+    out = add_recurring_line(flags, freqs)
+    line = (out >> RECURRING_LINE_BIT) & 1
+    assert line[[0, 2]].sum(1).tolist() == [1, 1] and line[1].sum() == 0
+    assert line[0, 623 - 612] == 1
+    np.testing.assert_array_equal(out & 0x7FFF, flags)
