@@ -49,10 +49,12 @@ from __future__ import annotations
 
 import json
 import re
+import warnings
 from datetime import datetime, timedelta, timezone
 
 import numpy as np
 from scipy.ndimage import median_filter
+from scipy.signal import savgol_filter
 
 # ---------------------------------------------------------------- constants
 
@@ -364,7 +366,28 @@ def persistent_track(logp, valid_time, freqs, smooth_width=31, clip_sigma=6.0):
         return chan_flags, resid.astype(np.float32)
     s = _mad(resid[in_band]).item()
     if not np.isfinite(s) or s < 1e-9:
-        return chan_flags, resid.astype(np.float32)
+        # The running median reproduces a locally monotonic spectrum, so
+        # its residual MAD is zero; fall back to a quadratic
+        # Savitzky-Golay baseline, which does not follow the spectrum.
+        resid = med - savgol_filter(med, smooth_width, 2)
+        s0, s = s, _mad(resid[in_band]).item()
+        if not np.isfinite(s) or s < 1e-9:
+            warnings.warn(
+                f"persistent_track: residual MAD at {BAND_ANALYSIS} MHz "
+                f"is {s0:.3g} (running median) and {s:.3g} "
+                "(Savitzky-Golay) for this time-median spectrum; no "
+                "persistent-line flags were produced",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return chan_flags, resid.astype(np.float32)
+        warnings.warn(
+            f"persistent_track: residual MAD at {BAND_ANALYSIS} MHz is "
+            f"{s0:.3g} with the running median; used the quadratic "
+            "Savitzky-Golay baseline instead",
+            RuntimeWarning,
+            stacklevel=2,
+        )
     chan_flags = (resid > clip_sigma * s) & in_band
     return chan_flags, resid.astype(np.float32)
 
