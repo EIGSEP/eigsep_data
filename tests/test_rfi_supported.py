@@ -763,7 +763,7 @@ def test_only_the_switch_antenna_follows_the_switch(tmp_path):
     write_corr_file(
         data / "corr_20260716_000000Z.h5", ntimes=60, keys=("0", "2", "02"),
         input_to_ant={"0": "box-gnd", "2": "box-air"},
-        rfswitch=["RFANT"] * 30 + ["RFAMB"] * 30,
+        rfswitch=["RFANT"] * 30 + ["RFAMB"] * 20 + ["VNAO"] * 10,
     )
     selection = MetadataIndex(data, cache=False).select()
     nonsky = 1 << BIT_BY_REASON["non_sky_switch_state"]
@@ -773,4 +773,6 @@ def test_only_the_switch_antenna_follows_the_switch(tmp_path):
     )
     assert (air.flags[30:] & nonsky).all()
     assert not (air.flags[:30] & nonsky).any()
-    assert not (gnd.flags & nonsky).any()
+    # box-gnd: sky except while box-air's switch is in a VNA state
+    assert not (gnd.flags[:50] & nonsky).any()
+    assert (gnd.flags[50:] & nonsky).all()

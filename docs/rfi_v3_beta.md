@@ -173,7 +173,10 @@ spell is neither sky nor a visit. Other MISSING rows, in any file, stay
 non-sky (bit 0); `assumed_switch_state` lists the files with inferred sky
 rows. Box-gnd has no switch board (CHB, 2026-11-22), so in its run every
 row is `RFANT` whatever box-air's switch reports; only `switch_antenna`'s
-rows follow `rfswitch`.
+rows follow `rfswitch`. The exception is box-air's S11 sweeps: while its
+switch reports a `VNA*` state (`other_antenna_nonsky_prefixes`), box-gnd's
+rows keep that state and are non-sky, since the sweep's stepped tone
+reaches box-gnd and distorts its background fit.
 
 ## Flag meanings
 

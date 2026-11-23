@@ -102,6 +102,11 @@ class RFIConfig:
     # missing_fm_excess[0] (a load; a dead input sits between the two)
     # lasting missing_visit_s. Otherwise they stay non-sky.
     switch_antenna: str = "box-air"
+    # Exception: while the switch antenna's switch reports a state starting
+    # with one of these prefixes, the other antenna's rows keep that state
+    # (non-sky). Box-air's VNA sweeps put a stepped tone into box-gnd that
+    # distorts its background fit (CHB 2026-11-23).
+    other_antenna_nonsky_prefixes: tuple[str, ...] = ("VNA",)
     missing_fm_excess: tuple[float, float] = (1.02, 1.1)
     missing_visit_s: tuple[float, float] = (30.0, 300.0)
     freq_halfwidth_s: float = 50e-9
@@ -1090,7 +1095,15 @@ def run_selection(
             air.meta, config, fm_excess(air.data, air.freqs_mhz), air.t
         )
     else:
-        states = np.full(len(air.t), config.sky_state, dtype=object)
+        recorded = air.meta.rfswitch.to_numpy(dtype=object)
+        nonsky = np.array(
+            [
+                str(state).startswith(config.other_antenna_nonsky_prefixes)
+                for state in recorded
+            ],
+            dtype=bool,
+        )
+        states = np.where(nonsky, recorded, config.sky_state).astype(object)
         assumed = {}
     result = flag_arrays(
         air.data,
