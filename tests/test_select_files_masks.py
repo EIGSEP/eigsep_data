@@ -180,3 +180,24 @@ class TestCombModes:
         paths.set_campaign_root(root)
         with pytest.raises(SystemExit, match="tx_comb.*rebuild"):
             sf.select(modes={"boxair-emi": ["on"]}, conditional=set())
+
+
+class TestBoxairOutageMask:
+    def test_battery_outage_drops_boxair_only(self, tmp_path):
+        # 07-17 battery outage: 21:44-23:45 UTC, was 23:35-23:45 only
+        names = ["corr_20260717_214300Z.h5", "corr_20260717_220000Z.h5",
+                 "corr_20260717_234500Z.h5", "corr_20260717_234600Z.h5"]
+        root = make_campaign(tmp_path, names)
+        cond = {"box-air-outage"}
+        kept, dropped, _ = sf.select(root=root, conditional=cond,
+                                     inputs=["4"])
+        assert kept == [names[0], names[3]]
+        assert set(dropped_by(dropped)) == {names[1], names[2]}
+        kept, _, _ = sf.select(root=root, conditional=cond, inputs=["0"])
+        assert kept == names
+
+    def test_windows_are_ordered_and_disjoint(self):
+        mask = next(m for m in sf.CONDITIONAL_MASKS
+                    if m["name"] == "box-air-outage")
+        bounds = [sf.parse_iso(t) for w in mask["windows"] for t in w]
+        assert bounds == sorted(bounds) and len(set(bounds)) == len(bounds)

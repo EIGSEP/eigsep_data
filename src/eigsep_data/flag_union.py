@@ -10,6 +10,11 @@ C, on channels within 0.15 MHz of an integer MHz:
 - bit 13, ``identified_calibration_comb``: the identified native rows,
   in every switch state.
 
+Bit 15, ``recurring_line``, is an external line at 152.10 MHz
+(channel 623) that box-air sees in the antenna state on every date and
+box-gnd in every state; it is set on that channel of every sky row
+(bit 0 clear) of any input.
+
 Bits 10 and 11 stay free because the RFI prototype lineage gives them
 meanings (retracted, post-DPSS residual) that some consumers keep. A
 consumer that excludes every non-advisory bit, v3's default, excludes
@@ -26,6 +31,7 @@ from .rfi_supported import FLAG_BITS
 UNION_BITS = {
     "12": {"name": "identified_self_emi", "rfi": True},
     "13": {"name": "identified_calibration_comb", "rfi": True},
+    "15": {"name": "recurring_line", "rfi": True},
 }
 UNION_MEANINGS = {
     "identified_self_emi": (
@@ -36,6 +42,10 @@ UNION_MEANINGS = {
         "calibration comb: input 4, phase C, channels within 0.15 MHz of "
         "an integer MHz, identified native rows in every switch state"
     ),
+    "recurring_line": (
+        "external line at 152.10 MHz (channel 623), every sky row of any "
+        "input"
+    ),
 }
 FLAG_BITS_UNION = {**FLAG_BITS, **UNION_BITS}
 SELF_EMI_BIT = 12
@@ -43,6 +53,9 @@ CALIBRATION_COMB_BIT = 13
 COMB_HALFWIDTH_MHZ = 0.15
 COMB_INPUT = "4"
 COMB_PHASE = "C"
+RECURRING_LINE_BIT = 15
+RECURRING_LINES_MHZ = (152.10,)
+LINE_HALFWIDTH_MHZ = 0.12
 
 
 def comb_channels(freqs_mhz, halfwidth=COMB_HALFWIDTH_MHZ):
@@ -137,4 +150,22 @@ def read_calibration_comb(path):
         out[name] = np.unique(
             np.concatenate([np.arange(a, b + 1) for a, b in ranges])
         )
+    return out
+
+
+def add_recurring_line(flags, freqs_mhz, lines=RECURRING_LINES_MHZ):
+    """Return a copy of ``flags`` with bit 15 on the recurring lines.
+
+    Channels within ``LINE_HALFWIDTH_MHZ`` (half a channel) of a line,
+    on every row without bit 0 (non-sky switch state).
+    """
+    out = _check(flags, freqs_mhz)
+    f = np.asarray(freqs_mhz, dtype=float)
+    chans = np.zeros(f.size, dtype=bool)
+    for line in lines:
+        chans |= np.abs(f - line) < LINE_HALFWIDTH_MHZ
+    block = out[:, chans]
+    sky = (block & np.uint16(1)) == 0
+    block[sky] |= np.uint16(1 << RECURRING_LINE_BIT)
+    out[:, chans] = block
     return out
