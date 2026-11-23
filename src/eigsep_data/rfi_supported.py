@@ -457,7 +457,22 @@ def _cross_background(cross_z, qt, reference_valid, config):
     usable = reference_valid & np.isfinite(cross_z)
     active = np.any(usable, axis=0)
     if not active.any():
-        raise ValueError("no valid sky samples for cross-background fit")
+        # No valid cross at all (e.g. the other input is dead for the
+        # whole segment): the cross detector is skipped, its score NaN.
+        return (
+            np.full(cross_z.shape, np.nan, dtype=complex),
+            np.full(cross_z.shape, np.nan),
+            {
+                "iterations": 0,
+                "last_step": float("nan"),
+                "skipped": "no valid cross samples",
+                "reached_step_tolerance": False,
+                "unconverged_channels": 0,
+                "systems_solved": 0,
+                "system_rank": qt.shape[1],
+                "seconds": time.perf_counter() - started,
+            },
+        )
     good = usable[:, active]
     data = np.where(good, cross_z[:, active], 0)
     rank = qt.shape[1]
