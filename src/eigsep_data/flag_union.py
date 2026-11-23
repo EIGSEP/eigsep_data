@@ -10,6 +10,10 @@ C, on channels within 0.15 MHz of an integer MHz:
 - bit 13, ``identified_calibration_comb``: the identified native rows,
   in every switch state.
 
+Bit 14, ``dead_input``, is not RFI: whole rows where the input's
+low-band power is below ``DEAD_FRACTION`` of its switch state's
+reference (the box unpowered or its LNA off), on any input.
+
 Bits 10 and 11 stay free because the RFI prototype lineage gives them
 meanings (retracted, post-DPSS residual) that some consumers keep. A
 consumer that excludes every non-advisory bit, v3's default, excludes
@@ -26,6 +30,7 @@ from .rfi_supported import FLAG_BITS
 UNION_BITS = {
     "12": {"name": "identified_self_emi", "rfi": True},
     "13": {"name": "identified_calibration_comb", "rfi": True},
+    "14": {"name": "dead_input", "rfi": False},
 }
 UNION_MEANINGS = {
     "identified_self_emi": (
@@ -36,6 +41,10 @@ UNION_MEANINGS = {
         "calibration comb: input 4, phase C, channels within 0.15 MHz of "
         "an integer MHz, identified native rows in every switch state"
     ),
+    "dead_input": (
+        "whole row: the input's 62.5-70.3 MHz power per second is below "
+        "0.3 of its switch state's reference"
+    ),
 }
 FLAG_BITS_UNION = {**FLAG_BITS, **UNION_BITS}
 SELF_EMI_BIT = 12
@@ -43,6 +52,9 @@ CALIBRATION_COMB_BIT = 13
 COMB_HALFWIDTH_MHZ = 0.15
 COMB_INPUT = "4"
 COMB_PHASE = "C"
+DEAD_INPUT_BIT = 14
+DEAD_BAND_MHZ = (62.5, 70.3125)
+DEAD_FRACTION = 0.3
 
 
 def comb_channels(freqs_mhz, halfwidth=COMB_HALFWIDTH_MHZ):
@@ -107,4 +119,47 @@ def add_calibration_comb(flags, freqs_mhz, input_key, phase, rows):
     if str(input_key) == COMB_INPUT and phase == COMB_PHASE:
         sel = np.ix_(rows, np.flatnonzero(comb_channels(freqs_mhz)))
         out[sel] |= np.uint16(1 << CALIBRATION_COMB_BIT)
+    return out
+
+
+def band_power(spectra, freqs_mhz, integration_time, band=DEAD_BAND_MHZ):
+    """Per-row median auto power in ``band``, per second of integration."""
+    f = np.asarray(freqs_mhz, dtype=float)
+    sel = (f >= band[0]) & (f < band[1])
+    power = np.median(np.asarray(spectra, dtype=float)[:, sel], axis=1)
+    return power / np.asarray(integration_time, dtype=float)
+
+
+def state_reference(power, states):
+    """Median :func:`band_power` of each switch state's positive rows.
+
+    Compute it over a whole deployment, with MISSING rows already
+    inferred, so that a selection that is all dead still has a live
+    reference.
+    """
+    power, states = np.asarray(power, float), np.asarray(states, object)
+    return {
+        s: float(np.median(power[(states == s) & (power > 0)]))
+        for s in np.unique(states)
+        if np.any((states == s) & (power > 0))
+    }
+
+
+def add_dead_input(flags, power, states, reference, fraction=DEAD_FRACTION):
+    """Return a copy of ``flags`` with bit 14 on the dead rows.
+
+    A row is dead if its ``power`` (:func:`band_power`) is below
+    ``fraction`` times ``reference[state]``; states without a
+    reference are not tested. All-zero rows count as dead.
+    """
+    out = np.asarray(flags)
+    if out.dtype != np.uint16 or out.ndim != 2:
+        raise ValueError("flags must be a 2-D uint16 v3 mask")
+    out = out.copy()
+    power, states = np.asarray(power, float), np.asarray(states, object)
+    if power.shape != (out.shape[0],) or states.shape != power.shape:
+        raise ValueError("power and states need one value per row")
+    level = np.array([reference.get(s, np.nan) for s in states])
+    dead = power < fraction * level
+    out[dead] |= np.uint16(1 << DEAD_INPUT_BIT)
     return out
