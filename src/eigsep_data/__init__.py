@@ -34,6 +34,7 @@ _SUBMODULES = {
     "bundle",
     "calibration",
     "clock",
+    "cross",
     "data",
     "flagging",
     "geometry_release",
