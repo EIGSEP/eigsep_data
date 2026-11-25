@@ -5,7 +5,8 @@ Three steps, in the order a caller uses them:
 1. :func:`digital_delay_ns`: the SNAP's digital delay per integration,
    from ``header/pol_delay`` with the deployment-5 header fixes.
 2. :func:`direct_delay_ns`: the delay of a source's direct path,
-   ``tau(t) = tau_instr - D(t) - b . s(t) / c``.
+   ``tau(t) = tau_instr - D(t) - b . s(t) / c``, with the air between
+   the antennas if its index (:func:`air_index`) is given.
 3. :func:`matched_filter`: the coherent matched filter along that
    track, which returns the remaining constant delay (``tau_instr``),
    its phase and a jackknife error.
@@ -88,7 +89,7 @@ def source_enu(ra, dec, times_unix, site=MARJUM_PASS):
     )
     t = Time(np.asarray(times_unix, float), format="unix")
     # The bundled IERS tables, however old their predictions: polar
-    # motion and UT1 errors move a direction by < 15 arcsec, < 0.01 ns
+    # motion and UT1 errors move a direction by < 15 arcsec, < 0.03 ns
     # on 100 m, and a download would need the network.
     with (
         iers.conf.set_temp("auto_download", False),
@@ -104,14 +105,45 @@ def source_enu(ra, dec, times_unix, site=MARJUM_PASS):
     )
 
 
-def direct_delay_ns(baseline_m, s_enu, d_ns=0.0, tau_instr_ns=0.0):
+def air_index(pressure_hpa, temperature_k, vapour_hpa=0.0):
+    """Radio refractive index of air (Smith & Weintraub 1953).
+
+    ``n = 1 + 1e-6 (77.6 P / T + 3.73e5 e / T^2)``, with the total
+    pressure ``P`` and the water-vapour pressure ``e`` in hPa and ``T``
+    in K; non-dispersive below about 30 GHz.
+    """
+    t = np.asarray(temperature_k, float)
+    return 1.0 + 1e-6 * (
+        77.6 * np.asarray(pressure_hpa, float) / t
+        + 3.73e5 * np.asarray(vapour_hpa, float) / t**2
+    )
+
+
+def direct_delay_ns(baseline_m, s_enu, d_ns=0.0, tau_instr_ns=0.0, n_air=1.0):
     """Delay of the direct path, ``tau_instr - D - b . s / c`` [ns].
 
     ``baseline_m`` is ``r_b - r_a`` (true ENU, m), ``s_enu`` the source
-    direction(s) ``(..., 3)`` and ``d_ns`` the digital delay on input
-    ``a`` (minus any on ``b``), broadcast against ``s_enu[..., 0]``.
+    direction(s) ``(..., 3)`` in vacuum (as :func:`source_enu` gives)
+    and ``d_ns`` the digital delay on input ``a`` (minus any on ``b``),
+    broadcast against ``s_enu[..., 0]``.
+
+    ``n_air`` is the refractive index of the air between the antennas'
+    heights (:func:`air_index`; its mean over that range), a scalar or
+    broadcast like ``d_ns``. Horizontally stratified air leaves the
+    horizontal wavenumber at its vacuum value and makes the vertical
+    one ``sqrt(n^2 - cos^2 alt)``, so the Up component of ``s`` becomes
+    ``sqrt(s_U^2 + n^2 - 1)``: the baseline's Up component ``b_U`` sees
+    about ``b_U (n - 1) / (c sin alt)`` more delay than in vacuum (0.07
+    ns at the zenith for 88 m and ``n - 1 = 2.5e-4``) and its
+    horizontal components none. The default 1 is the vacuum delay.
     """
-    geo = np.asarray(s_enu) @ np.asarray(baseline_m, float) / C_LIGHT
+    s = np.array(s_enu, float)
+    n = np.asarray(n_air, float)
+    # n^2 - 1 on its own, so that n = 1 returns s_U to the last bit.
+    s[..., 2] = np.copysign(
+        np.sqrt(s[..., 2] ** 2 + (n - 1.0) * (n + 1.0)), s[..., 2]
+    )
+    geo = s @ np.asarray(baseline_m, float) / C_LIGHT
     return tau_instr_ns - np.asarray(d_ns) - geo * 1e9
 
 
@@ -119,13 +151,17 @@ def highpass(x, w, nwin):
     """Remove the weighted running mean over ``nwin`` bins, per channel.
 
     ``x`` is ``(n_bin, n_chan)``, real or complex; ``w`` its weights,
-    ``(n_bin, n_chan)`` or ``(n_bin,)``. The window is centred and
-    truncated at the edges. Bins without weight take no part in the
-    mean; their values are returned shifted but carry no weight later.
+    ``(n_bin, n_chan)`` or ``(n_bin,)``. The window is centred, spans
+    ``2 * (nwin // 2) + 1`` bins (``nwin + 1`` if ``nwin`` is even) and
+    is truncated at the edges. Bins without weight (``w`` not positive,
+    or ``x`` or ``w`` not finite) take no part in the mean; their
+    values are returned shifted but carry no weight later.
     """
     x = np.asarray(x)
     w = np.broadcast_to(np.asarray(w, float).reshape(len(x), -1), x.shape)
-    xw = np.where(w > 0, x, 0) * w
+    ok = np.isfinite(x) & np.isfinite(w) & (w > 0)
+    w = np.where(ok, w, 0.0)
+    xw = np.where(ok, x, 0) * w
     cx = np.concatenate([np.zeros_like(xw[:1]), np.cumsum(xw, 0)])
     cw = np.concatenate([np.zeros_like(w[:1]), np.cumsum(w, 0)])
     i = np.arange(len(x))
@@ -137,11 +173,15 @@ def highpass(x, w, nwin):
 
 
 def _peak(tau, s):
-    """Delay and ``|S|`` of the largest ``|S|``, parabolically refined."""
+    """Delay and ``|S|`` of the largest ``|S|``, parabolically refined.
+
+    NaN if the largest ``|S|`` is at an edge of the grid (the peak may
+    lie outside it) or ``S`` is NaN.
+    """
     a = np.abs(s)
     i = int(np.argmax(a))
     if not 0 < i < a.size - 1:
-        return float(tau[i]), float(a[i])
+        return np.nan, np.nan
     y0, y1, y2 = a[i - 1], a[i], a[i + 1]
     den = y0 - 2 * y1 + y2
     d = 0.5 * (y0 - y2) / den if den != 0 else 0.0
@@ -168,37 +208,52 @@ def matched_filter(c, w, nu_hz, track_ns, tau_ns, nwin, blocks=None):
 
     Parameters
     ----------
-    c, w : (n_bin, n_chan) arrays
-        Data and weights (e.g. integration seconds after masks).
+    c : (n_bin, n_chan) array
+    w : (n_bin, n_chan) or (n_bin,) array
+        Weights (e.g. integration seconds after masks); cells with a
+        weight that is not positive and finite are not used.
     nu_hz : (n_chan,) array
     track_ns : (n_bin,) or (n_bin, n_chan) array
         Model delay per bin; NaN bins get no weight.
     tau_ns : (n_tau,) array
-        Uniform delay grid to search.
+        Uniform delay grid to search; it must reach past the peak on
+        both sides.
     nwin : int
-        High-pass window in bins.
-    blocks : (n_bin,) int array, optional
-        Block of each bin for the delete-one-block jackknife (e.g.
-        30-min blocks); without it, the errors are NaN.
+        High-pass window in bins (:func:`highpass`: ``nwin + 1`` bins
+        if even).
+    blocks : (n_bin,) array, optional
+        Block label of each bin for the delete-one-block jackknife;
+        bins with equal labels form a block (e.g. ``t_unix // 1800``).
+        Without it, the errors are NaN.
 
     Returns
     -------
     dict
         ``tau`` (peak delay, ns), ``amp`` (``|S|`` there), ``phase``
         (``arg S`` there, rad), ``sigma_tau``, ``sigma_amp`` (jackknife)
-        and ``profile`` (complex ``S`` on ``tau_ns``).
+        and ``profile`` (complex ``S`` on ``tau_ns``). ``phase`` is
+        referenced to ``nu = 0``, so an error ``dtau`` in ``tau`` moves
+        it by ``-2 pi nu_c dtau`` (``nu_c`` the band centre). All but
+        ``profile`` are NaN if no cell has weight or ``|S|`` is largest
+        at an edge of ``tau_ns``; the errors are also NaN if a
+        jackknife replicate peaks at an edge.
     """
     c = np.asarray(c)
     nu = np.asarray(nu_hz, float)
     track = np.asarray(track_ns, float)
     if track.ndim == 1:
         track = track[:, None]
-    w = np.where(np.isfinite(c) & np.isfinite(track), w, 0.0)
+    w = np.broadcast_to(np.asarray(w, float).reshape(len(c), -1), c.shape)
+    ok = np.isfinite(c) & np.isfinite(track) & np.isfinite(w) & (w > 0)
+    w = np.where(ok, w, 0.0)
     cp = highpass(c, w, nwin)
     mp = highpass(
         np.exp(2j * np.pi * nu * np.nan_to_num(track) * 1e-9), w, nwin
     )
-    blocks = np.zeros(len(c), int) if blocks is None else np.asarray(blocks)
+    if blocks is None:
+        blocks = np.zeros(len(c), int)
+    else:
+        blocks = np.unique(blocks, return_inverse=True)[1].reshape(-1)
     nblock = int(blocks.max()) + 1
     z = np.zeros((nblock, nu.size), complex)
     n = np.zeros(nblock)
@@ -214,20 +269,32 @@ def matched_filter(c, w, nu_hz, track_ns, tau_ns, nwin, blocks=None):
         return _peak(tau, e @ z[keep].sum(0) / n[keep].sum())
 
     used = n > 0
+    if not used.any():
+        nan = float("nan")
+        return dict(
+            tau=nan,
+            amp=nan,
+            phase=nan,
+            sigma_tau=nan,
+            sigma_amp=nan,
+            profile=np.full(tau.size, np.nan, complex),
+        )
     prof = e @ z[used].sum(0) / n[used].sum()
     t0, a0 = _peak(tau, prof)
-    s0 = np.exp(-2j * np.pi * nu * t0 * 1e-9) @ z[used].sum(0)
+    phase = np.nan
+    if np.isfinite(t0):
+        phase = np.angle(np.exp(-2j * np.pi * nu * t0 * 1e-9) @ z[used].sum(0))
     # Delete-one-block jackknife, re-maximising in each replicate.
     sig = np.full(2, np.nan)
     idx = np.flatnonzero(used)
-    if idx.size > 1:
+    if idx.size > 1 and np.isfinite(t0):
         reps = np.array([fit(used & (blocks_all != j)) for j in idx])
         f = (idx.size - 1) / idx.size
         sig = np.sqrt(f * ((reps - reps.mean(0)) ** 2).sum(0))
     return dict(
-        tau=t0,
-        amp=a0,
-        phase=float(np.angle(s0)),
+        tau=float(t0),
+        amp=float(a0),
+        phase=float(phase),
         sigma_tau=float(sig[0]),
         sigma_amp=float(sig[1]),
         profile=prof,
