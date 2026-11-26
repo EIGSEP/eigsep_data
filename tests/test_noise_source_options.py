@@ -349,6 +349,36 @@ def test_realistic_sigma_is_the_running_rms_floored_by_the_formal():
     assert np.all(out[260:370] == 1.0)
 
 
+def test_realistic_sigma_keeps_the_scatter_beside_an_edge():
+    # A masked channel within half a window of the fitted range's edge
+    # leaves the edge windows less than half fitted.
+    rng = np.random.default_rng(5)
+    nf = 400
+    fitted = np.zeros(nf, bool)
+    fitted[50:350] = True
+    fitted[60] = fitted[340] = False
+    resid = 2.0 * rng.standard_normal(nf)
+    out = ns.realistic_sigma(resid, np.full(nf, 0.5), fitted, 49)
+    assert np.isfinite(out[fitted]).all() and np.isnan(out[~fitted]).all()
+    assert out[fitted].min() > 1.4
+    # the edge channels take the nearest window with half its channels
+    assert out[50] == out[51] and out[349] == out[348]
+
+
+def test_realistic_sigma_without_a_half_fitted_window_is_nan():
+    fitted = np.zeros(100, bool)
+    fitted[40:50] = True
+    out = ns.realistic_sigma(np.ones(100), np.ones(100), fitted, 49)
+    assert np.isnan(out).all()
+
+
+@pytest.mark.parametrize("window", [48, 0, 49.0, None, 401])
+def test_realistic_sigma_refuses_a_bad_window(window):
+    with pytest.raises(ValueError, match="window_channels"):
+        ns.realistic_sigma(np.ones(400), np.ones(400), np.ones(400, bool),
+                           window)
+
+
 def test_write_with_realistic_adds_the_error(tmp_path):
     f = np.arange(40.0, 250.0, 0.25)
     good = (f >= 50.0) & (f <= 245.0)
@@ -381,3 +411,40 @@ def test_comb_hit_drops_only_visits_above_the_fraction():
     dropped, kept = bt.comb_hit(v, 0.05)
     assert [d["comb_fraction"] for d in dropped] == [0.2]
     np.testing.assert_array_equal(kept.comb, [0.0, 0.01])
+
+
+def test_on_full_axis_leaves_untested_channels_unflagged():
+    words = np.array([[0, 4096, 4, 8192], [1, 0, 12288, 0]], np.uint16)
+    out = bt.on_full_axis(words, slice(2, 6), 8, 12288)
+    assert out.shape == (2, 8) and not out[:, :2].any()
+    assert not out[:, 6:].any()
+    np.testing.assert_array_equal(
+        out[:, 2:6], [[0, 1, 0, 1], [0, 0, 1, 0]]
+    )
+
+
+def test_check_config_refuses_options_that_do_not_go_together():
+    ok = {"visit_rejection": {"comb_mask": 12288, "comb_max_fraction": 0.05},
+          "t_ns": {"noise_source": "v0003", "t_off": {},
+                   "per_integration": {"dwell_s": 30.0}}}
+    bt.check_config(ok)
+    bt.check_config({"visit_rejection": {}, "t_ns": {"assumed_k": 917.0}})
+
+    def changed(section, **kw):
+        cfg = {k: dict(v) for k, v in ok.items()}
+        for k, v in kw.items():
+            if v is None:
+                del cfg[section][k]
+            else:
+                cfg[section][k] = v
+        return cfg
+
+    for cfg, match in (
+        (changed("visit_rejection", comb_max_fraction=None), "comb_mask"),
+        (changed("visit_rejection", comb_mask=None), "comb_mask"),
+        (changed("t_ns", t_off=None), "t_ns.t_off"),
+        (changed("t_ns", noise_source=None), "t_ns.noise_source"),
+        (changed("t_ns", per_integration={}), "dwell_s"),
+    ):
+        with pytest.raises(SystemExit, match=match):
+            bt.check_config(cfg)

@@ -278,17 +278,27 @@ class Tcal(Product):
         # spectrum; or, with the per-row terms, one spectrum per row.
         t_ns = np.asarray(sols["t_ns_k"], dtype=float)
         if "t_ns_c0_k" in sols:
-            d = _interp(
-                np.asarray(sols["non_dboard_k"], float)[:, None],
-                *brackets["non"],
-            )[:, 0]
+            terms = {}
+            for k in ("t_ns_c0_k", "t_ns_c_off", "t_ns_c_load"):
+                terms[k] = np.asarray(sols[k], dtype=float)
+                if terms[k].shape != (nchan,):
+                    raise ValueError(
+                        f"{k} has shape {terms[k].shape}, freqs has "
+                        f"{nchan} channels"
+                    )
+            dboard = np.asarray(sols["non_dboard_k"], dtype=float)
+            if dboard.shape != np.shape(sols["non_t"]):
+                raise ValueError(
+                    f"non_dboard_k has shape {dboard.shape}, non_t has "
+                    f"{np.size(sols['non_t'])} visits"
+                )
+            d = _interp(dboard[:, None], *brackets["non"])[:, 0]
             out_cols["tcal_dboard_k"] = d
             tl = t_load[:, None]
             t_ns = (
-                np.asarray(sols["t_ns_c0_k"], float)[band]
-                + np.asarray(sols["t_ns_c_off"], float)[band]
-                * (tl + d[:, None])
-                + np.asarray(sols["t_ns_c_load"], float)[band] * tl
+                terms["t_ns_c0_k"][band]
+                + terms["t_ns_c_off"][band] * (tl + d[:, None])
+                + terms["t_ns_c_load"][band] * tl
             )
         elif t_ns.ndim == 1:
             if t_ns.size != nchan:

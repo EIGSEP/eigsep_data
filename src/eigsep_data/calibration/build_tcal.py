@@ -27,7 +27,8 @@ reference plane P:
   linear terms and the board-minus-load difference at each noise-source
   visit (:func:`tns_terms`, :func:`visit_board_minus_load`), so that the
   reader evaluates ``T_NS`` per integration from the measured
-  temperatures instead of applying ``t_ns_k`` to every one.
+  temperatures instead of applying ``t_ns_k`` to every one. The build
+  stops if a kept visit has no reading in its dwell.
 
 The campaign's choices (span, switched input, flag product, visit
 rejection, interpolation limits, the noise source) are the version's
@@ -92,16 +93,15 @@ def visits(index, state, windows, cfg):
     files = loaded.meta.file.to_numpy(str)
     order = np.argsort(t, kind="stable")
     p, t, tau, files = p[order], t[order], tau[order], files[order]
-    rfi = rfi_on_full_axis(
-        sel, t, np.asarray(loaded.freq, dtype=float), index, cfg
-    )
+    freqs = np.asarray(loaded.freq, dtype=float)
+    words, tested = flag_words(sel, t, freqs, index, cfg)
+    rfi = on_full_axis(words, tested, freqs.size, cfg["rfi_mask"])
     rej = cfg["visit_rejection"]
     comb = None
     if "comb_mask" in rej:
-        comb = rfi_on_full_axis(
-            sel, t, np.asarray(loaded.freq, dtype=float), index, cfg,
-            mask=rej["comb_mask"],
-        )
+        # on the channels the flag product tested only: the rest of the
+        # axis carries no flag and would dilute a visit's fraction
+        comb = (words & rej["comb_mask"]) != 0
     masked_frac = []
     usable = ~np.all(p == 0, axis=1)
     starts = np.flatnonzero(np.r_[True, np.diff(t) > cfg["max_row_gap_s"]])
@@ -145,7 +145,6 @@ def visits(index, state, windows, cfg):
         },
     }
     v = v[keep].reset_index(drop=True)
-    freqs = np.asarray(loaded.freq, dtype=float)
     if comb is not None:
         log["dropped_comb"], v = comb_hit(v, rej["comb_max_fraction"])
     bad, v = contaminated(v, freqs, rej)
@@ -154,13 +153,12 @@ def visits(index, state, windows, cfg):
     return v, freqs, log
 
 
-def rfi_on_full_axis(sel, t, freqs, index, cfg, mask=None):
-    """The flag product's RFI bits (``mask``, default the config's
-    ``rfi_mask``) on the full correlator axis.
+def flag_words(sel, t, freqs, index, cfg):
+    """The flag product's words on the raw rows, and the slice of the
+    correlator axis ``freqs`` their channels cover.
 
-    The flag cubes cover only their tested domain; channels outside it carry
-    no RFI information and are left unflagged. Rows are matched to the raw
-    load by time, which must agree exactly.
+    The flag cubes cover only their tested domain. Rows are matched to the
+    raw load (times ``t``, sorted) by time, which must agree exactly.
     """
     fb = sel.load_bundle(
         key=cfg["key"], root=index_root(index), products=[cfg["flags"]]
@@ -173,11 +171,16 @@ def rfi_on_full_axis(sel, t, freqs, index, cfg, mask=None):
         raise SystemExit("flag rows do not align with the raw rows")
     lo = int(np.argmin(np.abs(freqs - fb.freqs_mhz[0])))
     assert np.allclose(freqs[lo : lo + fb.freqs_mhz.size], fb.freqs_mhz)
-    rfi = np.zeros((t.size, freqs.size), dtype=bool)
-    rfi[:, lo : lo + fb.freqs_mhz.size] = (
-        fb.flags[order] & (cfg["rfi_mask"] if mask is None else mask)
-    ) != 0
-    return rfi
+    return fb.flags[order], slice(lo, lo + fb.freqs_mhz.size)
+
+
+def on_full_axis(words, tested, nchan, mask):
+    """The bits ``mask`` of the flag ``words`` on the full correlator axis
+    of ``nchan`` channels. Channels outside ``tested``, the slice the
+    words cover, carry no flag information and are left unflagged."""
+    out = np.zeros((words.shape[0], nchan), dtype=bool)
+    out[:, tested] = (words & mask) != 0
+    return out
 
 
 def index_root(index):
@@ -199,9 +202,10 @@ def masked_mean(p, tau, rfi):
 
 def comb_hit(v, max_fraction):
     """Drop whole visits in which the config's ``comb_mask`` bits (an
-    identified comb) cover more than ``max_fraction`` of the cells:
-    masking those cells leaves comb power in the rest of such a visit.
-    Returns the dropped visits (UTC and fraction) and the rest."""
+    identified comb) cover more than ``max_fraction`` of the cells the
+    flag product tested: masking those cells leaves comb power in the
+    rest of such a visit. Returns the dropped visits (UTC and fraction)
+    and the rest."""
     hit = (v.comb > max_fraction).to_numpy()
     dropped = [
         {
@@ -464,6 +468,23 @@ def visit_board_minus_load(dt_board_k, visit_t, dwell_s):
     return mean, n
 
 
+def check_config(cfg):
+    """Refuse options that cannot be built together, before any load."""
+    rej, tns = cfg["visit_rejection"], cfg["t_ns"]
+    if ("comb_mask" in rej) != ("comb_max_fraction" in rej):
+        raise SystemExit(
+            "visit_rejection: comb_mask and comb_max_fraction go together"
+        )
+    if "per_integration" in tns:
+        missing = [k for k in ("noise_source", "t_off") if k not in tns]
+        if missing:
+            raise SystemExit(
+                "t_ns.per_integration needs t_ns." + ", t_ns.".join(missing)
+            )
+        if "dwell_s" not in tns["per_integration"]:
+            raise SystemExit("t_ns.per_integration needs dwell_s")
+
+
 def main(argv=None):
     import eigsep_cal.s11
 
@@ -483,6 +504,7 @@ def main(argv=None):
     proot = Path(args.products) if args.products else root
     out_dir = derived_dir(proot, "tcal", args.version)
     cfg, cfg_path = load_config(proot, "tcal", args.version, args.config)
+    check_config(cfg)
     out_dir.mkdir(parents=True, exist_ok=True)
     switch = root / cfg["switch_sparams"]
     osl = eigsep_cal.s11.PACKAGED_FILES[cfg["osl_year"]]["osldata"]
@@ -563,8 +585,6 @@ def main(argv=None):
         )
         per_int = {}
         if "per_integration" in tns_cfg:
-            if dt_board is None:
-                raise ValueError("t_ns.per_integration needs t_ns.t_off")
             to, pi = tns_cfg["t_off"], tns_cfg["per_integration"]
             c0, c_off, c_load = tns_terms(ns, freqs, s11, load_gain)
             t_off = check["t_off_k"]
@@ -580,18 +600,31 @@ def main(argv=None):
                 non.t.to_numpy(float),
                 float(pi["dwell_s"]),
             )
+            if np.any(n == 0):
+                # A NaN here would take the calibration of every row the
+                # visit brackets with it (products.tcal interpolates it).
+                raise SystemExit(
+                    "t_ns.per_integration: no valid board and load reading "
+                    f"within {float(pi['dwell_s']):g} s of the noise-source "
+                    "visits at "
+                    + ", ".join(
+                        datetime.fromtimestamp(x, timezone.utc).strftime(
+                            "%m-%d %H:%M"
+                        )
+                        for x in non.t.to_numpy(float)[n == 0]
+                    )
+                )
             per_int = dict(
                 t_ns_c0_k=c0, t_ns_c_off=c_off, t_ns_c_load=c_load,
                 non_dboard_k=dwell,
             )
             check["per_integration"] = {
                 "dwell_s": float(pi["dwell_s"]),
-                "visits_without_reading": int((n == 0).sum()),
                 "readings_per_visit": [int(n.min()), int(n.max())],
                 "visit_board_minus_load_k": {
-                    "mean": float(np.nanmean(dwell)),
-                    "min_max": [float(np.nanmin(dwell)),
-                                float(np.nanmax(dwell))],
+                    "mean": float(np.mean(dwell)),
+                    "min_max": [float(np.min(dwell)),
+                                float(np.max(dwell))],
                 },
             }
             formula += (

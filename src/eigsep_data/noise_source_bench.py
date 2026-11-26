@@ -38,7 +38,8 @@ Options, each off by default (``noise_source`` v0001's behaviour):
   of interpolating between sweeps in time (for S11 sweeps taken in another
   session of the same bench);
 - ``exclude_mhz``: fixed bands masked in every run (a line the detectors
-  miss), reported as the mask's ``"fixed"`` reason;
+  miss), reported as the mask's ``"fixed"`` reason and left out of the
+  chi2 cut's reference median;
 - ``line_lo_mhz``: the persistent-line detector also flags lines from this
   frequency up to its analysis band (for a band reaching below 45 MHz).
 """
@@ -303,12 +304,13 @@ def measure(index, s11, gamma_ns, setup, *, steady_per_min=1.0, dwell_gap_s=5.0,
         chi2 = np.array([np.nanmean(c) if np.isfinite(c).any() else np.nan for c in z2.T])
         rel = fit_q["sb"] / fit_q["b"]
     mask = {"band": ~inband, "persistent": inband & persistent}
+    fixed = np.zeros(freqs.size, dtype=bool)
+    for lo, hi in exclude_mhz:
+        fixed |= (freqs >= lo) & (freqs <= hi)
     if len(exclude_mhz):
-        fixed = np.zeros(freqs.size, dtype=bool)
-        for lo, hi in exclude_mhz:
-            fixed |= (freqs >= lo) & (freqs <= hi)
         mask["fixed"] = inband & fixed
-    ref_chi2 = np.nanmedian(chi2[inband & ~persistent])     # median: flagging only
+    # median: flagging only
+    ref_chi2 = np.nanmedian(chi2[inband & ~persistent & ~fixed])
     mask["chi2"] = inband & ~(chi2 <= chi2_factor * ref_chi2)
     mask["rel_err"] = inband & ~((fit_q["b"] > 0) & (rel <= max_rel_err))
     good = ~np.logical_or.reduce(list(mask.values()))

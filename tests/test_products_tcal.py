@@ -283,6 +283,20 @@ class TestNoiseSourcePerRow:
         assert np.isnan(tc["tcal_dboard_k"]).all()
         assert np.isnan(tc["tstar_scale"]).all()
 
+    def test_a_term_on_another_axis_is_refused(self, campaign):
+        terms = self.terms()
+        terms["t_ns_c_off"] = np.full(NCHAN - 1, 1.02)
+        write_solutions(campaign, **terms)
+        with pytest.raises(ValueError, match="t_ns_c_off"):
+            bundle(campaign)
+
+    def test_a_difference_per_other_visits_is_refused(self, campaign):
+        terms = self.terms()
+        terms["non_dboard_k"] = np.array([4.0, 5.0, 6.0])
+        write_solutions(campaign, **terms)
+        with pytest.raises(ValueError, match="non_dboard_k"):
+            bundle(campaign)
+
     def test_the_terms_follow_the_band(self, campaign):
         from eigsep_data import products as P
 

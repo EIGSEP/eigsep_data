@@ -91,6 +91,9 @@ def main(argv=None):
         }
     )
     ch = cfg["choices"]
+    if "realistic" in ch:
+        # before the measurement, not in the write after it
+        noise_source.check_window(ch["realistic"].get("window_channels"))
 
     # every stream: the thermistor resistances are not among the index's curated fields
     index = MetadataIndex(str(run_dir), cache=False, streams="all")

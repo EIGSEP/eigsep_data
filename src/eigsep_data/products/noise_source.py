@@ -29,7 +29,8 @@ The payload, all on one frequency axis ``freqs`` (MHz):
 - ``excess_sigma_k`` (from v0003; absent before): the realistic error of
   ``excess_k`` per channel, the larger of ``t_non_sigma_k`` and the running
   rms of the residual about the smooth fit (:func:`realistic_sigma`). The
-  bench scatter about the smooth is several times the formal error.
+  bench scatter about the smooth is several times the formal error. NaN
+  off the channels the smooth fit used.
 
 The manifest records the bench run, the code and the inputs' checksums; the
 README says what the numbers are valid for.
@@ -193,19 +194,48 @@ def smooth_dpss(freqs, excess, sigma, good, smooth):
     return out, coef, f_lo, f_hi, info
 
 
+def check_window(window_channels, nchan=None):
+    """``window_channels`` as an int: odd and positive, so that the window
+    is centred, and no longer than an axis of ``nchan`` channels, if
+    given."""
+    n = window_channels
+    if (isinstance(n, bool) or not isinstance(n, (int, np.integer))
+            or n < 1 or n % 2 == 0):
+        raise ValueError(
+            f"window_channels must be an odd positive integer, got {n!r}"
+        )
+    if nchan is not None and n > nchan:
+        raise ValueError(
+            f"window_channels is {n}, the axis has {nchan} channels"
+        )
+    return int(n)
+
+
 def realistic_sigma(resid, sigma, fitted, window_channels):
     """Per-channel error from the scatter about a smooth fit.
 
     The rms of ``resid`` over the ``fitted`` channels within a centred
-    window of ``window_channels`` channels (at least half of them fitted),
-    and never below the formal ``sigma``; NaN off ``fitted``."""
+    window of ``window_channels`` channels (:func:`check_window`), and
+    never below the formal ``sigma``; NaN off ``fitted``. A window gives
+    an rms only with at least half of its channels fitted; a channel whose
+    window has fewer (at a band edge or beside a masked band) takes the
+    rms of the nearest window that does, and NaN if none does."""
+    fitted = np.asarray(fitted, bool)
+    n = check_window(window_channels, fitted.size)
     r2 = np.where(fitted, np.asarray(resid, float) ** 2, 0.0)
-    kern = np.ones(int(window_channels))
+    kern = np.ones(n)
     num = np.convolve(r2, kern, mode="same")
     cnt = np.convolve(fitted.astype(float), kern, mode="same")
-    with np.errstate(invalid="ignore", divide="ignore"):
-        rms = np.where(cnt >= (window_channels + 1) // 2,
-                       np.sqrt(num / cnt), np.nan)
+    full = np.flatnonzero(cnt >= (n + 1) // 2)
+    if full.size == 0:
+        return np.full(fitted.size, np.nan)
+    chan = np.arange(fitted.size)
+    hi = np.clip(np.searchsorted(full, chan), 0, full.size - 1)
+    lo = np.clip(hi - 1, 0, full.size - 1)
+    near = np.where(
+        np.abs(chan - full[lo]) <= np.abs(full[hi] - chan), full[lo], full[hi]
+    )
+    rms = np.sqrt(num[near] / cnt[near])
     out = np.fmax(np.asarray(sigma, float), rms)
     return np.where(fitted, out, np.nan)
 
@@ -303,7 +333,8 @@ def write(root, version, *, freqs, t_non_k, t_non_sigma_k, t_off_k, good,
             **({"excess_sigma_k": "realistic error of excess_k, K: max of "
                 "t_non_sigma_k and the running rms of the residual about "
                 f"the smooth fit over {realistic['window_channels']} "
-                "channels; NaN off the fitted channels"}
+                "channels (the nearest window with at least half its "
+                "channels fitted); NaN off the fitted channels"}
                if realistic is not None else {}),
         },
         "smooth_fit": {

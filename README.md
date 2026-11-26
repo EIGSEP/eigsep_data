@@ -173,6 +173,8 @@ characterization of the noise source, an input to `tcal`, read with
 
 ## Recent changes
 
+- 2026-11-25: options for `noise_source` v0003 and `tcal` v0006, off by default: `noise_source_bench.measure(exclude_mhz=..., line_lo_mhz=...)` masks fixed bands and runs the persistent-line detector from below its 45 MHz edge (`switched.rfi_flags(line_lo_mhz=...)`, `flagging.detectors.persistent_track(extend_below_mhz=...)`, clipped on the 45-235 MHz MAD); the product and builder options are in `products/README.md` and `calibration/README.md`.
+
 - 2026-11-21: `cross` (new): `digital_delay_ns` reads `header/pol_delay` at 4 ns per count and fixes the three D5 files whose header is wrong; `direct_delay_ns` is a source's direct-path delay, `tau_instr - D - b.s/c`, through air of index `n_air` (`air_index`) if given; `matched_filter` finds the constant delay left along that track, with its phase and a block jackknife.
 - 2026-10-21: `numerics.weighted_mean` and `numerics.interp_complex`, and `products.base.derived_dir` and `versions_in`, replace the copies `calibration/`, `switched`, `noise_source_bench` and `products.noise_source` each had; `calibration/` reads times with `to_unix_time` and `noise_source_bench.measure` takes its default ENBW from `eigsep_cal.conventions`. Rebuilt with them, `tcal` v0004 and `noise_source` v0001 are bit-identical.
 - 2026-10-21: `noise_source_bench.measure` takes the sub-bands its validation reports as `report_bands_mhz` (default unchanged: 50-88, 108-150, 150-200, 200-245 MHz).
