@@ -36,3 +36,18 @@ def test_a_monotonic_spectrum_falls_back_and_flags_its_line():
     with pytest.warns(RuntimeWarning, match="Savitzky-Golay baseline"):
         flags, _ = det.persistent_track(spectrum(0, 0.01), np.ones(8, bool), F)
     assert np.flatnonzero(flags).tolist() == [LINE]
+
+
+def test_extend_below_flags_a_low_line_only_when_asked():
+    lp = spectrum(3e-2, 0.3)
+    low = int(np.argmin(abs(F - 36)))
+    lp[:, low] += 0.3
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        base, _ = det.persistent_track(lp, np.ones(8, bool), F)
+        ext, _ = det.persistent_track(
+            lp, np.ones(8, bool), F, extend_below_mhz=30.0
+        )
+    assert not base[low] and ext[low]
+    np.testing.assert_array_equal(ext[BAND], base[BAND])
+    assert not ext[F < 30].any()

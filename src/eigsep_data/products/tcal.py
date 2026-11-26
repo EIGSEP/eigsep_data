@@ -16,7 +16,11 @@ the measurements a calibration is built from, on their own cadences:
 - ``t_ns_k``, the noise-source excess as the receiver takes it: one
   number (v0000-v0003, the 917 K of a 35 dB ENR diode behind a 30 dB
   pad), or one value per channel on ``freqs`` (from v0004, built from a
-  measured noise source), applied to every row; and the matching limits
+  measured noise source), applied to every row; from v0006, optionally,
+  the terms that make it per row instead: ``t_ns_c0_k``, ``t_ns_c_off``,
+  ``t_ns_c_load`` (per channel) and ``non_dboard_k`` (the diode board
+  minus the load thermistor, K, averaged over each noise-source visit's
+  dwell); and the matching limits
   ``max_cal_gap_s``, ``max_s11_gap_s``, ``s11_hold_s``, ``therm_tol_s``;
 - ``keys``: the correlator inputs the calibration applies to.
 
@@ -34,6 +38,11 @@ the measurements a calibration is built from, on their own cadences:
   within ``therm_tol_s``; or, when the caller passes a time window per
   row (``t_load_window``, e.g. a bin's first and last row times), the
   mean of the readings inside it (see :func:`load_temperature`).
+
+- with the per-row terms, ``T_NS = c0 + c_off T_off + c_load T_load``,
+  with the row's load temperature and ``T_off = T_load + D``, ``D`` the
+  board-minus-load difference interpolated between the noise-source
+  visits exactly as their spectra are (``tcal_dboard_k`` in the output).
 
 Anything that fails a limit is NaN, never extrapolated. The calibration
 is linear in the row's power, ``T = scale * P + offset``
@@ -212,13 +221,14 @@ class Tcal(Product):
         applies = str(key) in set(np.asarray(sols["keys"]).astype(str))
 
         # Load and noise-source spectra: bracketing visits, one regime.
-        p = {}
+        p, brackets = {}, {}
         for name in ("amb", "non"):
             left, right, w, ok, width = _bracket(
                 sols[f"{name}_t"], sols[f"{name}_regime"], t,
                 float(sols["max_cal_gap_s"]),
             )
             ok &= applies
+            brackets[name] = (left, right, w, ok)
             p[name] = _interp(cut(sols[f"{name}_p"]), left, right, w, ok)
             out_cols[f"tcal_{name}_gap_s"] = np.where(ok, width, np.nan)
 
@@ -264,9 +274,23 @@ class Tcal(Product):
             )
 
         # One number for every channel, or one value per channel on this
-        # product's axis, cut to the bundle's band like every other spectrum.
+        # product's axis, cut to the bundle's band like every other
+        # spectrum; or, with the per-row terms, one spectrum per row.
         t_ns = np.asarray(sols["t_ns_k"], dtype=float)
-        if t_ns.ndim == 1:
+        if "t_ns_c0_k" in sols:
+            d = _interp(
+                np.asarray(sols["non_dboard_k"], float)[:, None],
+                *brackets["non"],
+            )[:, 0]
+            out_cols["tcal_dboard_k"] = d
+            tl = t_load[:, None]
+            t_ns = (
+                np.asarray(sols["t_ns_c0_k"], float)[band]
+                + np.asarray(sols["t_ns_c_off"], float)[band]
+                * (tl + d[:, None])
+                + np.asarray(sols["t_ns_c_load"], float)[band] * tl
+            )
+        elif t_ns.ndim == 1:
             if t_ns.size != nchan:
                 raise ValueError(
                     f"t_ns_k has {t_ns.size} channels, freqs has {nchan}"

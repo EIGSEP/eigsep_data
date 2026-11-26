@@ -91,3 +91,17 @@ def test_rfi_flags_find_a_transient_and_a_line():
     assert flags[30, 400] and flags[10, 100]
     assert persistent[600]
     assert flags.mean() < 0.01
+
+
+def test_rfi_flags_passes_the_line_band_down():
+    from eigsep_data import switched as sw
+
+    f = np.arange(0, 250, 250 / 1024)
+    rng = np.random.default_rng(0)
+    spec = (10 ** (np.log10(np.maximum(f, 1) ** -2.5) + 3e-2
+                   * rng.standard_normal((16, f.size)))) * 1e9
+    low = int(np.argmin(abs(f - 36)))
+    spec[:, low] *= 2.0
+    _, base = sw.rfi_flags(spec, f)
+    _, ext = sw.rfi_flags(spec, f, line_lo_mhz=30.0)
+    assert not base[low] and ext[low]

@@ -25,7 +25,11 @@ The payload, all on one frequency axis ``freqs`` (MHz):
   range and over excluded bands, with ``smooth_coef`` the basis
   coefficients (the manifest's ``smooth_fit`` says how to rebuild it);
 - ``gamma_ns``: the noise-source path's reflection at P, measured in the
-  lab, on ``freqs``.
+  lab, on ``freqs``;
+- ``excess_sigma_k`` (from v0003; absent before): the realistic error of
+  ``excess_k`` per channel, the larger of ``t_non_sigma_k`` and the running
+  rms of the residual about the smooth fit (:func:`realistic_sigma`). The
+  bench scatter about the smooth is several times the formal error.
 
 The manifest records the bench run, the code and the inputs' checksums; the
 README says what the numbers are valid for.
@@ -70,6 +74,7 @@ class NoiseSource:
     gamma_ns: np.ndarray
     manifest: dict = field(default_factory=dict)
     smooth_model: str = "poly"
+    excess_sigma_k: np.ndarray = None
 
     def on(self, freqs_mhz, smooth=True):
         """The excess (K) on the channels ``freqs_mhz``, which must be
@@ -99,9 +104,11 @@ def load(version, root=None):
         scalars = {k: float(z[k]) for k in ("t_off_k", "smooth_x0_mhz", "smooth_xscale_mhz")}
         if "smooth_model" in z.files:
             scalars["smooth_model"] = str(z["smooth_model"])
+        if "excess_sigma_k" in z.files:
+            arrays["excess_sigma_k"] = np.asarray(z["excess_sigma_k"])
     arrays["good"] = arrays["good"].astype(bool)
     n = arrays["freqs"].size
-    for k in _ARRAYS:
+    for k in arrays:
         if k != "smooth_coef" and arrays[k].shape != (n,):
             raise ValueError(f"{k} has shape {arrays[k].shape}, freqs has {n} channels")
     return NoiseSource(version=version, **arrays, **scalars,
@@ -186,10 +193,27 @@ def smooth_dpss(freqs, excess, sigma, good, smooth):
     return out, coef, f_lo, f_hi, info
 
 
+def realistic_sigma(resid, sigma, fitted, window_channels):
+    """Per-channel error from the scatter about a smooth fit.
+
+    The rms of ``resid`` over the ``fitted`` channels within a centred
+    window of ``window_channels`` channels (at least half of them fitted),
+    and never below the formal ``sigma``; NaN off ``fitted``."""
+    r2 = np.where(fitted, np.asarray(resid, float) ** 2, 0.0)
+    kern = np.ones(int(window_channels))
+    num = np.convolve(r2, kern, mode="same")
+    cnt = np.convolve(fitted.astype(float), kern, mode="same")
+    with np.errstate(invalid="ignore", divide="ignore"):
+        rms = np.where(cnt >= (window_channels + 1) // 2,
+                       np.sqrt(num / cnt), np.nan)
+    out = np.fmax(np.asarray(sigma, float), rms)
+    return np.where(fitted, out, np.nan)
+
+
 def write(root, version, *, freqs, t_non_k, t_non_sigma_k, t_off_k, good,
           gamma_ns, provenance, validation=None, smooth_deg=3,
           smooth_x0_mhz=150.0, smooth_xscale_mhz=100.0, overwrite=False,
-          smooth=None):
+          smooth=None, realistic=None):
     """Write ``derived/noise_source/<version>/`` under ``root``.
 
     Takes the measured quantities (module docstring), derives the excess
@@ -205,7 +229,9 @@ def write(root, version, *, freqs, t_non_k, t_non_sigma_k, t_off_k, good,
 
     ``smooth``, a dict with ``"model": "dpss"`` and the parameters of
     :func:`smooth_dpss`, replaces the polynomial (``smooth_deg`` and the
-    ``x`` scaling are then unused)."""
+    ``x`` scaling are then unused). ``realistic``, a dict with
+    ``"window_channels"``, adds ``excess_sigma_k`` (:func:`realistic_sigma`)
+    on the channels the smooth fit used."""
     import json
 
     d = _base(root) / version
@@ -246,6 +272,12 @@ def write(root, version, *, freqs, t_non_k, t_non_sigma_k, t_off_k, good,
         extra["smooth_model"] = np.str_("dpss")
     else:
         raise ValueError(f"unknown smooth model {smooth.get('model')!r}")
+    fitted = good & np.isfinite(smoothed)
+    if realistic is not None:
+        extra["excess_sigma_k"] = realistic_sigma(
+            excess - smoothed, t_non_sigma_k, fitted,
+            realistic["window_channels"],
+        )
     d.mkdir(parents=True, exist_ok=True)
     np.savez(d / "solutions.npz", freqs=freqs, t_non_k=t_non_k, t_non_sigma_k=t_non_sigma_k,
              t_off_k=float(t_off_k), excess_k=excess, good=good,
@@ -268,6 +300,11 @@ def write(root, version, *, freqs, t_non_k, t_non_sigma_k, t_off_k, good,
             "smooth_coef": "its polynomial coefficients, highest power first"
             if smooth is None else "its basis coefficients (smooth_fit)",
             "gamma_ns": "noise-source path's reflection at P (lab), on freqs",
+            **({"excess_sigma_k": "realistic error of excess_k, K: max of "
+                "t_non_sigma_k and the running rms of the residual about "
+                f"the smooth fit over {realistic['window_channels']} "
+                "channels; NaN off the fitted channels"}
+               if realistic is not None else {}),
         },
         "smooth_fit": {
             **smooth_fit,

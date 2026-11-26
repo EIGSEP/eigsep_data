@@ -346,13 +346,18 @@ def transient_track(logp, valid_time, med_width=9, clip_sigma=5.0):
     return flags, resid, scale
 
 
-def persistent_track(logp, valid_time, freqs, smooth_width=31, clip_sigma=6.0):
+def persistent_track(logp, valid_time, freqs, smooth_width=31, clip_sigma=6.0,
+                     extend_below_mhz=None):
     """Narrowband features that are steady over the whole file.
 
     Operates on the time-median spectrum, so transients average away
     and only always-on emitters survive.  Uses a higher clip than the
     transient track because the frequency axis carries genuine
     instrumental structure that we do not want to shave off.
+
+    Lines are flagged inside ``BAND_ANALYSIS``; ``extend_below_mhz`` also
+    flags channels from it up to the band's lower edge, with the same
+    clip on the same in-band MAD.
     """
     nch = logp.shape[1]
     chan_flags = np.zeros(nch, dtype=bool)
@@ -388,7 +393,12 @@ def persistent_track(logp, valid_time, freqs, smooth_width=31, clip_sigma=6.0):
             RuntimeWarning,
             stacklevel=2,
         )
-    chan_flags = (resid > clip_sigma * s) & in_band
+    flag_band = in_band
+    if extend_below_mhz is not None:
+        flag_band = in_band | (
+            (freqs >= extend_below_mhz) & (freqs < BAND_ANALYSIS[0])
+        )
+    chan_flags = (resid > clip_sigma * s) & flag_band
     return chan_flags, resid.astype(np.float32)
 
 

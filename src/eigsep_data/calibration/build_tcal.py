@@ -19,7 +19,12 @@ reference plane P:
   v0004, whose behaviour is the default): ``t_off``, the noise path's
   temperature when off taken as the noise-diode board's thermistor rather
   than the load's (:func:`board_minus_load`), and ``load_path``, the
-  ambient load's noise carried to P through its switch path.
+  ambient load's noise carried to P through its switch path. A third,
+  ``per_integration`` (from v0006; needs ``t_off``), stores ``T_NS``'s
+  linear terms and the board-minus-load difference at each noise-source
+  visit (:func:`tns_terms`, :func:`visit_board_minus_load`), so that the
+  reader evaluates ``T_NS`` per integration from the measured
+  temperatures instead of applying ``t_ns_k`` to every one.
 
 The campaign's choices (span, switched input, flag product, visit
 rejection, interpolation limits, the noise source) are the version's
@@ -389,6 +394,43 @@ def noise_source_tns(
     return t_ns.astype(float), check
 
 
+def tns_terms(ns, freqs, s11, load_gain=None):
+    """The terms of ``T_NS = c0 + c_off T_off + c_load T_load``, per channel:
+    :func:`noise_source_tns`'s equation with the same campaign-mean
+    reflections, ``c0 = M_NS T_ex``, ``c_off = M_NS - (1 - G) M_amb``,
+    ``c_load = -G M_amb`` (``G = 1`` without ``load_gain``)."""
+    from eigsep_cal.dicke import mismatch
+
+    t_ex = ns.on(freqs, smooth=True)
+    idx = np.searchsorted(ns.freqs, freqs)
+    g_ns = ns.gamma_ns[np.clip(idx, 0, ns.freqs.size - 1)]
+    g_rec = np.mean(s11["rec"][1], axis=0)
+    g_amb = np.mean(s11["amb"][1], axis=0)
+    m_ns = np.real(mismatch(g_ns, g_rec))
+    m_amb = np.real(mismatch(g_amb, g_rec))
+    gain = 1.0 if load_gain is None else np.asarray(load_gain, float)
+    return (
+        m_ns * t_ex,
+        m_ns - (1.0 - gain) * m_amb,
+        -gain * m_amb * np.ones_like(m_ns),
+    )
+
+
+def visit_board_minus_load(dt_board_k, visit_t, dwell_s):
+    """Mean board-minus-load difference (K) over the readings within
+    ``dwell_s`` of each visit time (NaN where there are none), and the
+    number of readings. The diode heats its board in every noise-source
+    dwell, so a visit sees more than the all-readings mean."""
+    t, d = (np.asarray(a, float) for a in dt_board_k)
+    lo = np.searchsorted(t, np.asarray(visit_t) - dwell_s, side="left")
+    hi = np.searchsorted(t, np.asarray(visit_t) + dwell_s, side="right")
+    cs = np.concatenate([[0.0], np.cumsum(d)])
+    n = hi - lo
+    with np.errstate(invalid="ignore", divide="ignore"):
+        mean = np.where(n > 0, (cs[hi] - cs[lo]) / n, np.nan)
+    return mean, n
+
+
 def main(argv=None):
     import eigsep_cal.s11
 
@@ -486,8 +528,49 @@ def main(argv=None):
             dt_board_k=dt_board,
             load_gain=load_gain,
         )
+        per_int = {}
+        if "per_integration" in tns_cfg:
+            if dt_board is None:
+                raise ValueError("t_ns.per_integration needs t_ns.t_off")
+            to, pi = tns_cfg["t_off"], tns_cfg["per_integration"]
+            c0, c_off, c_load = tns_terms(ns, freqs, s11, load_gain)
+            t_off = check["t_off_k"]
+            again = c0 + c_off * t_off + c_load * check["t_load_k"]
+            ok = np.isfinite(t_ns)
+            if not np.allclose(again[ok], t_ns[ok], rtol=1e-9, atol=0):
+                raise RuntimeError("T_NS terms do not reproduce t_ns_k")
+            dwell, n = visit_board_minus_load(
+                board_minus_load(
+                    index, cfg, to["board_thermistor_c"], None,
+                    tuple(to.get("valid_c", (5, 60))),
+                ),
+                non.t.to_numpy(float),
+                float(pi["dwell_s"]),
+            )
+            per_int = dict(
+                t_ns_c0_k=c0, t_ns_c_off=c_off, t_ns_c_load=c_load,
+                non_dboard_k=dwell,
+            )
+            check["per_integration"] = {
+                "dwell_s": float(pi["dwell_s"]),
+                "visits_without_reading": int((n == 0).sum()),
+                "readings_per_visit": [int(n.min()), int(n.max())],
+                "visit_board_minus_load_k": {
+                    "mean": float(np.nanmean(dwell)),
+                    "min_max": [float(np.nanmin(dwell)),
+                                float(np.nanmax(dwell))],
+                },
+            }
+            formula += (
+                "; per integration (reader): T_off(t) = T_load(t) + D(t), "
+                "D the noise-source visits' dwell-mean board - load, "
+                "interpolated as the visit spectra"
+            )
         t_ns_model = {
-            "t_ns_k": "spectrum on freqs (solutions.npz)",
+            "t_ns_k": "spectrum on freqs (solutions.npz)"
+            + ("; at the campaign means, superseded per integration by "
+               "t_ns_c0_k, t_ns_c_off, t_ns_c_load and non_dboard_k"
+               if per_int else ""),
             "t_ns_source": f"derived/noise_source/{ver}: bench-measured excess at P "
             "(smooth fit), converted to the field receiver with "
             "eigsep_cal.noise_source.tns_as_received",
@@ -504,6 +587,7 @@ def main(argv=None):
     else:
         t_ns = float(tns_cfg["assumed_k"])
         t_ns_model = {"t_ns_k": t_ns, "t_ns_source": tns_cfg["source"]}
+        per_int = {}
 
     sols = dict(
         freqs=freqs,
@@ -518,6 +602,7 @@ def main(argv=None):
         non_regime=non.regime.to_numpy(str),
         therm_t=therm_t,
         therm_k=therm_k,
+        **per_int,
     )
     for dut, (t, g, epoch) in s11.items():
         sols[f"s11_{dut}_t"] = t

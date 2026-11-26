@@ -302,3 +302,74 @@ def test_board_minus_load_skips_bad_readings_and_duplicates():
     )
     np.testing.assert_allclose(t - t0, [0.0, 10.0])
     np.testing.assert_allclose(d, [3.0, 3.5])
+
+
+def test_tns_terms_reproduce_the_field_conversion():
+    f, n, s11, therm = field_inputs()
+    dt = (np.arange(4) * 1800.0, np.array([2.0, 3.0, 4.0, 3.0]))
+    gain = np.linspace(0.85, 0.95, f.size)
+    t_ns, check = bt.noise_source_tns(
+        n, f, s11, therm, (50.0, 200.0), dt_board_k=dt, load_gain=gain
+    )
+    c0, c_off, c_load = bt.tns_terms(n, f, s11, gain)
+    again = c0 + c_off * check["t_off_k"] + c_load * check["t_load_k"]
+    np.testing.assert_allclose(again, t_ns, rtol=1e-12)
+    # without a load path G = 1: T_load,P = T_load
+    c0, c_off, c_load = bt.tns_terms(n, f, s11)
+    t_ns1, check1 = bt.noise_source_tns(
+        n, f, s11, therm, (50.0, 200.0), dt_board_k=dt
+    )
+    np.testing.assert_allclose(
+        c0 + c_off * check1["t_off_k"] + c_load * check1["t_load_k"],
+        t_ns1, rtol=1e-12,
+    )
+
+
+def test_visit_board_minus_load_is_the_dwell_mean():
+    t = np.arange(0.0, 300.0, 1.0)
+    d = np.where((t % 100) < 50, 4.0, 6.0) + 0.001 * t
+    mean, n = bt.visit_board_minus_load((t, d), np.array([25.0, 75.0,
+                                                          1e4]), 10.0)
+    np.testing.assert_array_equal(n, [21, 21, 0])
+    np.testing.assert_allclose(mean[:2], [4.025, 6.075])
+    assert np.isnan(mean[2])
+
+
+def test_realistic_sigma_is_the_running_rms_floored_by_the_formal():
+    rng = np.random.default_rng(3)
+    nf = 400
+    fitted = np.ones(nf, bool)
+    fitted[100:110] = False
+    resid = np.where(np.arange(nf) < 200, 2.0, 0.5) * rng.standard_normal(nf)
+    sigma = np.full(nf, 1.0)
+    out = ns.realistic_sigma(resid, sigma, fitted, 49)
+    assert np.isnan(out[100:110]).all()
+    assert np.nanmean(out[30:90]) == pytest.approx(2.0, rel=0.15)
+    assert np.all(out[fitted] >= 1.0)
+    assert np.all(out[260:370] == 1.0)
+
+
+def test_write_with_realistic_adds_the_error(tmp_path):
+    f = np.arange(40.0, 250.0, 0.25)
+    good = (f >= 50.0) & (f <= 245.0)
+    rng = np.random.default_rng(4)
+    sigma = np.full(f.size, 0.5)
+    t_non = np.where(
+        good, 300.0 + smooth_spectrum(f) + rng.normal(0, 2.0, f.size), np.nan
+    )
+    smooth = {"model": "dpss", "half_width_ns": 10, "poly_deg": 2,
+              "f0_mhz": 120.0, "exclude_mhz": [[193.0, 222.0]],
+              "cv_block_mhz": 12.0, "cv_offsets": 2}
+    kw = dict(freqs=f, t_non_k=t_non, t_non_sigma_k=sigma, t_off_k=300.0,
+              good=good, gamma_ns=np.zeros(f.size, complex),
+              provenance={}, smooth=smooth)
+    ns.write(tmp_path, "v0002", **kw)
+    ns.write(tmp_path, "v0003", realistic={"window_channels": 49}, **kw)
+    old, new = ns.load("v0002", tmp_path), ns.load("v0003", tmp_path)
+    assert old.excess_sigma_k is None
+    np.testing.assert_array_equal(old.excess_smooth_k, new.excess_smooth_k)
+    fitted = good & np.isfinite(new.excess_smooth_k)
+    assert np.isfinite(new.excess_sigma_k[fitted]).all()
+    assert np.isnan(new.excess_sigma_k[~fitted]).all()
+    assert np.nanmean(new.excess_sigma_k) == pytest.approx(2.0, rel=0.1)
+    assert "excess_sigma_k" in new.manifest["contents"]
