@@ -19,7 +19,10 @@ reference plane P:
   v0004, whose behaviour is the default): ``t_off``, the noise path's
   temperature when off taken as the noise-diode board's thermistor rather
   than the load's (:func:`board_minus_load`), and ``load_path``, the
-  ambient load's noise carried to P through its switch path. A third,
+  ambient load's noise carried to P through its switch path. The
+  ``visit_rejection`` option ``comb_mask``/``comb_max_fraction`` (from
+  v0006) drops whole visits an identified comb hits (:func:`comb_hit`).
+  A third ``t_ns`` option,
   ``per_integration`` (from v0006; needs ``t_off``), stores ``T_NS``'s
   linear terms and the board-minus-load difference at each noise-source
   visit (:func:`tns_terms`, :func:`visit_board_minus_load`), so that the
@@ -92,6 +95,13 @@ def visits(index, state, windows, cfg):
     rfi = rfi_on_full_axis(
         sel, t, np.asarray(loaded.freq, dtype=float), index, cfg
     )
+    rej = cfg["visit_rejection"]
+    comb = None
+    if "comb_mask" in rej:
+        comb = rfi_on_full_axis(
+            sel, t, np.asarray(loaded.freq, dtype=float), index, cfg,
+            mask=rej["comb_mask"],
+        )
     masked_frac = []
     usable = ~np.all(p == 0, axis=1)
     starts = np.flatnonzero(np.r_[True, np.diff(t) > cfg["max_row_gap_s"]])
@@ -113,6 +123,8 @@ def visits(index, state, windows, cfg):
                 "file": files[a],
                 "n": use.size,
                 "p": spec,
+                **({"comb": float(comb[use].mean()) if use.size else 0.0}
+                   if comb is not None else {}),
             }
         )
     v = pd.DataFrame(rows)
@@ -134,14 +146,17 @@ def visits(index, state, windows, cfg):
     }
     v = v[keep].reset_index(drop=True)
     freqs = np.asarray(loaded.freq, dtype=float)
-    bad, v = contaminated(v, freqs, cfg["visit_rejection"])
+    if comb is not None:
+        log["dropped_comb"], v = comb_hit(v, rej["comb_max_fraction"])
+    bad, v = contaminated(v, freqs, rej)
     log["dropped_contaminated"] = bad
     log["kept"] = int(len(v))
     return v, freqs, log
 
 
-def rfi_on_full_axis(sel, t, freqs, index, cfg):
-    """The flag product's RFI bits on the full correlator axis.
+def rfi_on_full_axis(sel, t, freqs, index, cfg, mask=None):
+    """The flag product's RFI bits (``mask``, default the config's
+    ``rfi_mask``) on the full correlator axis.
 
     The flag cubes cover only their tested domain; channels outside it carry
     no RFI information and are left unflagged. Rows are matched to the raw
@@ -160,7 +175,7 @@ def rfi_on_full_axis(sel, t, freqs, index, cfg):
     assert np.allclose(freqs[lo : lo + fb.freqs_mhz.size], fb.freqs_mhz)
     rfi = np.zeros((t.size, freqs.size), dtype=bool)
     rfi[:, lo : lo + fb.freqs_mhz.size] = (
-        fb.flags[order] & cfg["rfi_mask"]
+        fb.flags[order] & (cfg["rfi_mask"] if mask is None else mask)
     ) != 0
     return rfi
 
@@ -180,6 +195,24 @@ def masked_mean(p, tau, rfi):
     bad = rfi | (p < 0)
     spec = weighted_mean(p, np.where(bad, 0.0, tau[:, None]), axis=0)
     return spec, float(bad.mean())
+
+
+def comb_hit(v, max_fraction):
+    """Drop whole visits in which the config's ``comb_mask`` bits (an
+    identified comb) cover more than ``max_fraction`` of the cells:
+    masking those cells leaves comb power in the rest of such a visit.
+    Returns the dropped visits (UTC and fraction) and the rest."""
+    hit = (v.comb > max_fraction).to_numpy()
+    dropped = [
+        {
+            "utc": datetime.fromtimestamp(t, timezone.utc).strftime(
+                "%m-%d %H:%M"
+            ),
+            "comb_fraction": float(c),
+        }
+        for t, c in zip(v.t[hit], v.comb[hit])
+    ]
+    return dropped, v[~hit].reset_index(drop=True)
 
 
 def contaminated(v, freqs, rej):

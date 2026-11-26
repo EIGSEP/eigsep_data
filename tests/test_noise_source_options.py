@@ -373,3 +373,11 @@ def test_write_with_realistic_adds_the_error(tmp_path):
     assert np.isnan(new.excess_sigma_k[~fitted]).all()
     assert np.nanmean(new.excess_sigma_k) == pytest.approx(2.0, rel=0.1)
     assert "excess_sigma_k" in new.manifest["contents"]
+
+
+def test_comb_hit_drops_only_visits_above_the_fraction():
+    v = pd.DataFrame({"t": [1.78e9, 1.78e9 + 600, 1.78e9 + 1200],
+                      "comb": [0.0, 0.2, 0.01], "n": [100, 100, 100]})
+    dropped, kept = bt.comb_hit(v, 0.05)
+    assert [d["comb_fraction"] for d in dropped] == [0.2]
+    np.testing.assert_array_equal(kept.comb, [0.0, 0.01])
