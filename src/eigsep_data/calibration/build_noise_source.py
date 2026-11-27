@@ -23,7 +23,12 @@ Optional config entries (absent in v0001, whose behaviour is the default;
 - ``choices.hot_below_k``, ``choices.s11_average``;
 - ``choices.smooth``: the smooth fit's model
   (:func:`eigsep_data.products.noise_source.smooth_dpss`), replacing the
-  polynomial of ``smooth_deg``.
+  polynomial of ``smooth_deg``;
+- ``choices.exclude_mhz``, ``choices.line_lo_mhz``,
+  ``choices.report_bands_mhz``: fixed masked bands, the line detector's
+  lower edge and the validation's bands (from v0003);
+- ``choices.realistic``: ``{"window_channels": n}`` writes the realistic
+  per-channel error ``excess_sigma_k`` (from v0003).
 """
 
 import argparse
@@ -86,6 +91,9 @@ def main(argv=None):
         }
     )
     ch = cfg["choices"]
+    if "realistic" in ch:
+        # before the measurement, not in the write after it
+        noise_source.check_window(ch["realistic"].get("window_channels"))
 
     # every stream: the thermistor resistances are not among the index's curated fields
     index = MetadataIndex(str(run_dir), cache=False, streams="all")
@@ -125,6 +133,10 @@ def main(argv=None):
         load_paths=load_paths,
         hot_below_k=ch.get("hot_below_k"),
         s11_average=ch.get("s11_average", False),
+        exclude_mhz=[tuple(b) for b in ch.get("exclude_mhz", [])],
+        line_lo_mhz=ch.get("line_lo_mhz"),
+        **({"report_bands_mhz": [tuple(x) for x in ch["report_bands_mhz"]]}
+           if "report_bands_mhz" in ch else {}),
     )
 
     def checksums(files):
@@ -203,6 +215,7 @@ def main(argv=None):
         validation=res["validation"],
         smooth_deg=ch.get("smooth_deg", 3),
         smooth=ch.get("smooth"),
+        realistic=ch.get("realistic"),
         overwrite=a.overwrite,
     )
     print(f"wrote {d}")

@@ -20,8 +20,8 @@ others. See `DATASET_LOADER_PLAN.md` in the parent meta-repo.
 | `smooth_model.py` | DPSS smooth-band model, one companion HDF5 per raw file. |
 | `pointing.py` | Calibrated pointing, one Parquet table, joined on `(file, sample_idx)`. |
 | `gain.py` | Receiver gain / noise temperature, solutions on their own cadence, joined by nearest time within an explicit tolerance. |
-| `tcal.py` | Temperature calibration from nearby field measurements: load/noise-source visits and S11 interpolated in time, nearest load thermistor. Returns per-row coefficients; `Bundle.calibrated` and `Bundle.t_star` apply them, leaving `Bundle.data` raw. `t_ns_k` is one number (v0000-v0003) or one value per channel (v0004 on), applied to every row. |
-| `noise_source.py` | The bench-measured noise source: its temperature at P per channel, the excess over its off state, a smooth fit of it, the mask and the noise-source path's reflection at P. Not joined to rows: read with `noise_source.load(version)`, written with `noise_source.write`; `tcal` v0004 builds `t_ns_k` from it. |
+| `tcal.py` | Temperature calibration from nearby field measurements: load/noise-source visits and S11 interpolated in time, nearest load thermistor. Returns per-row coefficients; `Bundle.calibrated` and `Bundle.t_star` apply them, leaving `Bundle.data` raw. `t_ns_k` is one number (v0000-v0003) or one value per channel (v0004 on), applied to every row; a product that carries `t_ns_c0_k`, `t_ns_c_off`, `t_ns_c_load` and `non_dboard_k` (optional, from v0006) has `T_NS` evaluated per row from them instead, and `t_ns_k` is then only its value at the campaign means. |
+| `noise_source.py` | The bench-measured noise source: its temperature at P per channel, the excess over its off state, a smooth fit of it, the mask and the noise-source path's reflection at P, and optionally (from v0003) `excess_sigma_k`, the realistic per-channel error of the excess. Not joined to rows: read with `noise_source.load(version)`, written with `noise_source.write`; `tcal` v0004 builds `t_ns_k` from it. |
 
 ## Join shapes
 
@@ -75,6 +75,7 @@ the join logic is tested.
 
 ## Recent changes
 
+- 2026-11-25: `tcal` evaluates `T_NS` per row when the product carries the terms `t_ns_c0_k`, `t_ns_c_off`, `t_ns_c_load` and the per-visit `non_dboard_k` (the output gains `tcal_dboard_k`); terms on another axis, or a `non_dboard_k` that is not one per noise-source visit, are refused. `noise_source.write(realistic={"window_channels": n})` adds `excess_sigma_k` (`realistic_sigma`: the running rms of the residual about the smooth, never below the formal error; `n` odd and no longer than the axis). Products without these arrays read as before.
 - 2026-10-20: `noise_source` reader added (a campaign-level calibration input, not a row companion); `tcal` takes `t_ns_k` as a spectrum on its own axis, cut to the bundle's band.
 - 2026-10-01: added `tcal`, the field temperature calibration of
   box-air at reference plane P, and `Bundle.calibrated` / `Bundle.t_star`

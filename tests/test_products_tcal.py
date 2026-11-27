@@ -230,6 +230,93 @@ class TestNoiseSourceSpectrum:
             bundle(campaign)
 
 
+class TestNoiseSourcePerRow:
+    """From v0006 the product may carry T_NS's linear terms and the
+    board-minus-load difference at each noise-source visit; T_NS is then
+    evaluated per row from the row's load temperature."""
+
+    def terms(self):
+        c0 = np.linspace(500.0, 400.0, NCHAN)
+        return dict(
+            t_ns_k=np.full(NCHAN, 1e6),          # must not be used
+            t_ns_c0_k=c0,
+            t_ns_c_off=np.full(NCHAN, 1.02),
+            t_ns_c_load=np.full(NCHAN, -0.98),
+            non_dboard_k=np.array([4.0, 6.0]),
+        )
+
+    def test_t_ns_follows_the_row(self, campaign):
+        s = write_solutions(campaign, **self.terms())
+        b = bundle(campaign)
+        tc = b.products["tcal"]
+        t0, t1 = s["non_t"]
+        w = (b.t - t0) / (t1 - t0)
+        d = 4.0 + 2.0 * w
+        np.testing.assert_allclose(tc["tcal_dboard_k"], d)
+        tl = tc["tcal_t_load_k"][:, None]
+        t_ns = s["t_ns_c0_k"][None, :] + 1.02 * (tl + d[:, None]) - 0.98 * tl
+        a, _ = tstar_coefficients(
+            110 + 10 * w[:, None], 10 + 10 * w[:, None], t_ns, tl
+        )
+        np.testing.assert_allclose(tc["tstar_scale"], a)
+
+    def test_constant_terms_reproduce_the_fixed_spectrum(self, campaign):
+        terms = self.terms()
+        terms["non_dboard_k"] = np.array([5.0, 5.0])
+        therm = np.array([301.0, 301.0])
+        write_solutions(campaign, therm_k=therm, **terms)
+        per_row = bundle(campaign).products["tcal"]
+        tl = 301.0
+        fixed = terms["t_ns_c0_k"] + 1.02 * (tl + 5.0) - 0.98 * tl
+        write_solutions(campaign, therm_k=therm, t_ns_k=fixed)
+        ref = bundle(campaign).products["tcal"]
+        for k in ("tstar_scale", "tstar_offset", "scale", "offset"):
+            np.testing.assert_allclose(per_row[k], ref[k], rtol=1e-12)
+        assert "tcal_dboard_k" not in ref
+
+    def test_no_bracketing_visit_means_no_calibration(self, campaign):
+        write_solutions(
+            campaign, **self.terms(),
+            non_regime=np.array(["rx-A", "rx-B"]),
+        )
+        tc = bundle(campaign).products["tcal"]
+        assert np.isnan(tc["tcal_dboard_k"]).all()
+        assert np.isnan(tc["tstar_scale"]).all()
+
+    def test_a_term_on_another_axis_is_refused(self, campaign):
+        terms = self.terms()
+        terms["t_ns_c_off"] = np.full(NCHAN - 1, 1.02)
+        write_solutions(campaign, **terms)
+        with pytest.raises(ValueError, match="t_ns_c_off"):
+            bundle(campaign)
+
+    def test_a_difference_per_other_visits_is_refused(self, campaign):
+        terms = self.terms()
+        terms["non_dboard_k"] = np.array([4.0, 5.0, 6.0])
+        write_solutions(campaign, **terms)
+        with pytest.raises(ValueError, match="non_dboard_k"):
+            bundle(campaign)
+
+    def test_the_terms_follow_the_band(self, campaign):
+        from eigsep_data import products as P
+
+        s = write_solutions(campaign, **self.terms())
+        P.get("tcal")._cache.clear()
+        index = MetadataIndex(campaign / "data", cache=False)
+        b = index.select().load_bundle(
+            antenna="box-air", root=campaign, products=["tcal@v0000"],
+            band_mhz=(50.0, 150.0),
+        )
+        keep = (s["freqs"] >= b.freqs_mhz[0]) & (
+            s["freqs"] <= b.freqs_mhz[-1]
+        )
+        tc = b.products["tcal"]
+        tl = tc["tcal_t_load_k"][:, None]
+        d = tc["tcal_dboard_k"][:, None]
+        t_ns = s["t_ns_c0_k"][keep][None, :] + 1.02 * (tl + d) - 0.98 * tl
+        np.testing.assert_allclose(tc["tstar_scale"], t_ns / 100.0)
+
+
 class TestNothingIsStretched:
     def test_visits_in_different_regimes_do_not_bracket(self, campaign):
         write_solutions(campaign, amb_regime=np.array(["rx-A", "rx-B"]))

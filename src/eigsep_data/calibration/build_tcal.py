@@ -19,7 +19,16 @@ reference plane P:
   v0004, whose behaviour is the default): ``t_off``, the noise path's
   temperature when off taken as the noise-diode board's thermistor rather
   than the load's (:func:`board_minus_load`), and ``load_path``, the
-  ambient load's noise carried to P through its switch path.
+  ambient load's noise carried to P through its switch path. The
+  ``visit_rejection`` option ``comb_mask``/``comb_max_fraction`` (from
+  v0006) drops whole visits an identified comb hits (:func:`comb_hit`).
+  A third ``t_ns`` option,
+  ``per_integration`` (from v0006; needs ``t_off``), stores ``T_NS``'s
+  linear terms and the board-minus-load difference at each noise-source
+  visit (:func:`tns_terms`, :func:`visit_board_minus_load`), so that the
+  reader evaluates ``T_NS`` per integration from the measured
+  temperatures instead of applying ``t_ns_k`` to every one. The build
+  stops if a kept visit has no reading in its dwell.
 
 The campaign's choices (span, switched input, flag product, visit
 rejection, interpolation limits, the noise source) are the version's
@@ -84,9 +93,15 @@ def visits(index, state, windows, cfg):
     files = loaded.meta.file.to_numpy(str)
     order = np.argsort(t, kind="stable")
     p, t, tau, files = p[order], t[order], tau[order], files[order]
-    rfi = rfi_on_full_axis(
-        sel, t, np.asarray(loaded.freq, dtype=float), index, cfg
-    )
+    freqs = np.asarray(loaded.freq, dtype=float)
+    words, tested = flag_words(sel, t, freqs, index, cfg)
+    rfi = on_full_axis(words, tested, freqs.size, cfg["rfi_mask"])
+    rej = cfg["visit_rejection"]
+    comb = None
+    if "comb_mask" in rej:
+        # on the channels the flag product tested only: the rest of the
+        # axis carries no flag and would dilute a visit's fraction
+        comb = (words & rej["comb_mask"]) != 0
     masked_frac = []
     usable = ~np.all(p == 0, axis=1)
     starts = np.flatnonzero(np.r_[True, np.diff(t) > cfg["max_row_gap_s"]])
@@ -108,6 +123,8 @@ def visits(index, state, windows, cfg):
                 "file": files[a],
                 "n": use.size,
                 "p": spec,
+                **({"comb": float(comb[use].mean()) if use.size else 0.0}
+                   if comb is not None else {}),
             }
         )
     v = pd.DataFrame(rows)
@@ -128,19 +145,20 @@ def visits(index, state, windows, cfg):
         },
     }
     v = v[keep].reset_index(drop=True)
-    freqs = np.asarray(loaded.freq, dtype=float)
-    bad, v = contaminated(v, freqs, cfg["visit_rejection"])
+    if comb is not None:
+        log["dropped_comb"], v = comb_hit(v, rej["comb_max_fraction"])
+    bad, v = contaminated(v, freqs, rej)
     log["dropped_contaminated"] = bad
     log["kept"] = int(len(v))
     return v, freqs, log
 
 
-def rfi_on_full_axis(sel, t, freqs, index, cfg):
-    """The flag product's RFI bits on the full correlator axis.
+def flag_words(sel, t, freqs, index, cfg):
+    """The flag product's words on the raw rows, and the slice of the
+    correlator axis ``freqs`` their channels cover.
 
-    The flag cubes cover only their tested domain; channels outside it carry
-    no RFI information and are left unflagged. Rows are matched to the raw
-    load by time, which must agree exactly.
+    The flag cubes cover only their tested domain. Rows are matched to the
+    raw load (times ``t``, sorted) by time, which must agree exactly.
     """
     fb = sel.load_bundle(
         key=cfg["key"], root=index_root(index), products=[cfg["flags"]]
@@ -153,11 +171,16 @@ def rfi_on_full_axis(sel, t, freqs, index, cfg):
         raise SystemExit("flag rows do not align with the raw rows")
     lo = int(np.argmin(np.abs(freqs - fb.freqs_mhz[0])))
     assert np.allclose(freqs[lo : lo + fb.freqs_mhz.size], fb.freqs_mhz)
-    rfi = np.zeros((t.size, freqs.size), dtype=bool)
-    rfi[:, lo : lo + fb.freqs_mhz.size] = (
-        fb.flags[order] & cfg["rfi_mask"]
-    ) != 0
-    return rfi
+    return fb.flags[order], slice(lo, lo + fb.freqs_mhz.size)
+
+
+def on_full_axis(words, tested, nchan, mask):
+    """The bits ``mask`` of the flag ``words`` on the full correlator axis
+    of ``nchan`` channels. Channels outside ``tested``, the slice the
+    words cover, carry no flag information and are left unflagged."""
+    out = np.zeros((words.shape[0], nchan), dtype=bool)
+    out[:, tested] = (words & mask) != 0
+    return out
 
 
 def index_root(index):
@@ -175,6 +198,25 @@ def masked_mean(p, tau, rfi):
     bad = rfi | (p < 0)
     spec = weighted_mean(p, np.where(bad, 0.0, tau[:, None]), axis=0)
     return spec, float(bad.mean())
+
+
+def comb_hit(v, max_fraction):
+    """Drop whole visits in which the config's ``comb_mask`` bits (an
+    identified comb) cover more than ``max_fraction`` of the cells the
+    flag product tested: masking those cells leaves comb power in the
+    rest of such a visit. Returns the dropped visits (UTC and fraction)
+    and the rest."""
+    hit = (v.comb > max_fraction).to_numpy()
+    dropped = [
+        {
+            "utc": datetime.fromtimestamp(t, timezone.utc).strftime(
+                "%m-%d %H:%M"
+            ),
+            "comb_fraction": float(c),
+        }
+        for t, c in zip(v.t[hit], v.comb[hit])
+    ]
+    return dropped, v[~hit].reset_index(drop=True)
 
 
 def contaminated(v, freqs, rej):
@@ -389,6 +431,60 @@ def noise_source_tns(
     return t_ns.astype(float), check
 
 
+def tns_terms(ns, freqs, s11, load_gain=None):
+    """The terms of ``T_NS = c0 + c_off T_off + c_load T_load``, per channel:
+    :func:`noise_source_tns`'s equation with the same campaign-mean
+    reflections, ``c0 = M_NS T_ex``, ``c_off = M_NS - (1 - G) M_amb``,
+    ``c_load = -G M_amb`` (``G = 1`` without ``load_gain``)."""
+    from eigsep_cal.dicke import mismatch
+
+    t_ex = ns.on(freqs, smooth=True)
+    idx = np.searchsorted(ns.freqs, freqs)
+    g_ns = ns.gamma_ns[np.clip(idx, 0, ns.freqs.size - 1)]
+    g_rec = np.mean(s11["rec"][1], axis=0)
+    g_amb = np.mean(s11["amb"][1], axis=0)
+    m_ns = np.real(mismatch(g_ns, g_rec))
+    m_amb = np.real(mismatch(g_amb, g_rec))
+    gain = 1.0 if load_gain is None else np.asarray(load_gain, float)
+    return (
+        m_ns * t_ex,
+        m_ns - (1.0 - gain) * m_amb,
+        -gain * m_amb * np.ones_like(m_ns),
+    )
+
+
+def visit_board_minus_load(dt_board_k, visit_t, dwell_s):
+    """Mean board-minus-load difference (K) over the readings within
+    ``dwell_s`` of each visit time (NaN where there are none), and the
+    number of readings. The diode heats its board in every noise-source
+    dwell, so a visit sees more than the all-readings mean."""
+    t, d = (np.asarray(a, float) for a in dt_board_k)
+    lo = np.searchsorted(t, np.asarray(visit_t) - dwell_s, side="left")
+    hi = np.searchsorted(t, np.asarray(visit_t) + dwell_s, side="right")
+    cs = np.concatenate([[0.0], np.cumsum(d)])
+    n = hi - lo
+    with np.errstate(invalid="ignore", divide="ignore"):
+        mean = np.where(n > 0, (cs[hi] - cs[lo]) / n, np.nan)
+    return mean, n
+
+
+def check_config(cfg):
+    """Refuse options that cannot be built together, before any load."""
+    rej, tns = cfg["visit_rejection"], cfg["t_ns"]
+    if ("comb_mask" in rej) != ("comb_max_fraction" in rej):
+        raise SystemExit(
+            "visit_rejection: comb_mask and comb_max_fraction go together"
+        )
+    if "per_integration" in tns:
+        missing = [k for k in ("noise_source", "t_off") if k not in tns]
+        if missing:
+            raise SystemExit(
+                "t_ns.per_integration needs t_ns." + ", t_ns.".join(missing)
+            )
+        if "dwell_s" not in tns["per_integration"]:
+            raise SystemExit("t_ns.per_integration needs dwell_s")
+
+
 def main(argv=None):
     import eigsep_cal.s11
 
@@ -408,6 +504,7 @@ def main(argv=None):
     proot = Path(args.products) if args.products else root
     out_dir = derived_dir(proot, "tcal", args.version)
     cfg, cfg_path = load_config(proot, "tcal", args.version, args.config)
+    check_config(cfg)
     out_dir.mkdir(parents=True, exist_ok=True)
     switch = root / cfg["switch_sparams"]
     osl = eigsep_cal.s11.PACKAGED_FILES[cfg["osl_year"]]["osldata"]
@@ -486,8 +583,60 @@ def main(argv=None):
             dt_board_k=dt_board,
             load_gain=load_gain,
         )
+        per_int = {}
+        if "per_integration" in tns_cfg:
+            to, pi = tns_cfg["t_off"], tns_cfg["per_integration"]
+            c0, c_off, c_load = tns_terms(ns, freqs, s11, load_gain)
+            t_off = check["t_off_k"]
+            again = c0 + c_off * t_off + c_load * check["t_load_k"]
+            ok = np.isfinite(t_ns)
+            if not np.allclose(again[ok], t_ns[ok], rtol=1e-9, atol=0):
+                raise RuntimeError("T_NS terms do not reproduce t_ns_k")
+            dwell, n = visit_board_minus_load(
+                board_minus_load(
+                    index, cfg, to["board_thermistor_c"], None,
+                    tuple(to.get("valid_c", (5, 60))),
+                ),
+                non.t.to_numpy(float),
+                float(pi["dwell_s"]),
+            )
+            if np.any(n == 0):
+                # A NaN here would take the calibration of every row the
+                # visit brackets with it (products.tcal interpolates it).
+                raise SystemExit(
+                    "t_ns.per_integration: no valid board and load reading "
+                    f"within {float(pi['dwell_s']):g} s of the noise-source "
+                    "visits at "
+                    + ", ".join(
+                        datetime.fromtimestamp(x, timezone.utc).strftime(
+                            "%m-%d %H:%M"
+                        )
+                        for x in non.t.to_numpy(float)[n == 0]
+                    )
+                )
+            per_int = dict(
+                t_ns_c0_k=c0, t_ns_c_off=c_off, t_ns_c_load=c_load,
+                non_dboard_k=dwell,
+            )
+            check["per_integration"] = {
+                "dwell_s": float(pi["dwell_s"]),
+                "readings_per_visit": [int(n.min()), int(n.max())],
+                "visit_board_minus_load_k": {
+                    "mean": float(np.mean(dwell)),
+                    "min_max": [float(np.min(dwell)),
+                                float(np.max(dwell))],
+                },
+            }
+            formula += (
+                "; per integration (reader): T_off(t) = T_load(t) + D(t), "
+                "D the noise-source visits' dwell-mean board - load, "
+                "interpolated as the visit spectra"
+            )
         t_ns_model = {
-            "t_ns_k": "spectrum on freqs (solutions.npz)",
+            "t_ns_k": "spectrum on freqs (solutions.npz)"
+            + ("; at the campaign means, superseded per integration by "
+               "t_ns_c0_k, t_ns_c_off, t_ns_c_load and non_dboard_k"
+               if per_int else ""),
             "t_ns_source": f"derived/noise_source/{ver}: bench-measured excess at P "
             "(smooth fit), converted to the field receiver with "
             "eigsep_cal.noise_source.tns_as_received",
@@ -504,6 +653,7 @@ def main(argv=None):
     else:
         t_ns = float(tns_cfg["assumed_k"])
         t_ns_model = {"t_ns_k": t_ns, "t_ns_source": tns_cfg["source"]}
+        per_int = {}
 
     sols = dict(
         freqs=freqs,
@@ -518,6 +668,7 @@ def main(argv=None):
         non_regime=non.regime.to_numpy(str),
         therm_t=therm_t,
         therm_k=therm_k,
+        **per_int,
     )
     for dut, (t, g, epoch) in s11.items():
         sols[f"s11_{dut}_t"] = t

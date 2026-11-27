@@ -84,21 +84,24 @@ def plumbing(ts, tl, st, t_ns, bb, wide, tol_frac=0.05, max_channels_off=50):
     product, against what they should read.
 
     ``ts`` is the bundle's T*, ``tl`` its load temperature, ``st`` its
-    switch states, ``t_ns`` the noise-source excess on its channels, and
+    switch states, ``t_ns`` the noise-source excess on its channels (one
+    spectrum, or one per row when the product evaluates it per row), and
     ``bb``, ``wide`` the channel masks of the band and the plumbing band. A
     channel is off when it misses by more than ``tol_frac`` of the expected
     temperature (load) or of the excess (noise source); a row is counted
     when more than ``max_channels_off`` of its channels are off."""
     pct = f"{100 * tol_frac:g}pct"
     plumb = {}
-    for state, extra in (("RFAMB", np.zeros(ts.shape[1])), ("RFNON", t_ns)):
+    t_ns = np.broadcast_to(np.asarray(t_ns, float), ts.shape)
+    for state in ("RFAMB", "RFNON"):
         rows = (st == state) & np.isfinite(ts[:, bb]).all(1)
-        resid = np.nanmedian(ts[rows][:, bb] - extra[bb], axis=1) - tl[rows]
+        extra = t_ns[rows] if state == "RFNON" else np.zeros(ts[rows].shape)
+        resid = np.nanmedian(ts[rows][:, bb] - extra[:, bb], axis=1) - tl[rows]
         # Worst cases and single channels, not just medians: a few bad
         # calibration visits corrupt hundreds of channels for ~25 min while
         # leaving every band-median statistic unchanged (tcal v0000).
-        expect = tl[rows][:, None] + extra[None, wide]
-        tol = tol_frac * (expect if state == "RFAMB" else extra[None, wide])
+        expect = tl[rows][:, None] + extra[:, wide]
+        tol = tol_frac * (expect if state == "RFAMB" else extra[:, wide])
         with np.errstate(invalid="ignore"):
             off = np.abs(ts[rows][:, wide] - expect) > tol
         plumb[state] = {
@@ -225,7 +228,17 @@ def main(argv=None):
             "plumbing_band": int((wide & undefined).sum()),
         }
         bb, wide = bb & ~undefined, wide & ~undefined
-    out["plumbing"] = plumbing(ts, tl, st, t_ns, bb, wide)
+    t_ns_rows = t_ns
+    if "t_ns_c0_k" in z:
+        # T_NS per row, as the product applies it (products.tcal).
+        i = np.searchsorted(z["freqs"], fb)
+        d = b.products["tcal"]["tcal_dboard_k"][:, None]
+        t_ns_rows = (
+            z["t_ns_c0_k"][i]
+            + z["t_ns_c_off"][i] * (tl[:, None] + d)
+            + z["t_ns_c_load"][i] * tl[:, None]
+        )
+    out["plumbing"] = plumbing(ts, tl, st, t_ns_rows, bb, wide)
     out["coverage"] = coverage(b.calibrated, st, bb, t0, t1)
 
     # 3. The independent calibration of the reference night.

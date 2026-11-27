@@ -36,7 +36,12 @@ Options, each off by default (``noise_source`` v0001's behaviour):
   temperature (the thermistors' specified range);
 - ``s11_average``: one reflection per DUT, the mean over the sweeps, instead
   of interpolating between sweeps in time (for S11 sweeps taken in another
-  session of the same bench).
+  session of the same bench);
+- ``exclude_mhz``: fixed bands masked in every run (a line the detectors
+  miss), reported as the mask's ``"fixed"`` reason and left out of the
+  chi2 cut's reference median;
+- ``line_lo_mhz``: the persistent-line detector also flags lines from this
+  frequency up to its analysis band (for a band reaching below 45 MHz).
 """
 
 from dataclasses import dataclass
@@ -156,7 +161,8 @@ def measure(index, s11, gamma_ns, setup, *, steady_per_min=1.0, dwell_gap_s=5.0,
             max_rel_err=0.05, enbw_hz=None,
             report_bands_mhz=((50.0, 88.0), (108.0, 150.0), (150.0, 200.0),
                               (200.0, 245.0)),
-            load_paths=None, hot_below_k=None, s11_average=False):
+            load_paths=None, hot_below_k=None, s11_average=False,
+            exclude_mhz=(), line_lo_mhz=None):
     """The noise source's temperature at P from a bench run.
 
     Parameters
@@ -189,6 +195,10 @@ def measure(index, s11, gamma_ns, setup, *, steady_per_min=1.0, dwell_gap_s=5.0,
         Fit only steady cycles with the hot load below this (K).
     s11_average : bool
         Use each DUT's mean reflection over the sweeps for every cycle.
+    exclude_mhz : sequence of (lo, hi)
+        Bands (MHz, inclusive) masked whatever the data say.
+    line_lo_mhz : float, optional
+        Lower edge of the persistent-line detector (default its own, 45 MHz).
 
     Returns
     -------
@@ -234,7 +244,7 @@ def measure(index, s11, gamma_ns, setup, *, steady_per_min=1.0, dwell_gap_s=5.0,
             board = [pd.to_numeric(meta[c], errors="coerce").to_numpy(float)
                      for c in s.path_therm_c]
             meta["T_path"] = celsius_to_kelvin(np.mean(board, axis=0))
-        flags, pc = sw.rfi_flags(spec, f)
+        flags, pc = sw.rfi_flags(spec, f, line_lo_mhz)
         near = sw.near_sweep(meta, sweeps, sweep_guard)
         flags[near] = True
         persistent = pc if persistent is None else persistent | pc
@@ -294,10 +304,16 @@ def measure(index, s11, gamma_ns, setup, *, steady_per_min=1.0, dwell_gap_s=5.0,
         chi2 = np.array([np.nanmean(c) if np.isfinite(c).any() else np.nan for c in z2.T])
         rel = fit_q["sb"] / fit_q["b"]
     mask = {"band": ~inband, "persistent": inband & persistent}
-    ref_chi2 = np.nanmedian(chi2[inband & ~persistent])     # median: flagging only
+    fixed = np.zeros(freqs.size, dtype=bool)
+    for lo, hi in exclude_mhz:
+        fixed |= (freqs >= lo) & (freqs <= hi)
+    if len(exclude_mhz):
+        mask["fixed"] = inband & fixed
+    # median: flagging only
+    ref_chi2 = np.nanmedian(chi2[inband & ~persistent & ~fixed])
     mask["chi2"] = inband & ~(chi2 <= chi2_factor * ref_chi2)
     mask["rel_err"] = inband & ~((fit_q["b"] > 0) & (rel <= max_rel_err))
-    good = ~(mask["band"] | mask["persistent"] | mask["chi2"] | mask["rel_err"])
+    good = ~np.logical_or.reduce(list(mask.values()))
 
     # 6. T_NON, and the ramp check: heating and cooling cycles fitted alone.
     x, y = source_temperature_terms(q, m_hot, m_ref, m_ns, th, tr)
@@ -356,6 +372,10 @@ def measure(index, s11, gamma_ns, setup, *, steady_per_min=1.0, dwell_gap_s=5.0,
         validation["cycles_fitted"] = int(use.sum())
     if s11_average:
         validation["s11"] = "mean over each DUT's sweeps"
+    if len(exclude_mhz):
+        validation["exclude_mhz"] = [list(map(float, b)) for b in exclude_mhz]
+    if line_lo_mhz is not None:
+        validation["line_lo_mhz"] = float(line_lo_mhz)
     if gains is not None:
         validation["load_paths"] = {
             role: {

@@ -74,14 +74,15 @@ def state_dwells(index, state, antenna, gap_s=5.0, products=()):
     return meta, np.asarray(b.freqs_mhz, float), np.asarray(b.data, float), b
 
 
-def rfi_flags(spec, freqs_mhz):
+def rfi_flags(spec, freqs_mhz, line_lo_mhz=None):
     """Per-sample flags (int32 wraps | transients) and per-channel persistent
     lines for one state's integrations, in time order, from
     :mod:`eigsep_data.flagging.detectors`.
 
     Wrapped samples are replaced by their channel's median log power before
     the two tracks run, so they do not drag the baselines; they stay flagged.
-    ``persistent_track`` checks only its analysis band (45-235 MHz)."""
+    ``persistent_track`` checks only its analysis band (45-235 MHz), or
+    from ``line_lo_mhz`` up, if given."""
     spec = np.asarray(spec, dtype=float)
     wrap = overflow_mask(spec)
     valid = ~np.all(spec == 0, axis=1)
@@ -90,7 +91,10 @@ def rfi_flags(spec, freqs_mhz):
     fill = np.nanmedian(logp[valid], axis=0)
     logp = np.where(np.isfinite(logp), logp, fill)
     trans, _, _ = transient_track(logp, valid)
-    persist, _ = persistent_track(logp, valid, np.asarray(freqs_mhz, float))
+    persist, _ = persistent_track(
+        logp, valid, np.asarray(freqs_mhz, float),
+        extend_below_mhz=line_lo_mhz,
+    )
     return wrap | trans, persist
 
 

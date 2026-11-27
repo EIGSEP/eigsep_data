@@ -150,3 +150,22 @@ def test_config_record_is_relative_to_the_campaign_tree(tmp_path):
     outside = tmp_path.parent / "elsewhere.json"
     outside.write_text("{}")
     assert _common.config_record(outside, tmp_path)["path"] == str(outside)
+
+
+def test_plumbing_takes_a_t_ns_per_row():
+    from eigsep_data.calibration.validate_tcal import plumbing
+
+    rng = np.random.default_rng(0)
+    nrow, nch = 40, 64
+    st = np.array(["RFAMB", "RFNON"] * (nrow // 2))
+    tl = 300.0 + rng.normal(0, 0.1, nrow)
+    t_ns_rows = 500.0 + np.linspace(0, 2, nrow)[:, None] + np.zeros(nch)
+    ts = tl[:, None] + np.where(st == "RFNON", 1.0, 0.0)[:, None] * t_ns_rows
+    bb = wide = np.ones(nch, bool)
+    per_row = plumbing(ts, tl, st, t_ns_rows, bb, wide)
+    assert per_row["RFNON"]["max_abs_resid_k"] < 1e-9
+    fixed = plumbing(ts, tl, st, t_ns_rows.mean(0), bb, wide)
+    assert fixed["RFNON"]["max_abs_resid_k"] > 0.9
+    same = plumbing(ts, tl, st, np.broadcast_to(t_ns_rows[0], ts.shape),
+                    bb, wide)
+    assert same == plumbing(ts, tl, st, t_ns_rows[0], bb, wide)
